@@ -1,0 +1,22 @@
+# Generated outputs
+Outputs/*.json
+Outputs/*.md
+!Outputs/输出放这里.txt
+
+# Generated build script
+Paper_Project/Program/build_generated.py
+
+# Generated manuscripts
+Paper_Project/Manuscripts/*.docx
+
+# User content
+Inputs/*.docx
+Inputs/*/
+Templates/*.docx
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE / MCP
+.mcp.json
