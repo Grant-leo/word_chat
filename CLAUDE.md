@@ -155,7 +155,7 @@ Templates/模版.docx ──→ format_extractor ──→ Outputs/format.json
 Inputs/内容.docx ──→ content_parser ──→ Outputs/content.json
                     (提取图片到fig/)     Outputs/内容提取.md
 
-format.json ──┬──→ script_generator ──→ Program/build_generated.py
+format.json ──┬──→ script_generator ──→ build_generated.py
 content.json ─┘
 
 build_generated.py ──→ python 运行 ──→ 最终论文.docx
