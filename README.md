@@ -16,15 +16,24 @@ python -m pip install python-docx Pillow
 #    模版 docx → Templates/
 #    内容 docx → Inputs/
 
-# 3. 一键运行
+# 3. 交互模式（终端用户）
 python run_pipeline.py
+# → 自动扫描文件，编号列表供选择
+
+# 4. 参数模式（脚本 / Skill 调用）
+python run_pipeline.py --template 模版.docx --content 论文.docx
+# → 指定文件名直接运行，无需交互
 ```
 
-运行后自动扫描文件、列出编号供选择、创建独立输出目录。无需手动改配置。
+每次运行生成独立目录 `Outputs/{日期}_{内容名}/`，互不覆盖。
 
-## Claude Code 一键排版
+## Claude Code Skill
 
-项目内置 `/排论文` Skill，clone 后在 Claude Code 中直接说"排论文"即可自动执行全流程。
+项目内置 `/wordpaper` Skill，clone 后在 Claude Code 中直接对话：
+
+> "排版" / "typeset"
+
+Claude 会引导选择文件、自动运行、验证结果、协助微调。
 
 ## 输出结构
 
@@ -83,7 +92,8 @@ python Outputs/<目录>/build_generated.py
 
 ```
 ├── run_pipeline.py              ← 一键入口
-├── .claude/skills/排论文.md     ← Claude Code Skill
+├── .claude-plugin/plugin.json   ← 插件清单
+├── .claude/skills/wordpaper.md  ← Claude Code Skill
 ├── .claude/settings.json        ← 项目权限配置
 ├── .gitignore
 ├── Templates/模版放这里.txt

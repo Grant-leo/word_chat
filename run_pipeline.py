@@ -1,15 +1,19 @@
 """
 run_pipeline.py —— 一键工作流入口
 ===================================
-  1. 把模版 docx 放入 Templates/，内容 docx 放入 Inputs/
-  2. 运行 python run_pipeline.py
-  3. 选择模版和内容文件
-  4. 结果自动输出到 Outputs/{日期}_{内容名}/
 
-生成脚本 build_generated.py 可对话微调排版。
+两种用法:
+  交互模式:  python run_pipeline.py
+             → 自动扫描文件，编号选择
+
+  参数模式:  python run_pipeline.py --template 模版.docx --content 论文.docx
+             → 直接运行，无交互（Skill / 脚本调用）
+
+  结果自动输出到 Outputs/{日期}_{内容名}/
+  生成脚本 build_generated.py 可对话微调排版。
 """
 
-import os, sys, json, subprocess
+import os, sys, json, subprocess, argparse
 from datetime import date
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -38,7 +42,7 @@ def scan_docx(folder):
 
 
 def choose_file(files, label):
-    """Let user pick from a numbered list. Returns chosen filename."""
+    """Interactive file selection. Returns chosen filename."""
     if len(files) == 0:
         return None
     if len(files) == 1:
@@ -108,35 +112,24 @@ def double_verify(extractor_fn, path, label, **kw):
     return r1
 
 
-def main():
-    print('=' * 50)
-    print('  Word 论文排版流水线')
-    print('=' * 50)
-
-    # ── Scan files ──
-    templates = scan_docx(TEMPLATE_DIR)
-    contents  = scan_docx(INPUTS_DIR)
-
-    if not templates:
-        print(f'\n[ERROR] Templates/ 下没有 .docx 文件，请放入模版文件后重试。')
-        return
-    if not contents:
-        print(f'\n[ERROR] Inputs/ 下没有 .docx 文件，请放入内容文件后重试。')
-        return
-
-    template_file = choose_file(templates, '选择模版')
-    content_file  = choose_file(contents, '选择内容')
-
+def run(template_file, content_file):
+    """Core pipeline: takes filenames, runs all phases, returns output directory."""
     template_path = os.path.join(TEMPLATE_DIR, template_file)
     content_path  = os.path.join(INPUTS_DIR, content_file)
 
-    # ── Output folder ──
+    if not os.path.exists(template_path):
+        print(f'[ERROR] 模版文件不存在: {template_path}')
+        return None
+    if not os.path.exists(content_path):
+        print(f'[ERROR] 内容文件不存在: {content_path}')
+        return None
+
     content_name = os.path.splitext(content_file)[0]
     folder_name  = f'{date.today().isoformat()}_{content_name}'
     out_dir      = os.path.join(OUTPUTS_DIR, folder_name)
     os.makedirs(out_dir, exist_ok=True)
 
-    print(f'\n  输出目录: Outputs/{folder_name}/')
+    print(f'  输出目录: Outputs/{folder_name}/')
     print(f'  模版: {template_file}')
     print(f'  内容: {content_file}')
 
@@ -202,23 +195,57 @@ def main():
         print(f'  [OK] 最终 docx -> Outputs/{folder_name}/{output_docx}')
     else:
         print(f'  [ERROR] {err[:500]}')
-        return
+        return None
 
     # ── Done ──
     step('完成')
     print(f'''
   输出目录: Outputs/{folder_name}/
-    ├── 格式提取.md          ← 核对模版格式
-    ├── 内容提取.md          ← 核对文本内容
+    ├── 格式提取.md          <- 核对模版格式
+    ├── 内容提取.md          <- 核对文本内容
     ├── format.json
     ├── content.json
-    ├── build_generated.py   ← 生成脚本
-    └── {output_docx}        ← 最终文件
+    ├── build_generated.py   <- 生成脚本
+    └── {output_docx}        <- 最终文件
 
   微调:
     打开 build_generated.py，跟 Claude 对话修改排版
     改完运行: python Outputs/{folder_name}/build_generated.py
 ''')
+    return out_dir
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Word 论文排版流水线')
+    parser.add_argument('--template', '-t', help='模版文件名 (位于 Templates/)')
+    parser.add_argument('--content',  '-c', help='内容文件名 (位于 Inputs/)')
+    args = parser.parse_args()
+
+    print('=' * 50)
+    print('  Word 论文排版流水线')
+    print('=' * 50)
+
+    # ── Determine files ──
+    if args.template and args.content:
+        # Non-interactive mode (Skill / script)
+        template_file = args.template
+        content_file  = args.content
+    else:
+        # Interactive mode (CLI user)
+        templates = scan_docx(TEMPLATE_DIR)
+        contents  = scan_docx(INPUTS_DIR)
+
+        if not templates:
+            print('\n[ERROR] Templates/ 下没有 .docx 文件，请放入模版文件后重试。')
+            return
+        if not contents:
+            print('\n[ERROR] Inputs/ 下没有 .docx 文件，请放入内容文件后重试。')
+            return
+
+        template_file = choose_file(templates, '选择模版')
+        content_file  = choose_file(contents, '选择内容')
+
+    run(template_file, content_file)
 
 
 if __name__ == '__main__':

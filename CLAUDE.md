@@ -46,7 +46,12 @@ Verify user has placed files there. If not, tell them to drop files first.
 ### 3. Run the Pipeline
 ```bash
 cd <project_root>
+
+# 交互模式（终端用户）
 python run_pipeline.py
+
+# 参数模式（Skill 调用，不阻塞）
+python run_pipeline.py --template 模版.docx --content 内容.docx
 ```
 Or run each phase manually if debugging:
 ```bash
@@ -56,9 +61,10 @@ python Paper_Project/Program/pipeline/script_generator.py Outputs/format.json Ou
 ```
 
 ### 4. Verify Outputs
-- Check `Outputs/格式提取.md` — spot-check paragraph counts match
-- Check `Outputs/内容提取.md` — verify no sections lost
-- Run `python Paper_Project/Program/build_generated.py` — must succeed
+- Check `Outputs/<日期_文件名>/格式提取.md` — spot-check paragraph counts match
+- Check `Outputs/<日期_文件名>/内容提取.md` — verify no sections lost
+- Run `python Outputs/<日期_文件名>/build_generated.py` — must succeed
+- Every run produces a separate directory, nothing overwrites
 
 ### 5. Help User Fine-Tune
 Open `build_generated.py` and accept user's natural language requests:
@@ -152,7 +158,7 @@ Inputs/内容.docx ──→ content_parser ──→ Outputs/content.json
 format.json ──┬──→ script_generator ──→ Program/build_generated.py
 content.json ─┘
 
-build_generated.py ──→ python 运行 ──→ Manuscripts/最终论文.docx
+build_generated.py ──→ python 运行 ──→ 最终论文.docx
                          ↓
                    与 Claude 对话微调
                    (编辑 build_generated.py → 重新运行)
