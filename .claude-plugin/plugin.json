@@ -7,7 +7,7 @@
   },
   "homepage": "https://github.com/Grant-leo/word_chat",
   "repository": "https://github.com/Grant-leo/word_chat",
-  "license": "Proprietary - Non-Commercial Use Only",
+  "license": "CC BY-NC 4.0",
   "keywords": [
     "word",
     "docx",
@@ -20,9 +20,9 @@
   ],
   "skills": [
     {
-      "name": "排论文",
-      "description": "运行Word论文排版流水线：检查环境→扫描文件→提取格式→生成论文→可对话微调",
-      "file": ".claude/skills/排论文.md"
+      "name": "wordpaper",
+      "description": "Run Word paper typesetting pipeline: check environment -> scan files -> extract format -> generate paper -> interactive fine-tuning",
+      "file": ".claude/skills/wordpaper.md"
     }
   ]
 }
