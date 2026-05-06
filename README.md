@@ -56,6 +56,7 @@ build_generated.py ──→ python 运行 ──→ Manuscripts/最终论文.do
 
 ## 功能
 
+- 页面设置 (A4 + 四边距)
 - 封面（字体/空行/表格全从模版提取，零硬编码）
 - 三级标题自动检测（正文说明 > OOXML 直读）
 - 三线表（OOXML 直写，顶粗线 / 表头细线 / 底粗线）
@@ -65,3 +66,13 @@ build_generated.py ──→ python 运行 ──→ Manuscripts/最终论文.do
 - A4 自动分页（双 cpl：拉丁文 + CJK 各自度量）
 - 页眉页脚（PAGE 域代码动态页码）
 - 图片居中 + Fig. 图注
+
+## 许可
+
+Copyright © 2025 Youwei Zhang
+
+本软件仅供个人学习和研究使用。**未经作者明确书面授权，禁止将本软件用于任何商业目的**，包括但不限于：将本软件或衍生作品作为商业产品、付费服务、SaaS 平台的一部分进行销售、出租、许可或分发。
+
+如需商业使用授权，请联系作者。
+
+This software is provided for personal learning and research purposes only. **Commercial use is prohibited without explicit written authorization from the author.**
