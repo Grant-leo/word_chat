@@ -8,11 +8,40 @@
 
 ## 快速开始
 
-1. 把模版 docx 放入 `Templates/`，内容 docx 放入 `Inputs/`
-2. 修改 `run_pipeline.py` 头部的 `TEMPLATE_DOCX` 和 `CONTENT_DOCX`
-3. 运行：`python run_pipeline.py`
-4. 查看 `Outputs/` 下的 MD 核对提取结果
-5. 最终论文在 `Paper_Project/Manuscripts/最终论文.docx`
+```bash
+# 1. 安装依赖
+python -m pip install python-docx Pillow
+
+# 2. 放入文件
+#    模版 docx → Templates/
+#    内容 docx → Inputs/
+
+# 3. 一键运行
+python run_pipeline.py
+```
+
+运行后自动扫描文件、列出编号供选择、创建独立输出目录。无需手动改配置。
+
+## Claude Code 一键排版
+
+项目内置 `/排论文` Skill，clone 后在 Claude Code 中直接说"排论文"即可自动执行全流程。
+
+## 输出结构
+
+每次运行生成独立目录，互不覆盖：
+
+```
+Outputs/
+├── 2026-05-06_我的论文/
+│   ├── 格式提取.md          ← 核对模版格式
+│   ├── 内容提取.md          ← 核对文本内容
+│   ├── format.json
+│   ├── content.json
+│   ├── build_generated.py   ← 生成脚本（可对话微调）
+│   └── 最终论文.docx
+├── 2026-05-07_另一篇/
+│   └── ...
+```
 
 ## 环境
 
@@ -22,33 +51,50 @@
 ## 流水线四阶段
 
 ```
-Templates/模版.docx ──→ format_extractor ──→ Outputs/format.json
-                                              Outputs/格式提取.md
+Templates/模版.docx ──→ [Phase 1] format_extractor ──→ format.json
+                                                         格式提取.md
 
-Inputs/内容.docx ──→ content_parser ──→ Outputs/content.json
-                    (图片 → Inputs/xxx/figures/)    Outputs/内容提取.md
+Inputs/内容.docx ──→ [Phase 2] content_parser ──→ content.json
+                    (图片 → Inputs/xxx/figures/)    内容提取.md
 
-format.json ──┬──→ script_generator ──→ Program/build_generated.py
+format.json ──┬──→ [Phase 3] script_generator ──→ build_generated.py
 content.json ─┘
 
-build_generated.py ──→ python 运行 ──→ Manuscripts/最终论文.docx
+build_generated.py ──→ [Phase 4] python 运行 ──→ 最终论文.docx
 ```
 
-每个阶段内建双验证：提取器独立运行两次交叉比对。
+每个阶段内建双验证：提取器独立运行两次，比对段落/表格/run 数，不一致时第三轮仲裁。
+
+## 微调排版
+
+```bash
+# 打开生成脚本，改函数/参数，重跑
+python Outputs/<目录>/build_generated.py
+```
+
+| 意图 | 位置 |
+|------|------|
+| 改正文字号/字体/行距 | `body()` 函数 |
+| 改标题字号/居中 | `heading1/2/3()` 函数 |
+| 参考文献字号 | `D['ref_size']` |
+| 图片宽度 | `D['img_width']` |
 
 ## 项目结构
 
 ```
 ├── run_pipeline.py              ← 一键入口
+├── .claude/skills/排论文.md     ← Claude Code Skill
+├── .claude/settings.json        ← 项目权限配置
+├── .gitignore
 ├── Templates/模版放这里.txt
 ├── Inputs/文本资料放这里.txt
-├── Outputs/输出放这里.txt
+├── Outputs/                     ← 每次运行生成独立子目录
 └── Paper_Project/
     └── Program/
         ├── pipeline/
-        │   ├── format_extractor.py   ← 模版 → 格式 JSON
-        │   ├── content_parser.py     ← 内容 → 结构化 JSON
-        │   └── script_generator.py   ← JSON → build_generated.py
+        │   ├── format_extractor.py   ← Phase 1: 模版 → 格式 JSON
+        │   ├── content_parser.py     ← Phase 2: 内容 → 结构化 JSON
+        │   └── script_generator.py   ← Phase 3: JSON → 生成脚本
         ├── build_acta_manuscript.py  ← 参考：Acta Materialia 期刊格式
         ├── build_comprehensive_doc.py ← 参考：全功能演示
         └── master.py                 ← 参考：编排器骨架

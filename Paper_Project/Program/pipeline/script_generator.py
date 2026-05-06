@@ -333,7 +333,8 @@ def _extract_params(fmt):
 #  CODE GENERATION  (Acta architecture + format params + content)
 # ═══════════════════════════════════════════════════════════════
 
-def generate(format_json_path, content_json_path, output_py_path, output_docx_name='最终论文.docx'):
+def generate(format_json_path, content_json_path, output_dir, output_docx_name='最终论文.docx'):
+    output_py_path = os.path.join(output_dir, 'build_generated.py')
     with open(format_json_path, encoding='utf-8') as f:
         fmt = json.load(f)
     with open(content_json_path, encoding='utf-8') as f:
@@ -379,11 +380,7 @@ def generate(format_json_path, content_json_path, output_py_path, output_docx_na
     l('import os')
     l('')
     l("BASE = os.path.dirname(os.path.abspath(__file__))")
-    l("PROJ = os.path.dirname(BASE)")
-    l(f"OUT = os.path.join(PROJ, 'Manuscripts', '{os.path.basename(output_docx_name)}')")
-    l('os.makedirs(os.path.dirname(OUT), exist_ok=True)')
-    if has_images:
-        l('os.makedirs(os.path.join(PROJ, "Results", "fig"), exist_ok=True)')
+    l(f"OUT = os.path.join(BASE, '{os.path.basename(output_docx_name)}')")
     l('')
     l('doc = Document()')
     l('')
