@@ -20,3 +20,6 @@ __pycache__/
 
 # IDE / MCP
 .mcp.json
+
+# User-local Claude settings (keep yours private)
+.claude/settings.local.json

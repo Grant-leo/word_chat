@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python --version)",
+      "Bash(python -c *)",
+      "Bash(python -m pip *)",
+      "Bash(python run_pipeline.py)",
+      "Bash(python *.py)",
+      "Bash(python Paper_Project/Program/*.py)",
+      "Bash(python Paper_Project/Program/pipeline/*.py)",
+      "Bash(ls *)",
+      "Bash(mkdir *)"
+    ]
+  }
+}
