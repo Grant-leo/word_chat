@@ -50,7 +50,7 @@ cd <project_root>
 # 交互模式（终端用户）
 python run_pipeline.py
 
-# 参数模式（Skill 调用，不阻塞）
+# 参数模式（脚本调用，不阻塞）
 python run_pipeline.py --template 模版.docx --content 内容.docx
 ```
 Or run each phase manually if debugging:
