@@ -29,24 +29,17 @@ python run_pipeline.py --template 模版.docx --content 论文.docx
 
 ## 架构
 
-项目由四个固定引擎 + 一个动态脚本 + 两个知识库组成：
+四个固定引擎 + 一个动态脚本 + 两个知识库：
 
 ```
-固定引擎（不改动）               动态脚本（AI 可改）
-┌─────────────────────┐         ┌──────────────────┐
-│ format_extractor.py │──┐      │                  │
-│ 模板 → 格式 JSON     │  │      │ build_generated  │
-├─────────────────────┤  │      │      .py         │
-│ content_parser.py   │  │ 传参  │                  │
-│ 内容 → 结构化 JSON   │──┼───→  │ 零硬编码脚本      │──→ 最终 docx
-├─────────────────────┤  │      │                  │
-│ script_generator.py │──┘      │ Claude + 基础操   │
-│ JSON → 生成脚本      │         │ 作.md 对话微调    │
-└─────────────────────┘         └──────────────────┘
-
-知识库
-├── CLAUDE.md         ← AI 工作流：何时做什么
-└── 基础操作.md        ← AI 工具箱：所有 OOXML 代码片段
+ Fixed Engines                     Dynamic Script
+ (never modified)                  (AI can edit)
+                       params
+ format_extractor.py ──┐         build_generated.py
+ content_parser.py   ──┼───→    (zero hardcoding)  ──→  最终论文.docx
+ script_generator.py ──┘              ↑
+                                   AI edits via
+                              CLAUDE.md + 基础操作.md
 ```
 
 - **四个固定引擎**：只需维护，不改动。通过 template/content JSON 传参
