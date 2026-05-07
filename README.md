@@ -111,12 +111,14 @@ python Outputs/<目录>/build_generated.py
 
 ```
 ├── run_pipeline.py              ← 一键入口
+├── CLAUDE.md                    ← AI 工作流（Claude Code 自动加载）
 ├── .claude/settings.json        ← 项目权限配置（可选）
 ├── .gitignore
 ├── Templates/模版放这里.txt
 ├── Inputs/文本资料放这里.txt
 ├── Outputs/                     ← 每次运行生成独立子目录
 └── Paper_Project/
+    ├── 基础操作.md               ← AI 工具箱（所有 OOXML 代码片段）
     └── Program/
         ├── pipeline/
         │   ├── format_extractor.py   ← Phase 1: 模版 → 格式 JSON
@@ -139,6 +141,9 @@ python Outputs/<目录>/build_generated.py
 - A4 自动分页（双 cpl：拉丁文 + CJK 各自度量）
 - 页眉页脚（PAGE 域代码动态页码）
 - 图片居中 + Fig. 图注
+- **数学公式**：OOXML 原样提取+插入，支持矩阵/分式/上下标/括号
+- 公式工具：`formula_build_matrix()` 传参构建，`formula_text/remove/replace` 对话修改
+- 双验证提取（独立运行两次交叉比对，不一致第三轮仲裁）
 
 ## 许可
 
