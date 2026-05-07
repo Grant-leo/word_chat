@@ -658,6 +658,37 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
     l('    return len(ins)')
     l('')
 
+    # ── Formula support (if content has math) ──
+    has_formulas = any(
+        isinstance(p, dict) and p.get('math')
+        for s in cnt.get('sections', [])
+        for p in s.get('paragraphs', [])
+    )
+    if has_formulas:
+        l('')
+        l('from lxml import etree')
+        l('')
+        l('# ── Formula injection ──')
+        l('def body_with_formula(text, math_xml_list):')
+        l('    p = doc.add_paragraph()')
+        l(f'    p.alignment = WD_ALIGN_PARAGRAPH.{align}')
+        l(f'    pf = p.paragraph_format; pf.line_spacing = {ls}')
+        if indent_pt:
+            l('    pf.first_line_indent = Pt(' + str(indent_pt) + ')')
+        l('    if text.strip():')
+        l('        r = p.add_run(text)')
+        l(f"        r.font.name = '{P['body_font']}'; r.font.size = Pt({P['body_size']})")
+        if need_eastAsia:
+            l('        rp = r._element.get_or_add_rPr()')
+            l('        rf = rp.find(qn("w:rFonts"))')
+            l('        if rf is None: rf = OxmlElement("w:rFonts"); rp.insert(0, rf)')
+            l(f'        rf.set(qn("w:eastAsia"), "{cjk}")')
+        l('    for xml_str in math_xml_list:')
+        l('        math_el = etree.fromstring(xml_str)')
+        l('        p._element.append(math_el)')
+        l('    return p')
+        l('')
+
     # ═══ CONTENT ═══
     l('# ═══════════════════ CONTENT ═══════════════════')
     l('')
@@ -824,17 +855,23 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
             l('')
 
         for para in sec.get('paragraphs', []):
-            p = para.strip()
+            # Check for formula paragraphs (dict with 'math' key)
+            if isinstance(para, dict) and para.get('math'):
+                txt = _q(para.get('text', ''))
+                l(f'body_with_formula("{txt}", [')
+                for m in para['math']:
+                    l(f"    '{_q(m['xml'])}',")
+                l('])')
+                continue
+            # Regular text paragraph
+            p = (para if isinstance(para, str) else para.get('text', '')).strip()
             if not p or len(p) < 5:
                 continue
-            # Skip formatting notes (Chinese or garbled)
             if any(k in p[:100] for k in ['号', '行距', '缩进', '对齐', '空一行', '备注', '按答辩时间', '小四', '四号', '小三']):
                 continue
-            # Skip if >30% non-printable chars
             printable = sum(1 for c in p if c.isprintable() or c in '\n\r\t ')
             if printable / max(len(p), 1) < 0.7:
                 continue
-            # Skip very short fragments
             if len(p) < 20 and not any(c.isascii() and c.isalpha() for c in p):
                 continue
             l(f"body('{_q(p)}')")

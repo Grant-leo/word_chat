@@ -160,7 +160,13 @@ def run(template_file, content_file):
         for img in sec.get('images', []):
             md.append(f'- [图片] {img}')
         for p in sec.get('paragraphs', []):
-            t = p[:120] + '...' if len(p) > 120 else p
+            if isinstance(p, dict):
+                t = p.get('text', '') or '[公式]'
+                if p.get('math'):
+                    t += f' (+{len(p["math"])}公式)'
+            else:
+                t = p
+            t = t[:120] + '...' if len(t) > 120 else t
             md.append(f'- {t}')
         md.append('')
     if content.get('references'):
