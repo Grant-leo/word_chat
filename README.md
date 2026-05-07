@@ -32,20 +32,35 @@ python run_pipeline.py --template 模版.docx --content 论文.docx
 四个固定引擎 + 一个动态脚本 + 两个知识库：
 
 ```
-固定引擎（不改动）            动态脚本（AI 可改）
-┌──────────────────────┐    ┌──────────────────────┐
-│ format_extractor.py  │    │                      │
-│ 模板 → 格式 JSON      │    │  build_generated.py  │
-│ content_parser.py    │    │                      │
-│ 内容 → 结构化 JSON    │传参│  零硬编码脚本         │──→ 最终 docx
-│ script_generator.py  │    │                      │
-│ JSON → 生成脚本       │    │  Claude + 基础操作    │
-│                      │    │  .md 对话微调         │
-└──────────────────────┘    └──────────────────────┘
++---------------------------+       +---------------------------+
+| format_extractor.py       |       |                           |
+| content_parser.py         |       |   build_generated.py      |
+| script_generator.py       |params |                           |
+|                           |------>|   zero hardcoding         |---> final .docx
+| (fixed engines)           |       |                           |
++---------------------------+       |   fine-tuned by Claude    |
+                                    |   + 基础操作.md            |
+                                    +---------------------------+
 
-知识库
-├── CLAUDE.md      ← AI 工作流
-└── 基础操作.md     ← AI 工具箱
+ Knowledge Base
+ +-- CLAUDE.md       <- AI workflow instructions
+ +-- 基础操作.md      <- AI toolbox (all OOXML code snippets)
+```
+
+```
+┌──────────────────┐        ┌──────────────────┐
+│                  │        │                  │
+│  格式提取器       │──┐     │  构建脚本生成     │
+│  内容解析器       │  │     │                  │
+│  脚本生成器       │  │传参  │  零硬编码        │──→ 最终论文
+│                  │──┘     │                  │
+│  （固定不改）     │        │  AI 对话微调      │
+│                  │        │                  │
+└──────────────────┘        └──────────────────┘
+
+ 知识库
+ ├── CLAUDE.md      ← AI 工作流
+ └── 基础操作.md     ← AI 工具箱（所有 OOXML 代码片段）
 ```
 
 - **四个固定引擎**：只需维护，不改动。通过 template/content JSON 传参
