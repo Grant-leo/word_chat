@@ -12,9 +12,19 @@ def emu_to_pt(emu):
     return round(emu / 12700, 1)
 
 
+def _math_text(elem):
+    """Extract plain text from a math OOXML element."""
+    M = 'http://schemas.openxmlformats.org/officeDocument/2006/math'
+    parts = []
+    for t in elem.iter(f'{{{M}}}t'):
+        if t.text:
+            parts.append(t.text)
+    return ''.join(parts)
+
+
 def extract_math(para):
     """Extract OOXML math elements from a paragraph. Returns (text, math_list).
-    math_list entries: {'type': 'inline'|'display', 'xml': escaped_xml_string}
+    math_list entries: {'type': 'inline'|'display', 'xml': escaped_xml_string, 'text': plain_text}
     Text is cleaned of formula garbling."""
     xml = para._element.xml
     if 'm:oMath' not in xml and 'oMathPara' not in xml:
@@ -26,7 +36,7 @@ def extract_math(para):
     # Extract m:oMathPara (display formulas) — these ARE the paragraph
     for omp in root.findall('{http://schemas.openxmlformats.org/officeDocument/2006/math}oMathPara'):
         raw = etree.tounicode(omp, with_tail=False)
-        math_list.append({'type': 'display', 'xml': raw})
+        math_list.append({'type': 'display', 'xml': raw, 'text': _math_text(omp)})
 
     # Extract m:oMath (inline formulas) — embedded in runs
     for om in root.iter('{http://schemas.openxmlformats.org/officeDocument/2006/math}oMath'):
@@ -35,7 +45,7 @@ def extract_math(para):
         if parent_tag == 'oMathPara':
             continue
         raw = etree.tounicode(om, with_tail=False)
-        math_list.append({'type': 'inline', 'xml': raw})
+        math_list.append({'type': 'inline', 'xml': raw, 'text': _math_text(om)})
 
     # Reconstruct text without formula garbling: get text from runs, skip math-only runs
     text_parts = []
