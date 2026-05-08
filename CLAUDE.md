@@ -96,7 +96,9 @@ Example: template has no cross-references → generated script has no `B_ref()`.
 - A4 pagination uses dual cpl: Latin and CJK separately.
 - Each pipeline run = independent Outputs directory. No overwrites.
 - Office Viewer ≠ WPS/Word. Final verification MUST use WPS/Word.
-- Formulas: use `formula_build_matrix()` for matrices (not manual OOXML). Use `formula_text/remove/replace` for edits.
+- Formulas: use `latex_to_omath(r"\frac{a}{b}")` — LaTeX math string → native Word OOXML equation. Write formulas in LaTeX syntax, they auto-convert. Covers fractions, roots, sums, integrals, matrices, cases, Greek letters, arrows, accents, limits, braces, boxed, and more. See `latex_omath.py` for full reference.
+- Matrix short-cut: `formula_build_matrix(cells, cols, brackets)` as alternative.
+- All legacy formula tools (`formula_text/remove/replace`) remain available.
 - OOXML math: every `m:r` needs `m:rPr` (even empty) for WPS compatibility.
 
 ---
@@ -109,6 +111,7 @@ Paper_Project/Program/pipeline/
     format_extractor.py       ← Phase 1: template → format JSON
     content_parser.py         ← Phase 2: content → structured JSON
     script_generator.py       ← Phase 3: JSON → build_generated.py
+    latex_omath.py            ← LaTeX→OOXML formula converter (imported by build_generated.py)
 Paper_Project/基础操作.md     ← ★ YOUR TOOLBOX: all OOXML code snippets
 build_acta_manuscript.py      ← Reference: Acta journal paper
 build_comprehensive_doc.py    ← Reference: all features demo

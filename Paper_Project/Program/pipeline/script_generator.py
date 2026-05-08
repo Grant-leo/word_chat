@@ -332,7 +332,6 @@ def _extract_params(fmt):
 # ═══════════════════════════════════════════════════════════════
 #  CODE GENERATION  (Acta architecture + format params + content)
 # ═══════════════════════════════════════════════════════════════
-
 def generate(format_json_path, content_json_path, output_dir, output_docx_name='最终论文.docx'):
     output_py_path = os.path.join(output_dir, 'build_generated.py')
     with open(format_json_path, encoding='utf-8') as f:
@@ -744,6 +743,17 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
         l('            idx += 1')
         l('    return etree.tounicode(omath, with_tail=False)')
         l('')
+
+        # ── Copy latex_omath.py to output and add import ──
+        import shutil
+        latex_omath_src = os.path.join(os.path.dirname(__file__), 'latex_omath.py')
+        latex_omath_dst = os.path.join(output_dir, 'latex_omath.py')
+        shutil.copy2(latex_omath_src, latex_omath_dst)
+        l('')
+        l('# ── LaTeX-to-OOXML converter (imported from latex_omath.py) ──')
+        l('import sys as _sys; _sys.path.insert(0, BASE)')
+        l('from latex_omath import latex_to_omath, body_latex, formula_text_from_omath')
+
         l('# ── Formula display helper ──')
         l('def body_with_formula(text, math_xml_list):')
         l('    p = doc.add_paragraph()')
@@ -935,13 +945,18 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
             # Check for formula paragraphs (dict with 'math' key)
             if isinstance(para, dict) and para.get('math'):
                 txt = _q(para.get('text', ''))
-                # Add formula text comment so Claude can read it
+                # Add formula text + LaTeX annotation comments
                 for m in para['math']:
                     if 'text' in m and m['text']:
                         l(f'# {m["text"]}')
+                    if 'latex' in m and m['latex']:
+                        l(f'# latex: {_q(m["latex"])}')
                 l(f'body_with_formula("{txt}", [')
                 for m in para['math']:
-                    l(f"    '{_q(m['xml'])}',")
+                    if 'latex' in m and m['latex']:
+                        l(f"    latex_to_omath(r'{_q(m['latex'])}'),")
+                    else:
+                        l(f"    '{_q(m['xml'])}',")
                 l('])')
                 continue
             # Regular text paragraph
