@@ -64,6 +64,8 @@ python run_pipeline.py --template 模版.docx --content 论文.docx
 ```
 
 - **四个固定引擎**：只需维护，不改动。通过 template/content JSON 传参
+- **latex_omath.py**：独立 LaTeX→OOXML 公式转换器，像写 `.tex` 一样写公式
+- **comment_utils.py**：Word 批注系统，`comment="导师: ..."` 即可添加批注
 - **build_generated.py**：引擎生成的零硬编码脚本，AI 可在此基础上对话微调
 - **基础操作.md**：持续维护的代码片段库——测试越多越完善，AI 能改的功能越多
 - **模板缺的功能**（如交叉引用）→ 引擎不会生成 → 用户提出 → AI 查基础操作.md → 加代码 → 重跑
@@ -120,6 +122,9 @@ python Outputs/<目录>/build_generated.py
 | 改标题字号/居中 | `heading1/2/3()` 函数 |
 | 参考文献字号 | `D['ref_size']` |
 | 图片宽度 | `D['img_width']` |
+| 编辑公式（LaTeX） | `body_with_formula("", [latex_to_omath(r"...")])` |
+| 加批注 | `body("text", comment="导师: ...")` |
+| 加目录 | 取消 `# insert_toc(doc)` 的注释 |
 
 ## 项目结构
 
@@ -137,7 +142,9 @@ python Outputs/<目录>/build_generated.py
         ├── pipeline/
         │   ├── format_extractor.py   ← Phase 1: 模版 → 格式 JSON
         │   ├── content_parser.py     ← Phase 2: 内容 → 结构化 JSON
-        │   └── script_generator.py   ← Phase 3: JSON → 生成脚本
+        │   ├── script_generator.py   ← Phase 3: JSON → 生成脚本
+        │   ├── latex_omath.py        ← LaTeX→OOXML 公式转换器
+        │   └── comment_utils.py      ← Word 批注系统
         ├── build_acta_manuscript.py  ← 参考：Acta Materialia 期刊格式
         ├── build_comprehensive_doc.py ← 参考：全功能演示
         └── master.py                 ← 参考：编排器骨架
@@ -155,8 +162,13 @@ python Outputs/<目录>/build_generated.py
 - A4 自动分页（双 cpl：拉丁文 + CJK 各自度量）
 - 页眉页脚（PAGE 域代码动态页码）
 - 图片居中 + Fig. 图注
-- **数学公式**：OOXML 原样提取+插入，支持矩阵/分式/上下标/括号
-- 公式工具：`formula_build_matrix()` 传参构建，`formula_text/remove/replace` 对话修改
+- **LaTeX 公式转换**：`latex_to_omath(r"\frac{a}{b}")` — 像写 .tex 一样直写 LaTeX → 原生 Word 方程
+  支持分式/根式/求和/积分/矩阵/cases/希腊字母/符号/箭头/重音/函数/极限/定界符/括号/框（42+ 构造）
+- **公式编号**：`\tag{1.1}`, `\begin{equation}`, `\begin{align}` 自动编号
+- **双线体/手写体**：`\mathbb{R}`, `\mathcal{F}` 等数学字体
+- **Word 批注**：`body("text", comment="导师: 请确认")` → 生成原生 Word 批注
+- **目录 (TOC)**：`insert_toc(doc)` 生成 Word 域代码，打开后右键更新
+- 传统公式工具：`formula_build_matrix()` 传参构建，`formula_text/remove/replace` 对话修改
 - 双验证提取（独立运行两次交叉比对，不一致第三轮仲裁）
 
 ## 许可

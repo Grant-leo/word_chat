@@ -100,6 +100,9 @@ Example: template has no cross-references → generated script has no `B_ref()`.
 - Matrix short-cut: `formula_build_matrix(cells, cols, brackets)` as alternative.
 - All legacy formula tools (`formula_text/remove/replace`) remain available.
 - OOXML math: every `m:r` needs `m:rPr` (even empty) for WPS compatibility.
+- Comments: use `CommentCollector` from `comment_utils.py`. Add `comment="导师: ..."` parameter to `body()`/`heading()` calls.
+- TOC: `insert_toc(doc)` generates Word TOC field code. Uncomment in build script to enable.
+- Formula numbering: `\tag{1.1}`, `\begin{equation}`, `\begin{align}` for auto-numbered equations.
 
 ---
 
@@ -111,7 +114,8 @@ Paper_Project/Program/pipeline/
     format_extractor.py       ← Phase 1: template → format JSON
     content_parser.py         ← Phase 2: content → structured JSON
     script_generator.py       ← Phase 3: JSON → build_generated.py
-    latex_omath.py            ← LaTeX→OOXML formula converter (imported by build_generated.py)
+    latex_omath.py            ← LaTeX→OOXML formula converter
+    comment_utils.py          ← Word comment injection system
 Paper_Project/基础操作.md     ← ★ YOUR TOOLBOX: all OOXML code snippets
 build_acta_manuscript.py      ← Reference: Acta journal paper
 build_comprehensive_doc.py    ← Reference: all features demo
