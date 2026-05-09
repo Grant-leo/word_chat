@@ -442,7 +442,7 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
     need_eastAsia = (P['body_font'] != cjk)
 
     # body()
-    l('def body(text, first_indent=True):')
+    l('def body(text, first_indent=True, comment=None):')
     l('    p = doc.add_paragraph()')
     l(f'    p.alignment = WD_ALIGN_PARAGRAPH.{align}')
     l(f'    pf = p.paragraph_format; pf.line_spacing = {ls}')
@@ -456,13 +456,15 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
         l(f'    rf = rp.find(qn("w:rFonts"))')
         l(f'    if rf is None: rf = OxmlElement("w:rFonts"); rp.insert(0, rf)')
         l(f'    rf.set(qn("w:eastAsia"), "{cjk}")')
+    l('    if comment:')
+    l('        _cc.add(p, comment)')
     l('    return p')
     l('')
 
     # headings
     for hl in P['h_levels']:
         n = hl['level']
-        l(f'def heading{n}(text):')
+        l(f'def heading{n}(text, comment=None):')
         l('    p = doc.add_paragraph()')
         l(f'    p.alignment = WD_ALIGN_PARAGRAPH.{hl["align"]}')
         l(f'    pf = p.paragraph_format; pf.line_spacing = {ls}')
@@ -474,8 +476,49 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
             l(f'    rf = rp.find(qn("w:rFonts"))')
             l(f'    if rf is None: rf = OxmlElement("w:rFonts"); rp.insert(0, rf)')
             l(f'    rf.set(qn("w:eastAsia"), "{cjk}")')
+        l('    if comment:')
+        l('        _cc.add(p, comment)')
         l('    return p')
         l('')
+
+    # ═══ TOC (Table of Contents) ═══
+    l('# ── Table of Contents ──')
+    l('def insert_toc(doc, title="目录"):')
+    l('    p = doc.add_paragraph()')
+    l('    p.alignment = WD_ALIGN_PARAGRAPH.CENTER')
+    l('    r = p.add_run(title)')
+    l('    r.bold = True')
+    l(f"    r.font.size = Pt({P['h_levels'][0]['size'] if P['h_levels'] else 15})")
+    l(f"    r.font.name = '{P['body_font']}'")
+    l('    p2 = doc.add_paragraph()')
+    l('    r2 = p2.add_run()')
+    l('    r2.font.size = Pt(10)  # small hint text')
+    l('    r2.font.name = "Times New Roman"')
+    l('    r2.font.color.rgb = RGBColor(128,128,128)')
+    l('    r2.add_text("（在 Word/WPS 中右键此处 → 更新域 → 更新整个目录）")')
+    l('    # TOC field code')
+    l('    tp = doc.add_paragraph()')
+    l('    tr = tp.add_run()')
+    l('    fld_begin = OxmlElement("w:fldChar")')
+    l('    fld_begin.set(qn("w:fldCharType"), "begin")')
+    l('    tr._element.append(fld_begin)')
+    l('    instr = OxmlElement("w:instrText")')
+    l('    instr.set(qn("xml:space"), "preserve")')
+    l("    instr.text = ' TOC \\\\o \"1-3\" \\\\h \\\\z \\\\u '")
+    l('    tr._element.append(instr)')
+    l('    fld_sep = OxmlElement("w:fldChar")')
+    l('    fld_sep.set(qn("w:fldCharType"), "separate")')
+    l('    tr._element.append(fld_sep)')
+    l('    tr2 = tp.add_run("（在 Word 中右键更新目录）")')
+    l('    tr2.font.size = Pt(10)')
+    l('    tr2.font.color.rgb = RGBColor(128,128,128)')
+    l('    fld_end = OxmlElement("w:fldChar")')
+    l('    fld_end.set(qn("w:fldCharType"), "end")')
+    l('    tr2._element.append(fld_end)')
+    l('')
+    l('# Uncomment the next line to insert TOC after cover page:')
+    l('# insert_toc(doc)')
+    l('')
 
     # ═══ CROSS-REFERENCES (Acta architecture) ═══
     if has_refs:
@@ -744,15 +787,21 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
         l('    return etree.tounicode(omath, with_tail=False)')
         l('')
 
-        # ── Copy latex_omath.py to output and add import ──
+        # ── Copy latex_omath.py and comment_utils.py to output ──
         import shutil
-        latex_omath_src = os.path.join(os.path.dirname(__file__), 'latex_omath.py')
-        latex_omath_dst = os.path.join(output_dir, 'latex_omath.py')
-        shutil.copy2(latex_omath_src, latex_omath_dst)
+        pipeline_dir = os.path.dirname(os.path.abspath(__file__))
+        for mod in ['latex_omath.py', 'comment_utils.py']:
+            src = os.path.join(pipeline_dir, mod)
+            if os.path.exists(src):
+                shutil.copy2(src, os.path.join(output_dir, mod))
         l('')
-        l('# ── LaTeX-to-OOXML converter (imported from latex_omath.py) ──')
+        l('# ── Imported modules ──')
         l('import sys as _sys; _sys.path.insert(0, BASE)')
         l('from latex_omath import latex_to_omath, body_latex, formula_text_from_omath')
+        l('from comment_utils import CommentCollector')
+        l('')
+        l('# ── Comment collector (optional: use comment=\"text\" in body/heading) ──')
+        l('_cc = CommentCollector()')
 
         l('# ── Formula display helper ──')
         l('def body_with_formula(text, math_xml_list):')
@@ -1027,6 +1076,7 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
     l('# ── Paginate + Save ──')
     l('n = paginate_a4(doc)')
     l('doc.save(OUT)')
+    l('_cc.save(OUT)  # inject comments into saved docx')
     l("print(f'Saved: {OUT}  pages: ~{n+1}')")
 
     code = '\n'.join(L)

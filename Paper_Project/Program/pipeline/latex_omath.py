@@ -82,6 +82,55 @@ _SYMBOLS = {
     'surd': '√', 'dag': '†', 'ddag': '‡',
     'S': '§', 'P': '¶', 'pounds': '£',
     'subsetneq': '⊊', 'supsetneq': '⊋',
+    # Phase 1.4 additions
+    'therefore': '∴', 'because': '∵',
+    'implies': '⟹', 'iff': '⟺', 'impliedby': '⟸',
+    'nsubseteq': '⊈', 'nsupseteq': '⊉', 'setminus': '∖', 'complement': '∁',
+    'vdash': '⊢', 'dashv': '⊣', 'models': '⊧',
+    'lesssim': '≲', 'gtrsim': '≳', 'approxeq': '≊',
+    'triangleq': '≜', 'circeq': '≗',
+    'imath': 'ı', 'jmath': 'ȷ', 'hslash': 'ℏ',
+    'bigoplus': '⨁', 'bigotimes': '⨂', 'bigodot': '⨀', 'coprod': '∐',
+    'rtimes': '⋊', 'ltimes': '⋋',
+    'bigsqcup': '⊔', 'cdotp': '·',
+    'mid': '∣', 'nmid': '∤',
+    'smile': '⌣', 'frown': '⌢',
+    'wr': '≀', 'amalg': '⨿',
+    'lhd': '⊲', 'rhd': '⊳', 'unlhd': '⊴', 'unrhd': '⊵',
+    'twoheadrightarrow': '↠', 'twoheadleftarrow': '↞',
+    'looparrowleft': '↫', 'looparrowright': '↬',
+    'curvearrowleft': '↶', 'curvearrowright': '↷',
+    'rightleftharpoons': '⇌', 'leftrightharpoons': '⇋',
+    'Lsh': '↰', 'Rsh': '↱',
+    'sphericalangle': '∢', 'measuredangle': '∡',
+    'Bbbk': '𝕜',
+}
+
+# ── Double-struck letters (\mathbb) ──
+_DBLSTRUCK = {
+    'A': '𝔸', 'B': '𝔹', 'C': 'ℂ', 'D': '𝔻', 'E': '𝔼',
+    'F': '𝔽', 'G': '𝔾', 'H': 'ℍ', 'I': '𝕀', 'J': '𝕁',
+    'K': '𝕂', 'L': '𝕃', 'M': '𝕄', 'N': 'ℕ', 'O': '𝕆',
+    'P': 'ℙ', 'Q': 'ℚ', 'R': 'ℝ', 'S': '𝕊', 'T': '𝕋',
+    'U': '𝕌', 'V': '𝕍', 'W': '𝕎', 'X': '𝕏', 'Y': '𝕐', 'Z': 'ℤ',
+    'a': '𝕒', 'b': '𝕓', 'c': '𝕔', 'd': '𝕕', 'e': '𝕖',
+    'f': '𝕗', 'g': '𝕘', 'h': '𝕙', 'i': '𝕚', 'j': '𝕛',
+    'k': '𝕜', 'l': '𝕝', 'm': '𝕞', 'n': '𝕟', 'o': '𝕠',
+    'p': '𝕡', 'q': '𝕢', 'r': '𝕣', 's': '𝕤', 't': '𝕥',
+    'u': '𝕦', 'v': '𝕧', 'w': '𝕨', 'x': '𝕩', 'y': '𝕪', 'z': '𝕫',
+    '0': '𝟘', '1': '𝟙', '2': '𝟚', '3': '𝟛', '4': '𝟜',
+    '5': '𝟝', '6': '𝟞', '7': '𝟟', '8': '𝟠', '9': '𝟡',
+    'gamma': 'ℾ', 'Gamma': 'ℾ', 'pi': 'ℿ', 'Pi': 'ℿ',
+    'Sigma': '⅀',
+}
+
+# ── Calligraphic letters (\mathcal) ──
+_SCRIPT = {
+    'A': '𝒜', 'B': 'ℬ', 'C': '𝒞', 'D': '𝒟', 'E': 'ℰ',
+    'F': 'ℱ', 'G': '𝒢', 'H': 'ℋ', 'I': 'ℐ', 'J': '𝒥',
+    'K': '𝒦', 'L': 'ℒ', 'M': 'ℳ', 'N': '𝒩', 'O': '𝒪',
+    'P': '𝒫', 'Q': '𝒬', 'R': 'ℛ', 'S': '𝒮', 'T': '𝒯',
+    'U': '𝒰', 'V': '𝒱', 'W': '𝒲', 'X': '𝒳', 'Y': '𝒴', 'Z': '𝒵',
 }
 
 # ── Arrows ──
@@ -155,13 +204,31 @@ _MATRIX_BRACKETS = {
 #  OOXML BUILDER HELPERS
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _make_run(text, plain=False):
-    """Create m:r element with text content."""
+def _make_run(text, style=None):
+    """Create m:r element with text content.
+    style: None=italic(math default), 'plain'=upright, 'bold'=bold,
+           'italic'=italic, 'sans'=sans-serif, 'mono'=monospace,
+           'bold-italic'=bold+italic, 'script'=script
+    """
     r = etree.Element(f'{{{M}}}r')
     rPr = etree.SubElement(r, f'{{{M}}}rPr')
-    if plain:
+    _sty_map = {
+        'plain': 'p', 'bold': 'b', 'italic': 'i',
+        'bold-italic': 'bi', 'script': 'scr',
+    }
+    if style and style in _sty_map:
         sty = etree.SubElement(rPr, f'{{{M}}}sty')
-        sty.set(f'{{{M}}}val', 'p')
+        sty.set(f'{{{M}}}val', _sty_map[style])
+    elif style and style not in _sty_map:
+        # For sans/mono, use w:rPr directly (Word math font control)
+        NOR = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
+        w_rPr = etree.SubElement(rPr, f'{NOR}rPr')
+        if style == 'sans':
+            rf = etree.SubElement(w_rPr, f'{NOR}rFonts')
+            rf.set(f'{NOR}ascii', 'Arial')
+        elif style == 'mono':
+            rf = etree.SubElement(w_rPr, f'{NOR}rFonts')
+            rf.set(f'{NOR}ascii', 'Consolas')
     t = etree.SubElement(r, f'{{{M}}}t')
     t.set(XML_SPACE, 'preserve')
     t.text = text
@@ -337,7 +404,34 @@ def _tokenize(s):
             while j < n and s[j].isalpha():
                 j += 1
             if j > i + 1:
-                tokens.append({'type': 'COMMAND', 'value': s[i:j]}); i = j
+                cmd = s[i:j]
+                # \begin{type} → BEGIN token
+                if cmd == '\\begin':
+                    k = j
+                    while k < n and s[k].isspace():
+                        k += 1
+                    if k < n and s[k] == '{':
+                        k += 1; start = k
+                        while k < n and s[k] != '}':
+                            k += 1
+                        if k < n:
+                            mtype = s[start:k]
+                            tokens.append({'type': 'BEGIN', 'value': mtype})
+                            i = k + 1; continue
+                # \end{type} → END token
+                if cmd == '\\end':
+                    k = j
+                    while k < n and s[k].isspace():
+                        k += 1
+                    if k < n and s[k] == '{':
+                        k += 1; start = k
+                        while k < n and s[k] != '}':
+                            k += 1
+                        if k < n:
+                            mtype = s[start:k]
+                            tokens.append({'type': 'END', 'value': mtype})
+                            i = k + 1; continue
+                tokens.append({'type': 'COMMAND', 'value': cmd}); i = j
             else:
                 # Backslash + non-alpha: emit as COMMAND (for \{, \}, \|, etc.)
                 tokens.append({'type': 'COMMAND', 'value': s[i:i + 2]}); i += 2
@@ -412,8 +506,11 @@ class _LaTeXParser:
         # Exclude bracket-closing chars that should terminate expressions
         if t['type'] == 'CHAR' and t.get('value') == ']':
             return False
-        # \right, \end terminate enclosing contexts
-        if t['type'] == 'COMMAND' and t.get('value') in ('\\right', '\\end'):
+        # \right terminates left/right context
+        if t['type'] == 'COMMAND' and t.get('value') == '\\right':
+            return False
+        # END tokens terminate matrix environments
+        if t['type'] == 'END':
             return False
         return True
 
@@ -498,12 +595,43 @@ class _LaTeXParser:
         # Fractions
         if name in ('frac', 'tfrac', 'dfrac'):
             return self._parse_frac()
-        if name == 'binom':
+        if name in ('binom', 'dbinom', 'tbinom'):
             return self._parse_binom()
 
         # Roots
         if name == 'sqrt':
             return self._parse_sqrt()
+
+        # \mathbb{letter} — double-struck
+        if name == 'mathbb':
+            return self._parse_math_alphabet(_DBLSTRUCK)
+        # \mathcal{letter} — calligraphic
+        if name == 'mathcal':
+            return self._parse_math_alphabet(_SCRIPT)
+
+        # \underset{below}{expr}, \overset{above}{expr}
+        if name == 'underset':
+            return self._parse_stackrel('sub')
+        if name == 'overset':
+            return self._parse_stackrel('sup')
+
+        # \xrightarrow[below]{above}, \xleftarrow[below]{above}
+        if name == 'xrightarrow':
+            return self._parse_ext_arrow('→')
+        if name == 'xleftarrow':
+            return self._parse_ext_arrow('←')
+
+        # \pmod{n}
+        if name == 'pmod':
+            return self._parse_pmod()
+
+        # \not — negation prefix
+        if name == 'not':
+            return self._parse_not()
+
+        # \substack{...} — multi-line subscript for nary operators
+        if name == 'substack':
+            return self._parse_substack()
 
         # N-ary operators
         if name in _NARY_CHARS:
@@ -559,6 +687,10 @@ class _LaTeXParser:
         if name in _ARROWS:
             return _make_run(_ARROWS[name])
 
+        # \tag{label} — formula numbering
+        if name == 'tag':
+            return self._parse_tag()
+
         # Symbols
         if name in _SYMBOLS:
             return _make_run(_SYMBOLS[name])
@@ -583,6 +715,199 @@ class _LaTeXParser:
         return self._parse_atom()
 
     # ── Specific command handlers ──
+
+    def _parse_math_alphabet(self, char_map):
+        """Handle \\mathbb{R}, \\mathcal{F} etc."""
+        arg = self._parse_arg()
+        if arg is None:
+            return _make_run('')
+        # Extract text from the argument
+        if isinstance(arg, list):
+            txt = ''
+            for el in arg:
+                if hasattr(el, 'iter'):
+                    for t in el.iter(f'{{{M}}}t'):
+                        if t.text: txt += t.text
+            if not txt:
+                txt = ''.join(t.text or '' for el in arg if hasattr(el, 'iter') for t in el.iter(f'{{{M}}}t'))
+        elif hasattr(arg, 'iter'):
+            txt = ''
+            for t in arg.iter(f'{{{M}}}t'):
+                if t.text: txt += t.text
+        else:
+            txt = str(arg) if arg is not None else ''
+        if txt in char_map:
+            return _make_run(char_map[txt])
+        return _make_run(txt)
+
+    def _parse_stackrel(self, direction):
+        """Handle \\underset{below}{expr} and \\overset{above}{expr}."""
+        script = self._parse_arg()
+        base = self._parse_arg()
+        base_el = self._ensure_element(base)
+        script_el = self._ensure_element(script)
+        if direction == 'sub':
+            return _make_sub(base_el, script_el)
+        else:
+            return _make_sup(base_el, script_el)
+
+    def _parse_ext_arrow(self, chr_char):
+        """Handle \\xrightarrow[below]{above}, \\xleftarrow[below]{above}."""
+        sub_el = None; sup_el = None
+        if self.peek()['type'] == 'SUB':
+            self.consume('SUB')
+            sub_el = self._ensure_single(self._parse_atom())
+        if self.peek()['type'] == 'SUPER':
+            self.consume('SUPER')
+            sup_el = self._ensure_single(self._parse_atom())
+        # Build arrow base with limits
+        arrow_run = _make_run(chr_char)
+        if sub_el and sup_el:
+            return _make_supsub(arrow_run, sub_el, sup_el)
+        elif sub_el:
+            return _make_sub(arrow_run, sub_el)
+        elif sup_el:
+            return _make_sup(arrow_run, sup_el)
+        return arrow_run
+
+    def _parse_pmod(self):
+        """Handle \\pmod{n} → (mod n)."""
+        arg = self._parse_arg()
+        mod_text = _make_run('mod', style='plain')
+        space = _make_run(' ')
+        num = self._ensure_element(arg)
+        lp = _make_run('(')
+        rp = _make_run(')')
+        # Build: (mod n) as sibling elements
+        return self._list_to_element([lp, mod_text, space, num, rp])
+
+    def _parse_not(self):
+        """Handle \\not — negation prefix. Combines with next character."""
+        _NOT_MAP = {
+            '=': '≠', '<': '≮', '>': '≯', '≤': '≰', '≥': '≱',
+            '∈': '∉', '∋': '∌', '⊂': '⊄', '⊃': '⊅',
+            '⊆': '⊈', '⊇': '⊉', '∼': '≁', '≃': '≄',
+            '≈': '≉', '≡': '≢', '∥': '∦', '∣': '∤',
+        }
+        nxt = self.peek()
+        if nxt['type'] == 'CHAR' and nxt.get('value') in _NOT_MAP:
+            self.consume()
+            return _make_run(_NOT_MAP[nxt['value']])
+        if nxt['type'] == 'COMMAND':
+            nxt_name = nxt.get('value', '')[1:]
+            if nxt_name in _SYMBOLS and _SYMBOLS[nxt_name] in _NOT_MAP.values():
+                sym = _SYMBOLS[nxt_name]
+                # Find the negated version
+                rev = {v: k for k, v in _NOT_MAP.items()}
+                self.consume()
+                return _make_run(rev.get(sym, sym))
+        return _make_run('¬')
+
+    def _parse_substack(self):
+        """Handle \\substack{a \\\\ b} — multi-line subscript content."""
+        self.consume('LBRACE')
+        lines = [[]]
+        while self.peek()['type'] != 'RBRACE' and self.peek()['type'] != 'EOF':
+            t = self.peek()
+            if t['type'] == 'NEWLINE':
+                self.consume(); lines.append([])
+            elif t['type'] == 'AMPERSAND':
+                self.consume()
+            elif self._is_start_of_term(t) or t['type'] == 'CHAR':
+                el = self._parse_expression()
+                if isinstance(el, list):
+                    lines[-1].extend(el)
+                elif el is not None:
+                    lines[-1].append(el)
+            else:
+                self.consume()
+        self.consume('RBRACE')
+        # Filter empty lines and build stacked runs
+        cells = []
+        max_cols = max(len(l) for l in lines) if lines else 1
+        for line in lines:
+            for el in line:
+                cells.append(el)
+            while len(cells) % max_cols != 0:
+                cells.append(None)
+        if not cells:
+            return _make_run('')
+        return _make_matrix(lines, max_cols, 'matrix')
+    def _parse_tag(self):
+        """Handle \\tag{label} — formula numbering."""
+        arg = self._parse_arg()
+        if arg is None:
+            return None
+        tag_text = self._ensure_element(arg)
+        # Extract text from tag
+        tag_str = ''
+        if hasattr(tag_text, 'iter'):
+            for t in tag_text.iter(f'{{{M}}}t'):
+                if t.text: tag_str += t.text
+        if not tag_str:
+            tag_str = '?'
+        # Emit as parenthesized number: (#)
+        return _make_run(f'({tag_str})', style='plain')
+
+    def _parse_equation(self):
+        """Handle \\begin{equation}...\\end{equation} with auto-numbering."""
+        # Parse content until END
+        content = []
+        eq_num = getattr(self, '_eq_counter', 0) + 1
+        self._eq_counter = eq_num
+        while True:
+            t = self.peek()
+            if t['type'] == 'END':
+                end_type = t.get('value', '')
+                if end_type == 'equation':
+                    self.consume()
+                    break
+                raise ValueError(f'\\begin{{equation}} ended with \\end{{{end_type}}}')
+            if t['type'] == 'EOF':
+                raise ValueError('Missing \\end for \\begin{equation}')
+            el = self._parse_expression()
+            if isinstance(el, list):
+                content.extend(el)
+            elif el is not None:
+                content.append(el)
+        # Append numbering
+        content.append(_make_run(f'({eq_num})', style='plain'))
+        return self._list_to_element(content)
+
+    def _parse_align(self):
+        """Handle \\begin{align}...\\end{align} with alignment."""
+        rows = []; current_row = []
+        while True:
+            t = self.peek()
+            if t['type'] == 'END':
+                end_type = t.get('value', '')
+                if end_type == 'align':
+                    self.consume()
+                    break
+                raise ValueError(f'\\begin{{align}} ended with \\end{{{end_type}}}')
+            if t['type'] == 'EOF':
+                raise ValueError('Missing \\end for \\begin{align}')
+            if t['type'] == 'NEWLINE':
+                self.consume()
+                if current_row:
+                    rows.append(current_row)
+                current_row = []
+                continue
+            if t['type'] == 'AMPERSAND':
+                self.consume(); current_row.append(None); continue
+            el = self._parse_expression()
+            current_row.append(self._list_to_element(el) if isinstance(el, list) else el)
+        if current_row:
+            rows.append(current_row)
+        cols = max(len(r) for r in rows) if rows else 2
+        for r in rows:
+            while len(r) < cols:
+                r.append(None)
+            # Add auto-number
+            row_num = rows.index(r) + 1
+            r.append(_make_run(f'({row_num})', style='plain'))
+        return _make_matrix(rows, cols + 1, 'matrix')
+
     def _parse_frac(self):
         num = self._parse_arg()
         den = self._parse_arg()
@@ -677,30 +1002,52 @@ class _LaTeXParser:
         return _make_bar(self._ensure_element(arg), pos)
 
     def _parse_text_style(self, name):
+        # Map LaTeX style command to internal style key
+        _TEXT_STYLE_MAP = {
+            'text': 'plain', 'mathrm': 'plain',
+            'mathbf': 'bold', 'mathit': 'italic',
+            'mathsf': 'sans', 'mathtt': 'mono',
+        }
+        style = _TEXT_STYLE_MAP.get(name, 'plain')
         self.consume('LBRACE')
-        text_parts = []
+        # Collect content: flat text with inline sub/superscript support
+        result = []
         while self.peek()['type'] != 'RBRACE' and self.peek()['type'] != 'EOF':
             t = self.peek()
             if t['type'] == 'CHAR':
-                text_parts.append(self.consume()['value'])
+                result.append(_make_run(self.consume()['value'], style=style))
             elif t['type'] == 'SPACE':
-                text_parts.append(' '); self.consume()
+                result.append(_make_run(' ', style=style)); self.consume()
             elif t['type'] == 'COMMAND':
                 cname = self.consume()['value'][1:]
                 if cname in _GREEK_LOWER:
-                    text_parts.append(_GREEK_LOWER[cname])
+                    result.append(_make_run(_GREEK_LOWER[cname], style=style))
                 elif cname in _SYMBOLS:
-                    text_parts.append(_SYMBOLS[cname])
+                    result.append(_make_run(_SYMBOLS[cname], style=style))
+                elif cname in _ARROWS:
+                    result.append(_make_run(_ARROWS[cname], style=style))
                 else:
-                    text_parts.append(cname)
+                    result.append(_make_run(cname, style=style))
             elif t['type'] == 'SUB':
-                self.consume(); text_parts.append('_')
+                # Real subscript inside text style (e.g., \mathrm{CH_4})
+                sub_base = _make_run('', style=style)
+                self.consume('SUB')
+                sub_arg = self._ensure_single(self._parse_atom())
+                result.append(_make_sub(sub_base, sub_arg) if sub_arg is not None else sub_base)
             elif t['type'] == 'SUPER':
-                self.consume(); text_parts.append('^')
+                # Real superscript inside text style
+                sup_base = _make_run('', style=style)
+                self.consume('SUPER')
+                sup_arg = self._ensure_single(self._parse_atom())
+                result.append(_make_sup(sup_base, sup_arg) if sup_arg else sup_base)
             else:
                 self.consume()
         self.consume('RBRACE')
-        return _make_run(''.join(text_parts), plain=(name in ('text', 'mathrm')))
+        if len(result) == 0:
+            return _make_run('', style=style)
+        if len(result) == 1:
+            return result[0]
+        return self._list_to_element(result)
 
     def _parse_boxed(self):
         arg = self._parse_arg()
@@ -764,10 +1111,21 @@ class _LaTeXParser:
     def _parse_matrix(self):
         t = self.consume()
         mtype = t.get('value', '')
+
+        # Route equation and align environments to dedicated handlers
+        if mtype == 'equation':
+            return self._parse_equation()
+        if mtype == 'align':
+            return self._parse_align()
+
         rows = []; current_row = []
         while True:
             t = self.peek()
-            if t['type'] == 'COMMAND' and t.get('value', '') == '\\end':
+            if t['type'] == 'END':
+                end_mtype = t.get('value', '')
+                if end_mtype and end_mtype != mtype:
+                    raise ValueError(f'\\begin{{{mtype}}} ended with \\end{{{end_mtype}}}')
+                self.consume()  # consume END token
                 break
             if t['type'] == 'EOF':
                 raise ValueError(f'Missing \\end for \\begin{{{mtype}}}')
@@ -777,13 +1135,6 @@ class _LaTeXParser:
                 self.consume(); current_row.append(None); continue
             el = self._parse_expression()
             current_row.append(self._list_to_element(el) if isinstance(el, list) else el)
-        self.consume('COMMAND')
-        if self.peek()['type'] == 'LBRACE':
-            self.consume('LBRACE')
-            while self.peek()['type'] not in ('RBRACE', 'EOF'):
-                self.consume()
-            if self.peek()['type'] == 'RBRACE':
-                self.consume()
         if current_row:
             rows.append(current_row)
         cols = max(len(r) for r in rows) if rows else 1
