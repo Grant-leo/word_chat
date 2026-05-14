@@ -6,6 +6,26 @@
 
 **格式与内容分离**。模版提供字体/字号/行距/边距，文本资料提供章节/段落/图片/参考文献。流水线自动提取两者，生成 python-docx 构建脚本，最终输出排好版的 docx。
 
+## 推荐配套插件 / Recommended Companion Plugin
+
+### [DOCX Live Preview](https://github.com/Grant-leo/docx-livepreview) — VSCode 中像素级一致的 DOCX 预览
+
+在 VSCode 中编辑 docx 时，**其他预览插件显示的格式与 WPS 实际渲染不一致**——字体偏移、表格错位、公式变形。你不得不在 VSCode 和 WPS 之间来回切换，严重打断排版效率。
+
+DOCX Live Preview **直接调用 WPS 引擎渲染**，所见即所得——与 WPS 显示完全一致。专为本项目打造，强烈建议安装。
+
+**安装方式：** 从 [Releases](https://github.com/Grant-leo/docx-livepreview/releases) 下载 `.vsix`，`Ctrl+Shift+P` → `Extensions: Install from VSIX...`
+
+---
+
+When editing docx in VSCode, **other preview extensions render differently from WPS** — shifted fonts, misaligned tables, broken equations. You end up switching back and forth between VSCode and WPS, killing your flow.
+
+DOCX Live Preview **uses WPS as its rendering engine** — what you see is exactly what WPS outputs. Built specifically for this project. Strongly recommended.
+
+**Install:** Download `.vsix` from [Releases](https://github.com/Grant-leo/docx-livepreview/releases), then `Ctrl+Shift+P` → `Extensions: Install from VSIX...`
+
+---
+
 ## 快速开始
 
 ```bash
