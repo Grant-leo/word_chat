@@ -1,12 +1,21 @@
 # Word 论文自动排版流水线
 
+<p align="center">
+  <a href="#chinese"><strong>中文</strong></a> &nbsp;|&nbsp;
+  <a href="#english"><strong>English</strong></a>
+</p>
+
+---
+
+<a id="chinese"></a>
+
 从模版 docx + 文本资料 docx 一键生成格式规范的论文 docx。
 
 ## 核心思路
 
 **格式与内容分离**。模版提供字体/字号/行距/边距，文本资料提供章节/段落/图片/参考文献。流水线自动提取两者，生成 python-docx 构建脚本，最终输出排好版的 docx。
 
-## 推荐配套插件 / Recommended Companion Plugin
+## 推荐配套插件
 
 ### [DOCX Live Preview](https://github.com/Grant-leo/docx-livepreview) — VSCode 中像素级一致的 DOCX 预览
 
@@ -15,16 +24,6 @@
 DOCX Live Preview **直接调用 WPS 引擎渲染**，所见即所得——与 WPS 显示完全一致。专为本项目打造，强烈建议安装。
 
 **安装方式：** VSCode 扩展商店搜索 `DOCX Live Preview` 直接安装；或从 [Releases](https://github.com/Grant-leo/docx-livepreview/releases) 下载 `.vsix`，`Ctrl+Shift+P` → `Extensions: Install from VSIX...`
-
----
-
-When editing docx in VSCode, **other preview extensions render differently from WPS** — shifted fonts, misaligned tables, broken equations. You end up switching back and forth between VSCode and WPS, killing your flow.
-
-DOCX Live Preview **uses WPS as its rendering engine** — what you see is exactly what WPS outputs. Built specifically for this project. Strongly recommended.
-
-**Install:** Search `DOCX Live Preview` in the VSCode Extensions panel (`Ctrl+Shift+X`), or download `.vsix` from [Releases](https://github.com/Grant-leo/docx-livepreview/releases) → `Ctrl+Shift+P` → `Extensions: Install from VSIX...`
-
----
 
 ## 快速开始
 
@@ -50,22 +49,6 @@ python run_pipeline.py --template 模版.docx --content 论文.docx
 ## 架构
 
 四个固定引擎 + 一个动态脚本 + 两个知识库：
-
-```
-+---------------------------+       +---------------------------+
-| format_extractor.py       |       |                           |
-| content_parser.py         |       |   build_generated.py      |
-| script_generator.py       |params |                           |
-|                           |------>|   zero hardcoding         |---> final .docx
-| (fixed engines)           |       |                           |
-+---------------------------+       |   fine-tuned by Claude    |
-                                    |   + 基础操作.md            |
-                                    +---------------------------+
-
- Knowledge Base
- +-- CLAUDE.md       <- AI workflow instructions
- +-- 基础操作.md      <- AI toolbox (all OOXML code snippets)
-```
 
 ```
 ┌──────────────────┐        ┌──────────────────┐
@@ -191,12 +174,181 @@ python Outputs/<目录>/build_generated.py
 - 传统公式工具：`formula_build_matrix()` 传参构建，`formula_text/remove/replace` 对话修改
 - 双验证提取（独立运行两次交叉比对，不一致第三轮仲裁）
 
-## 许可
+---
+
+<a id="english"></a>
+
+Automated academic paper formatting pipeline — from template docx + content docx to a beautifully formatted paper.
+
+## Core Idea
+
+**Separate formatting from content.** Templates define fonts, sizes, line spacing, and margins. Content documents provide chapters, paragraphs, images, and references. The pipeline extracts both, generates a python-docx build script, and outputs a fully formatted docx.
+
+## Recommended Companion Plugin
+
+### [DOCX Live Preview](https://github.com/Grant-leo/docx-livepreview) — Pixel-Perfect DOCX Preview in VSCode
+
+When editing docx in VSCode, **other preview extensions render differently from WPS** — shifted fonts, misaligned tables, broken equations. You end up switching back and forth between VSCode and WPS, killing your flow.
+
+DOCX Live Preview **uses WPS as its rendering engine** — what you see is exactly what WPS outputs. Built specifically for this project. Strongly recommended.
+
+**Install:** Search `DOCX Live Preview` in the VSCode Extensions panel (`Ctrl+Shift+X`), or download `.vsix` from [Releases](https://github.com/Grant-leo/docx-livepreview/releases) → `Ctrl+Shift+P` → `Extensions: Install from VSIX...`
+
+## Quick Start
+
+```bash
+# 1. Install dependencies
+python -m pip install python-docx Pillow
+
+# 2. Place your files
+#    Template docx → Templates/
+#    Content docx  → Inputs/
+
+# 3. Interactive mode
+python run_pipeline.py
+# → Auto-scan files, numbered list for selection
+
+# 4. CLI parameter mode
+python run_pipeline.py --template template.docx --content paper.docx
+# → Direct execution with specified files, no interaction needed
+```
+
+Each run produces an independent directory `Outputs/{date}_{content_name}/`, never overwriting previous results.
+
+## Architecture
+
+Four fixed engines + one dynamic script + two knowledge bases:
+
+```
++---------------------------+       +---------------------------+
+| format_extractor.py       |       |                           |
+| content_parser.py         |       |   build_generated.py      |
+| script_generator.py       |params |                           |
+|                           |------>|   zero hardcoding         |---> final .docx
+| (fixed engines)           |       |                           |
++---------------------------+       |   fine-tuned by Claude    |
+                                    |   + 基础操作.md            |
+                                    +---------------------------+
+
+ Knowledge Base
+ +-- CLAUDE.md       <- AI workflow instructions
+ +-- 基础操作.md      <- AI toolbox (all OOXML code snippets)
+```
+
+- **Four fixed engines**: maintain only, never modify. Parameterized via template/content JSON
+- **latex_omath.py**: standalone LaTeX→OOXML formula converter — write formulas like `.tex`
+- **comment_utils.py**: Word comment system — `comment="advisor: ..."` adds native Word comments
+- **build_generated.py**: zero-hardcoding generated script, AI can fine-tune iteratively
+- **基础操作.md**: continuously maintained code snippet library — the more it's tested, the more AI can do
+- **Missing template features** (e.g. cross-references) → engine won't generate → user requests → AI checks 基础操作.md → adds code → re-run
+
+## Output Structure
+
+Each run produces an independent directory:
+
+```
+Outputs/
+├── 2026-05-06_my_paper/
+│   ├── 格式提取.md          ← verify template formats
+│   ├── 内容提取.md          ← verify content
+│   ├── format.json
+│   ├── content.json
+│   ├── build_generated.py   ← generated script (fine-tunable)
+│   └── final_paper.docx
+├── 2026-05-07_another_paper/
+│   └── ...
+```
+
+## Environment
+
+- Python 3.10+
+- `python -m pip install python-docx Pillow`
+
+## Pipeline Stages
+
+```
+Templates/template.docx → [Phase 1] format_extractor → format.json
+                                                         format_report.md
+
+Inputs/content.docx ──→ [Phase 2] content_parser ──→ content.json
+                    (images → Inputs/xxx/figures/)    content_report.md
+
+format.json ──┬──→ [Phase 3] script_generator ──→ build_generated.py
+content.json ─┘
+
+build_generated.py ──→ [Phase 4] python execution ──→ final_paper.docx
+```
+
+Each stage has built-in dual verification: the extractor runs independently twice, comparing paragraph/table/run counts; a third arbitration run resolves mismatches.
+
+## Fine-Tuning
+
+```bash
+# Open the generated script, modify functions/parameters, re-run
+python Outputs/<directory>/build_generated.py
+```
+
+| Intent | Location |
+|--------|----------|
+| Fix font size / typeface / line spacing | `body()` function |
+| Change heading size / centering | `heading1/2/3()` functions |
+| Reference font size | `D['ref_size']` |
+| Image width | `D['img_width']` |
+| Edit formulas (LaTeX) | `body_with_formula("", [latex_to_omath(r"...")])` |
+| Add comment | `body("text", comment="advisor: ...")` |
+| Add TOC | Uncomment `# insert_toc(doc)` |
+
+## Project Structure
+
+```
+├── run_pipeline.py              ← one-click entry point
+├── CLAUDE.md                    ← AI workflow (auto-loaded by Claude Code)
+├── .claude/settings.json        ← project permissions config (optional)
+├── .gitignore
+├── Templates/                   ← place template docx here
+├── Inputs/                      ← place content docx here
+├── Outputs/                     ← independent sub-directory per run
+└── Paper_Project/
+    ├── 基础操作.md               ← AI toolbox (all OOXML code snippets)
+    └── Program/
+        ├── pipeline/
+        │   ├── format_extractor.py   ← Phase 1: template → format JSON
+        │   ├── content_parser.py     ← Phase 2: content → structured JSON
+        │   ├── script_generator.py   ← Phase 3: JSON → build script
+        │   ├── latex_omath.py        ← LaTeX→OOXML formula converter
+        │   └── comment_utils.py      ← Word comment system
+        ├── build_acta_manuscript.py  ← reference: Acta Materialia journal format
+        ├── build_comprehensive_doc.py ← reference: full feature demo
+        └── master.py                 ← reference: orchestrator skeleton
+```
+
+## Features
+
+- Page setup (A4 + four margins)
+- Cover page (fonts/spacing/tables extracted from template, zero hardcoding)
+- Three-level heading auto-detection (content description > OOXML direct read)
+- Three-line tables (OOXML direct write: top thick / header thin / bottom thick)
+- Cross-references (body [N] blue superscript → reference w:anchor jump)
+- Reference [N] format, hanging indent, auto dedup prefix
+- CJK fonts: auto-detect and set w:eastAsia to prevent fallback
+- A4 auto pagination (dual cpl: Latin + CJK measured separately)
+- Headers & footers (PAGE field code for dynamic page numbers)
+- Image centering + Fig. captions
+- **LaTeX formula conversion**: `latex_to_omath(r"\frac{a}{b}")` — write LaTeX directly → native Word equations
+  Supports fractions/radicals/sums/integrals/matrices/cases/Greek/symbols/arrows/accents/functions/limits/delimiters/brackets/boxes (42+ constructs)
+- **Formula numbering**: `\tag{1.1}`, `\begin{equation}`, `\begin{align}` auto-numbering
+- **Math fonts**: `\mathbb{R}`, `\mathcal{F}` etc.
+- **Word comments**: `body("text", comment="advisor: please confirm")` → native Word comments
+- **TOC**: `insert_toc(doc)` generates Word field codes, right-click to update
+- Traditional formula tools: `formula_build_matrix()` parameterized construction
+- Dual verification extraction (two independent runs cross-compared, third arbitration on mismatch)
+
+---
+
+## 许可 / License
 
 Copyright © 2025 Youwei Zhang
 
-本软件仅供个人学习和研究使用。**未经作者明确书面授权，禁止将本软件用于任何商业目的**，包括但不限于：将本软件或衍生作品作为商业产品、付费服务、SaaS 平台的一部分进行销售、出租、许可或分发。
-
-如需商业使用授权，请联系作者。
+本软件仅供个人学习和研究使用。**未经作者明确书面授权，禁止将本软件用于任何商业目的**，包括但不限于：将本软件或衍生作品作为商业产品、付费服务、SaaS 平台的一部分进行销售、出租、许可或分发。如需商业使用授权，请联系作者。
 
 This software is provided for personal learning and research purposes only. **Commercial use is prohibited without explicit written authorization from the author.**
