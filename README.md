@@ -14,7 +14,7 @@
 
 DOCX Live Preview **直接调用 WPS 引擎渲染**，所见即所得——与 WPS 显示完全一致。专为本项目打造，强烈建议安装。
 
-**安装方式：** 从 [Releases](https://github.com/Grant-leo/docx-livepreview/releases) 下载 `.vsix`，`Ctrl+Shift+P` → `Extensions: Install from VSIX...`
+**安装方式：** VSCode 扩展商店搜索 `DOCX Live Preview` 直接安装；或从 [Releases](https://github.com/Grant-leo/docx-livepreview/releases) 下载 `.vsix`，`Ctrl+Shift+P` → `Extensions: Install from VSIX...`
 
 ---
 
@@ -22,7 +22,7 @@ When editing docx in VSCode, **other preview extensions render differently from 
 
 DOCX Live Preview **uses WPS as its rendering engine** — what you see is exactly what WPS outputs. Built specifically for this project. Strongly recommended.
 
-**Install:** Download `.vsix` from [Releases](https://github.com/Grant-leo/docx-livepreview/releases), then `Ctrl+Shift+P` → `Extensions: Install from VSIX...`
+**Install:** Search `DOCX Live Preview` in the VSCode Extensions panel (`Ctrl+Shift+X`), or download `.vsix` from [Releases](https://github.com/Grant-leo/docx-livepreview/releases) → `Ctrl+Shift+P` → `Extensions: Install from VSIX...`
 
 ---
 
