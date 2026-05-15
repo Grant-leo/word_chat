@@ -860,6 +860,21 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
         l('    return p')
         l('')
 
+    # ═══ SyncTeX source tracking ═══
+    l('')
+    l('# ── SyncTeX source tracking ──')
+    l('from pipeline.sync_tracker import SyncTracker')
+    l('st = SyncTracker(doc)')
+    l('if os.environ.get("DOCX_SYNC_DISABLE", "0") != "1":')
+    l('    body = st.track(body)')
+    l('    heading1 = st.track(heading1)')
+    l('    heading2 = st.track(heading2)')
+    l('    heading3 = st.track(heading3)')
+    if has_images:
+        l('    insert_figure = st.track_multi(insert_figure, count=2)')
+    l('')
+    l('')
+
     # ═══ CONTENT ═══
     l('# ═══════════════════ CONTENT ═══════════════════')
     l('')
