@@ -29,15 +29,17 @@ for d in [TEMPLATE_DIR, INPUTS_DIR, OUTPUTS_DIR]:
 sys.path.insert(0, PIPELINE)
 from format_extractor import extract as extract_format
 from content_parser import extract as extract_content
+from md_parser import extract_format as extract_md_format
+from md_parser import extract_content as extract_md_content
 from script_generator import generate as generate_script
 
 
-def scan_docx(folder):
-    """Return list of .docx files in folder, excluding temp files (~$ prefix)."""
+def scan_inputs(folder, exts=('.docx', '.md')):
+    """Return list of docx/md files in folder, excluding temp files (~$ prefix)."""
     if not os.path.isdir(folder):
         return []
     files = [f for f in os.listdir(folder)
-             if f.endswith('.docx') and not f.startswith('~$')]
+             if any(f.endswith(e) for e in exts) and not f.startswith('~$')]
     return sorted(files)
 
 
@@ -112,30 +114,51 @@ def double_verify(extractor_fn, path, label, **kw):
     return r1
 
 
-def run(template_file, content_file):
-    """Core pipeline: takes filenames, runs all phases, returns output directory."""
-    template_path = os.path.join(TEMPLATE_DIR, template_file)
-    content_path  = os.path.join(INPUTS_DIR, content_file)
+def run(template_file, content_file, md_file=None):
+    """Core pipeline: takes filenames, runs all phases, returns output directory.
 
-    if not os.path.exists(template_path):
-        print(f'[ERROR] 模版文件不存在: {template_path}')
-        return None
-    if not os.path.exists(content_path):
-        print(f'[ERROR] 内容文件不存在: {content_path}')
-        return None
+    If md_file is provided, uses MD file for BOTH format and content (single-file mode).
+    Otherwise routes by file extension: .docx uses existing extractors, .md uses md_parser.
+    """
+    if md_file:
+        # Single-MD mode: same file for format + content
+        md_path = os.path.abspath(md_file) if not os.path.isabs(md_file) else md_file
+        if not os.path.exists(md_path):
+            # Try Inputs/ directory
+            md_path = os.path.join(INPUTS_DIR, md_file)
+        if not os.path.exists(md_path):
+            print(f'[ERROR] MD 文件不存在: {md_file}')
+            return None
+        template_path = md_path
+        content_path = md_path
+        content_name = os.path.splitext(os.path.basename(md_path))[0]
+        use_md_format = True
+        use_md_content = True
+    else:
+        template_path = os.path.join(TEMPLATE_DIR, template_file)
+        content_path  = os.path.join(INPUTS_DIR, content_file)
+        if not os.path.exists(template_path):
+            print(f'[ERROR] 模版文件不存在: {template_path}')
+            return None
+        if not os.path.exists(content_path):
+            print(f'[ERROR] 内容文件不存在: {content_path}')
+            return None
+        content_name = os.path.splitext(content_file)[0]
+        use_md_format = template_file.endswith('.md')
+        use_md_content = content_file.endswith('.md')
 
-    content_name = os.path.splitext(content_file)[0]
     folder_name  = f'{date.today().isoformat()}_{content_name}'
     out_dir      = os.path.join(OUTPUTS_DIR, folder_name)
     os.makedirs(out_dir, exist_ok=True)
 
     print(f'  输出目录: Outputs/{folder_name}/')
-    print(f'  模版: {template_file}')
-    print(f'  内容: {content_file}')
+    print(f'  模版: {os.path.basename(template_path)}')
+    print(f'  内容: {os.path.basename(content_path)}')
 
     # ── Phase 1: Format ──
     step('Phase 1/4: 提取模版格式')
-    fmt, md_text = double_verify(extract_format, template_path, 'Format')
+    fmt_extractor = extract_md_format if use_md_format else extract_format
+    fmt, md_text = double_verify(fmt_extractor, template_path, 'Format')
 
     fmt_json_path = os.path.join(out_dir, 'format.json')
     fmt_md_path   = os.path.join(out_dir, '格式提取.md')
@@ -147,14 +170,15 @@ def run(template_file, content_file):
 
     # ── Phase 2: Content ──
     step('Phase 2/4: 提取文本内容')
-    content = double_verify(extract_content, content_path, 'Content', output_dir=INPUTS_DIR)
+    cnt_extractor = extract_md_content if use_md_content else extract_content
+    content = double_verify(cnt_extractor, content_path, 'Content', output_dir=INPUTS_DIR)
 
     cnt_json_path = os.path.join(out_dir, 'content.json')
     cnt_md_path   = os.path.join(out_dir, '内容提取.md')
     with open(cnt_json_path, 'w', encoding='utf-8') as f:
         json.dump(content, f, ensure_ascii=False, indent=2)
 
-    md = [f'# 内容提取 — {content_file}\n']
+    md = [f'# 内容提取 — {os.path.basename(content_path)}\n']
     for sec in content.get('sections', []):
         md.append(f'## {sec["heading"]}\n')
         for img in sec.get('images', []):
@@ -225,6 +249,7 @@ def main():
     parser = argparse.ArgumentParser(description='Word 论文排版流水线')
     parser.add_argument('--template', '-t', help='模版文件名 (位于 Templates/)')
     parser.add_argument('--content',  '-c', help='内容文件名 (位于 Inputs/)')
+    parser.add_argument('--md', help='单个 MD 文件（含格式+内容，纯 MD 模式）')
     args = parser.parse_args()
 
     print('=' * 50)
@@ -232,20 +257,32 @@ def main():
     print('=' * 50)
 
     # ── Determine files ──
+    if args.md:
+        # Pure MD mode: single file for both format and content
+        run(None, None, md_file=args.md)
+        return
+
     if args.template and args.content:
         # Non-interactive mode (Skill / script)
         template_file = args.template
         content_file  = args.content
     else:
         # Interactive mode (CLI user)
-        templates = scan_docx(TEMPLATE_DIR)
-        contents  = scan_docx(INPUTS_DIR)
+        templates = scan_inputs(TEMPLATE_DIR, exts=('.docx',))
+        contents  = scan_inputs(INPUTS_DIR, exts=('.docx', '.md'))
 
         if not templates:
-            print('\n[ERROR] Templates/ 下没有 .docx 文件，请放入模版文件后重试。')
+            print('\n[INFO] Templates/ 下没有 .docx 文件。')
+            print('  纯 MD 模式请用: python run_pipeline.py --md <文件名>')
+            # Check if there's an MD in Inputs/ we can offer
+            md_files = scan_inputs(INPUTS_DIR, exts=('.md',))
+            if md_files:
+                print(f'\n  Inputs/ 下找到 .md 文件，可直接纯 MD 模式:')
+                for f in md_files:
+                    print(f'    python run_pipeline.py --md {f}')
             return
         if not contents:
-            print('\n[ERROR] Inputs/ 下没有 .docx 文件，请放入内容文件后重试。')
+            print('\n[ERROR] Inputs/ 下没有 .docx 或 .md 文件，请放入内容文件后重试。')
             return
 
         template_file = choose_file(templates, '选择模版')

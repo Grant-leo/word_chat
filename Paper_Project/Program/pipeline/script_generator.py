@@ -312,11 +312,20 @@ def _extract_params(fmt):
     P['_text_rules'] = text_rules  # store for reference
 
     if 'h1' in text_rules:
-        P['h_levels'][0] = {**P['h_levels'][0], **text_rules['h1']} if P['h_levels'] else text_rules['h1']
-    if 'h2' in text_rules and len(P['h_levels']) > 1:
-        P['h_levels'][1] = {**P['h_levels'][1], **text_rules['h2']}
-    if 'h3' in text_rules and len(P['h_levels']) > 2:
-        P['h_levels'][2] = {**P['h_levels'][2], **text_rules['h3']}
+        if P['h_levels']:
+            P['h_levels'][0] = {**P['h_levels'][0], **text_rules['h1']}
+        else:
+            P['h_levels'].append({**text_rules['h1'], 'level': 1, 'space_before': 12})
+    if 'h2' in text_rules:
+        if len(P['h_levels']) > 1:
+            P['h_levels'][1] = {**P['h_levels'][1], **text_rules['h2']}
+        else:
+            P['h_levels'].append({**text_rules['h2'], 'level': 2, 'space_before': 8})
+    if 'h3' in text_rules:
+        if len(P['h_levels']) > 2:
+            P['h_levels'][2] = {**P['h_levels'][2], **text_rules['h3']}
+        else:
+            P['h_levels'].append({**text_rules['h3'], 'level': 3, 'space_before': 6})
 
     if 'body' in text_rules:
         b = text_rules['body']
@@ -650,23 +659,44 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
     usable_cm = P['page_h'] - P['mt'] - P['mb']  # exact theoretical, no fudge needed
 
     l(f'# ── A4 pagination (cpl={cpl}, cpl_cjk={cpl_cjk}, usable={usable_cm:.1f}cm) ──')
+    l("M_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/math'")
     l('def _et(el): return el.tag.split("}")[-1]')
     l('def _is_cjk(c):')
     l("    return '\\u4e00' <= c <= '\\u9fff' or '\\u3400' <= c <= '\\u4dbf' or '\\uf900' <= c <= '\\ufaff'")
+    l('def _formula_h(el, sz):')
+    l('    """Estimate formula height from OOXML math structure."""')
+    l("    n_frac = len(el.findall(f'.//{{{M_NS}}}f'))")
+    l("    n_nary = len(el.findall(f'.//{{{M_NS}}}nary'))")
+    l("    n_rad  = len(el.findall(f'.//{{{M_NS}}}rad'))")
+    l("    n_d    = len(el.findall(f'.//{{{M_NS}}}d'))")
+    l('    return sz * 1.5 * (1.0')
+    l('        + min(n_frac, 4) * 0.8')
+    l('        + min(n_nary, 4) * 0.7')
+    l('        + min(n_rad,  4) * 0.6')
+    l('        + min(n_d,    4) * 0.4)')
     l('def _ph(pe):')
-    l('    txt=""; sz=12.0; ih=0')
+    l('    txt=""; sz=12.0; ih=0; fh=0')
     l('    for re in pe:')
-    l('        if _et(re)!="r": continue')
-    l('        for c in re:')
-    l('            ct=_et(c)')
-    l('            if ct=="t": txt+=(c.text or "")')
-    l('            elif ct=="rPr":')
-    l('                for p in c:')
-    l('                    if _et(p)=="sz": sz=max(sz,float(p.get(qn("w:val"),"24"))/2.0)')
-    l('            elif ct=="drawing":')
-    l('                for il in c:')
-    l('                    for ex in il:')
-    l('                        if _et(ex)=="extent": ih=max(ih,int(ex.get("cy","0")))')
+    l('        tag=_et(re)')
+    l('        if tag=="oMathPara":')
+    l('            fh=max(fh, _formula_h(re, sz))')
+    l('        elif tag=="oMath":')
+    l('            fh=max(fh, _formula_h(re, sz) * 0.65)')
+    l('        elif tag!="r":')
+    l('            continue')
+    l('        else:')
+    l('            for c in re:')
+    l('                ct=_et(c)')
+    l('                if ct=="t": txt+=(c.text or "")')
+    l('                elif ct=="rPr":')
+    l('                    for p in c:')
+    l('                        if _et(p)=="sz": sz=max(sz,float(p.get(qn("w:val"),"24"))/2.0)')
+    l('                elif ct=="drawing":')
+    l('                    for il in c:')
+    l('                        for ex in il:')
+    l('                            if _et(ex)=="extent": ih=max(ih,int(ex.get("cy","0")))')
+    l('    if fh>0:')
+    l('        return max(fh, sz*4.5)')
     l('    if ih>0: return ih/12700.0')
     l(f'    if not txt.strip(): return sz*{P["body_ls"]}')
     l(f'    has_cjk = any(_is_cjk(c) for c in txt)')
@@ -698,6 +728,20 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
     l('        br.set(qn("w:type"),"page"); r.append(br); pb.append(r)')
     l('        body.insert(pos,pb)')
     l('    return len(ins)')
+    l('')
+
+    # ── Always copy comment_utils.py (used by body/heading helpers) ──
+    import shutil
+    pipeline_dir = os.path.dirname(os.path.abspath(__file__))
+    comment_src = os.path.join(pipeline_dir, 'comment_utils.py')
+    if os.path.exists(comment_src):
+        shutil.copy2(comment_src, os.path.join(output_dir, 'comment_utils.py'))
+    l('')
+    l('import sys as _sys; _sys.path.insert(0, BASE)')
+    l('from comment_utils import CommentCollector')
+    l('')
+    l('# ── Comment collector (optional: use comment="text" in body/heading) ──')
+    l('_cc = CommentCollector()')
     l('')
 
     # ── Formula support ──
@@ -787,22 +831,13 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
         l('    return etree.tounicode(omath, with_tail=False)')
         l('')
 
-        # ── Copy latex_omath.py and comment_utils.py to output ──
-        import shutil
-        pipeline_dir = os.path.dirname(os.path.abspath(__file__))
-        for mod in ['latex_omath.py', 'comment_utils.py']:
-            src = os.path.join(pipeline_dir, mod)
-            if os.path.exists(src):
-                shutil.copy2(src, os.path.join(output_dir, mod))
+        # ── Copy latex_omath.py to output ──
+        latex_src = os.path.join(pipeline_dir, 'latex_omath.py')
+        if os.path.exists(latex_src):
+            shutil.copy2(latex_src, os.path.join(output_dir, 'latex_omath.py'))
         l('')
-        l('# ── Imported modules ──')
-        l('import sys as _sys; _sys.path.insert(0, BASE)')
         l('from latex_omath import latex_to_omath, body_latex, formula_text_from_omath')
-        l('from comment_utils import CommentCollector')
         l('')
-        l('# ── Comment collector (optional: use comment=\"text\" in body/heading) ──')
-        l('_cc = CommentCollector()')
-
         l('# ── Formula display helper ──')
         l('def body_with_formula(text, math_xml_list):')
         l('    p = doc.add_paragraph()')
