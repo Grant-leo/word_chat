@@ -9,7 +9,7 @@
 
 <a id="chinese"></a>
 
-从模版 docx + 文本资料 docx 一键生成格式规范的论文 docx。
+从模版 docx + 文本资料 docx（或 Markdown）一键生成格式规范的论文 docx。
 
 ## 核心思路
 
@@ -33,18 +33,73 @@ python -m pip install python-docx Pillow
 
 # 2. 放入文件
 #    模版 docx → Templates/
-#    内容 docx → Inputs/
+#    内容 docx 或 .md → Inputs/
 
 # 3. 交互模式（终端用户）
 python run_pipeline.py
 # → 自动扫描文件，编号列表供选择
 
-# 4. 参数模式（脚本调用）
+# 4. 参数模式 — DOCX 模板 + DOCX 内容
 python run_pipeline.py --template 模版.docx --content 论文.docx
-# → 指定文件名直接运行，无需交互
+
+# 5. 参数模式 — DOCX 模板 + Markdown 内容
+python run_pipeline.py --template 模版.docx --content 论文.md
+
+# 6. 纯 MD 模式（格式说明 + 内容都在一个 .md 文件里）
+python run_pipeline.py --md 论文.md
 ```
 
 每次运行生成独立目录 `Outputs/{日期}_{内容名}/`，互不覆盖。
+
+### Markdown 文件格式
+
+纯 MD 模式下，一个 `.md` 文件同时承载格式说明和论文内容：
+
+```markdown
+# 格式说明
+
+一级标题：黑体，小三号(15pt)，加粗，居中，段前12pt。
+正文：Times New Roman，小四号(12pt)，两端对齐，1.5倍行距。
+页面：A4，上2.5cm，下2.4cm，左2.8cm，右2.2cm。
+
+---
+
+# 论文标题
+
+## Abstract
+
+正文内容...
+
+## 1. Introduction
+
+内联公式：$E = mc^2$
+
+显示公式：
+$$
+\int_0^\infty e^{-x^2} dx = \frac{\sqrt{\pi}}{2}
+$$
+
+图片：![fig1](./images/chart.png)
+
+## References
+
+[1] Author. Title [J]. Journal, Year.
+```
+
+也可用 YAML frontmatter 替代自然语言格式说明：
+
+```yaml
+---
+body_font: Times New Roman
+body_size: 12
+body_cjk_font: 宋体
+heading1_size: 15
+heading1_font: 黑体
+page_width_cm: 21.0
+---
+```
+
+如果完全不写格式说明，流水线使用默认值：A4、Times New Roman 12pt、1.5 倍行距。
 
 ## 架构
 
@@ -67,6 +122,7 @@ python run_pipeline.py --template 模版.docx --content 论文.docx
 ```
 
 - **四个固定引擎**：只需维护，不改动。通过 template/content JSON 传参
+- **md_parser.py**：Markdown 解析器，从 `.md` 文件同时提取格式说明和论文内容
 - **latex_omath.py**：独立 LaTeX→OOXML 公式转换器，像写 `.tex` 一样写公式
 - **comment_utils.py**：Word 批注系统，`comment="导师: ..."` 即可添加批注
 - **build_generated.py**：引擎生成的零硬编码脚本，AI 可在此基础上对话微调
@@ -99,10 +155,10 @@ Outputs/
 
 ```
 Templates/模版.docx ──→ [Phase 1] format_extractor ──→ format.json
-                                                         格式提取.md
+    或 .md (# 格式说明)      或 md_parser              格式提取.md
 
-Inputs/内容.docx ──→ [Phase 2] content_parser ──→ content.json
-                    (图片 → Inputs/xxx/figures/)    内容提取.md
+Inputs/内容.docx/.md ──→ [Phase 2] content_parser ──→ content.json
+                       或 md_parser                 内容提取.md
 
 format.json ──┬──→ [Phase 3] script_generator ──→ build_generated.py
 content.json ─┘
@@ -145,6 +201,7 @@ python Outputs/<目录>/build_generated.py
         ├── pipeline/
         │   ├── format_extractor.py   ← Phase 1: 模版 → 格式 JSON
         │   ├── content_parser.py     ← Phase 2: 内容 → 结构化 JSON
+        │   ├── md_parser.py          ← MD 解析（格式 + 内容）
         │   ├── script_generator.py   ← Phase 3: JSON → 生成脚本
         │   ├── latex_omath.py        ← LaTeX→OOXML 公式转换器
         │   └── comment_utils.py      ← Word 批注系统
@@ -155,6 +212,7 @@ python Outputs/<目录>/build_generated.py
 
 ## 功能
 
+- **Markdown 内容支持**：`.md` 文件可直接作为内容输入，内置 `# 格式说明` 或 YAML frontmatter 描述排版参数
 - 页面设置 (A4 + 四边距)
 - 封面（字体/空行/表格全从模版提取，零硬编码）
 - 三级标题自动检测（正文说明 > OOXML 直读）
@@ -202,15 +260,20 @@ python -m pip install python-docx Pillow
 
 # 2. Place your files
 #    Template docx → Templates/
-#    Content docx  → Inputs/
+#    Content docx or .md → Inputs/
 
 # 3. Interactive mode
 python run_pipeline.py
 # → Auto-scan files, numbered list for selection
 
-# 4. CLI parameter mode
+# 4. CLI — DOCX template + DOCX content
 python run_pipeline.py --template template.docx --content paper.docx
-# → Direct execution with specified files, no interaction needed
+
+# 5. CLI — DOCX template + Markdown content
+python run_pipeline.py --template template.docx --content paper.md
+
+# 6. Pure MD mode (format + content in one .md file)
+python run_pipeline.py --md paper.md
 ```
 
 Each run produces an independent directory `Outputs/{date}_{content_name}/`, never overwriting previous results.
@@ -236,6 +299,7 @@ Four fixed engines + one dynamic script + two knowledge bases:
 ```
 
 - **Four fixed engines**: maintain only, never modify. Parameterized via template/content JSON
+- **md_parser.py**: Markdown parser — extracts both format specs and content from `.md` files
 - **latex_omath.py**: standalone LaTeX→OOXML formula converter — write formulas like `.tex`
 - **comment_utils.py**: Word comment system — `comment="advisor: ..."` adds native Word comments
 - **build_generated.py**: zero-hardcoding generated script, AI can fine-tune iteratively
@@ -314,6 +378,7 @@ python Outputs/<directory>/build_generated.py
         ├── pipeline/
         │   ├── format_extractor.py   ← Phase 1: template → format JSON
         │   ├── content_parser.py     ← Phase 2: content → structured JSON
+        │   ├── md_parser.py          ← MD parser (format + content)
         │   ├── script_generator.py   ← Phase 3: JSON → build script
         │   ├── latex_omath.py        ← LaTeX→OOXML formula converter
         │   └── comment_utils.py      ← Word comment system
@@ -324,6 +389,7 @@ python Outputs/<directory>/build_generated.py
 
 ## Features
 
+- **Markdown content support**: `.md` files as content input, with built-in `# 格式说明` section or YAML frontmatter for format specification
 - Page setup (A4 + four margins)
 - Cover page (fonts/spacing/tables extracted from template, zero hardcoding)
 - Three-level heading auto-detection (content description > OOXML direct read)

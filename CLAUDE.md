@@ -25,13 +25,20 @@ If missing: `python -m pip install python-docx Pillow`.
 
 ### 2. Check Files
 ```bash
-ls Templates/*.docx Inputs/*.docx
+ls Templates/*.docx Inputs/*.docx Inputs/*.md 2>/dev/null
 ```
-If no .docx files, tell the user to put them in Templates/ and Inputs/.
+If no .docx or .md files, tell the user to put them in Templates/ and Inputs/.
 
 ### 3. Run Pipeline
 ```bash
+# DOCX template + DOCX content
 python run_pipeline.py --template <模板文件名> --content <内容文件名>
+
+# DOCX template + MD content
+python run_pipeline.py --template <模板文件名> --content <md文件名>
+
+# Pure MD mode (format + content in one .md)
+python run_pipeline.py --md <md文件名>
 ```
 Or interactive: `python run_pipeline.py`
 
@@ -113,6 +120,7 @@ run_pipeline.py              ← One-click entry
 Paper_Project/Program/pipeline/
     format_extractor.py       ← Phase 1: template → format JSON
     content_parser.py         ← Phase 2: content → structured JSON
+    md_parser.py              ← MD parser (format + content from .md)
     script_generator.py       ← Phase 3: JSON → build_generated.py
     latex_omath.py            ← LaTeX→OOXML formula converter
     comment_utils.py          ← Word comment injection system
@@ -125,10 +133,10 @@ build_comprehensive_doc.py    ← Reference: all features demo
 
 ```
 Templates/模版.docx ──→ format_extractor ──→ Outputs/format.json
-                                              Outputs/格式提取.md
+    or .md (# 格式说明)     or md_parser         Outputs/格式提取.md
 
-Inputs/内容.docx ──→ content_parser ──→ Outputs/content.json
-                    (extract images)      Outputs/内容提取.md
+Inputs/内容.docx/.md ──→ content_parser ──→ Outputs/content.json
+                        or md_parser          Outputs/内容提取.md
 
 format.json ──┬──→ script_generator ──→ build_generated.py
 content.json ─┘
