@@ -678,7 +678,7 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
     l('    tr._element.append(fld_begin)')
     l('    instr = OxmlElement("w:instrText")')
     l('    instr.set(qn("xml:space"), "preserve")')
-    l("    instr.text = ' TOC \\o \"1-3\" \\h \\z \\u '")
+    l("    instr.text = ' TOC \\\\o \"1-3\" \\\\h \\\\z \\\\u '")
     l('    tr._element.append(instr)')
     l('    fld_sep = OxmlElement("w:fldChar")')
     l('    fld_sep.set(qn("w:fldCharType"), "separate")')
@@ -1301,6 +1301,32 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
                         l(f"    '{_q(m['xml'])}',")
                 l('])')
                 continue
+            # Table paragraph (from content extraction)
+            if isinstance(para, dict) and para.get('table_rows'):
+                _rows = para['table_rows']
+                _nrows = len(_rows)
+                _ncols = max(len(r) for r in _rows) if _rows else 2
+                l(f't = doc.add_table(rows={_nrows}, cols={_ncols})')
+                # Set table style to match body font
+                l('for _ri, _row_data in enumerate([')
+                for _row in _rows:
+                    l(f"    [{', '.join(repr(c) for c in _row)}],")
+                l(']):')
+                l('    for _ci, _cell_text in enumerate(_row_data):')
+                l('        _cell = t.rows[_ri].cells[_ci]')
+                l('        _cell.text = ""')
+                l(f'        _r = _cell.paragraphs[0].add_run(_cell_text)')
+                _body_font = P.get('body_font', '宋体')
+                _body_size = P.get('body_size', 12)
+                l(f'        _r.font.size = Pt({_body_size}); _r.font.name = "{_body_font}"')
+                l(f'        _rp = _r._element.get_or_add_rPr()')
+                l(f'        _rf = _rp.find(qn("w:rFonts"))')
+                l(f'        if _rf is None: _rf = OxmlElement("w:rFonts"); _rp.insert(0, _rf)')
+                _cjk = P.get('cjk_font', '宋体')
+                l(f'        _rf.set(qn("w:eastAsia"), "{_cjk}"); _rf.set(qn("w:hint"), "eastAsia")')
+                l('')
+                continue
+
             # Regular text paragraph
             p = (para if isinstance(para, str) else para.get('text', '')).strip()
             if not p or len(p) < 5:

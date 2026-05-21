@@ -265,55 +265,79 @@ def extract(docx_path, output_dir='Inputs'):
         content['title_info']['title_cn'] = cover_info['paper_title']
 
     # ── Parse sections ──
+    W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
     current_section = {'heading': '正文', 'level': 1, 'paragraphs': [], 'images': []}
     sections = [current_section]
     ref_section = None
 
-    for p in doc.paragraphs[text_start:]:
-        text = p.text.strip()
-        level = detect_heading_level(p)
+    # Skip body elements before text_start
+    _body_children = list(doc.element.body)
+    _p_idx = 0  # paragraph index in body children
+    _started = False
+    for _child in _body_children:
+        _tag = _child.tag.split('}')[-1]
 
-        # Detect references section
-        if re.match(r'(?i)^references?\b', text) or text.startswith('参考文献'):
-            ref_section = {'heading': text, 'entries': []}
-            continue
-
-        if level > 0:
-            # Clean heading text: remove inline formatting notes
-            clean_heading = text.split('（')[0].strip()
-            if not clean_heading:
+        if _tag == 'p':
+            if _p_idx < text_start:
+                _p_idx += 1
                 continue
-            # Check for label-style headings (Abstract:, Key words:, 摘要：, 关键词：)
-            # that may have inline body text — split at any paragraph length
-            m = re.match(r'(?i)^(Abstract\s*:?|Key\s*words?\s*:?|摘要\s*[：:]|关键词\s*[：:])\s*', text)
-            if m:
-                heading_part = m.group(1).strip()
-                body_part = text[m.end():].strip()
-                # Remove leading formatting notes
-                body_part = re.sub(r'^[（(][^）)]*[）)]\s*', '', body_part)
+            _started = True
+            p = doc.paragraphs[_p_idx]
+            _p_idx += 1
+            text = p.text.strip()
+
+            level = detect_heading_level(p)
+
+            if re.match(r'(?i)^references?\b', text) or text.startswith('参考文献'):
+                ref_section = {'heading': text, 'entries': []}
+                continue
+
+            if level > 0:
+                clean_heading = text.split('（')[0].strip()
+                if not clean_heading:
+                    continue
+                m = re.match(r'(?i)^(Abstract\s*:?|Key\s*words?\s*:?|摘要\s*[：:]|关键词\s*[：:])\s*', text)
+                if m:
+                    heading_part = m.group(1).strip()
+                    body_part = text[m.end():].strip()
+                    body_part = re.sub(r'^[（(][^）)]*[）)]\s*', '', body_part)
+                else:
+                    heading_part = clean_heading
+                    body_part = ''
+                current_section = {'heading': heading_part, 'level': level, 'paragraphs': [], 'images': []}
+                sections.append(current_section)
+                if body_part:
+                    current_section['paragraphs'].append(body_part)
+            elif ref_section is not None:
+                if text:
+                    ref_section['entries'].append(text)
             else:
-                heading_part = clean_heading
-                body_part = ''
-            current_section = {'heading': heading_part, 'level': level, 'paragraphs': [], 'images': []}
-            sections.append(current_section)
-            if body_part:
-                current_section['paragraphs'].append(body_part)
-        elif ref_section is not None:
-            # In references section
-            if text:
-                ref_section['entries'].append(text)
-        else:
-            # Body paragraph — check for math formulas
-            imgs = extract_images_from_para(p, fig_dir, f'{base}_img')
-            current_section['images'].extend(imgs)
-            clean_text, math_list = extract_math(p)
-            if math_list:
-                current_section['paragraphs'].append({
-                    'text': clean_text,
-                    'math': math_list,
-                })
-            elif clean_text:
-                current_section['paragraphs'].append(clean_text)
+                imgs = extract_images_from_para(p, fig_dir, f'{base}_img')
+                current_section['images'].extend(imgs)
+                clean_text, math_list = extract_math(p)
+                if math_list:
+                    current_section['paragraphs'].append({
+                        'text': clean_text,
+                        'math': math_list,
+                    })
+                elif clean_text:
+                    current_section['paragraphs'].append(clean_text)
+
+        elif _tag == 'tbl' and _started:
+            # Body table — extract rows/cells
+            _rows = []
+            for _tr in _child.findall(f'{{{W}}}tr'):
+                _cells = []
+                for _tc in _tr.findall(f'{{{W}}}tc'):
+                    _ct = ''
+                    for _p in _tc.findall(f'{{{W}}}p'):
+                        for _r in _p.findall(f'{{{W}}}r'):
+                            for _t in _r.findall(f'{{{W}}}t'):
+                                _ct += _t.text or ''
+                    _cells.append(_ct.strip())
+                _rows.append(_cells)
+            if _rows:
+                current_section['paragraphs'].append({'table_rows': _rows})
 
     if ref_section and ref_section['entries']:
         content['references'] = ref_section['entries']
