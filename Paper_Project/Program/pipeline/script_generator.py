@@ -506,54 +506,9 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
     l(f'    sec.left_margin   = Cm({P["ml"]})')
     l(f'    sec.right_margin  = Cm({P["mr"]})')
     l('')
-    l('# Footer: PAGE field code')
-    l("sec = doc.sections[0]")
-    l("footer = sec.footer; footer.is_linked_to_previous = False")
-    l("fp = footer.paragraphs[0]; fp.alignment = WD_ALIGN_PARAGRAPH.CENTER")
-    _ftr_font = D.get('footer_font', '宋体')
-    _ftr_size = D.get('footer_size', 9)
-    l(f"rf = fp.add_run(); rf.font.size = Pt({_ftr_size}); rf.font.name = '{_ftr_font}'")
-    l('rp = rf._element.get_or_add_rPr()')
-    l('rf2 = rp.find(qn("w:rFonts"))')
-    l('if rf2 is None: rf2 = OxmlElement("w:rFonts"); rp.insert(0, rf2)')
-    l(f'rf2.set(qn("w:eastAsia"), "{_ftr_font}"); rf2.set(qn("w:hint"), "eastAsia")')
-    l('for tag, attrs in [("w:fldChar", {qn("w:fldCharType"): "begin"}),')
-    l('                   ("w:instrText", {}),')
-    l('                   ("w:fldChar", {qn("w:fldCharType"): "end"})]:')
-    l('    el = OxmlElement(tag)')
-    l('    for k, v in attrs.items(): el.set(k, v)')
-    l('    if tag == "w:instrText":')
-    l('        el.set(qn("xml:space"), "preserve"); el.text = " PAGE "')
-    l('    rf._element.append(el)')
+    l('# Footer and header will be set after cover section (below)')
+    l('# (cover section has no header/footer)')
     l('')
-
-    # ═══ HEADER ═══
-    if P['header']:
-        h = P['header']
-        l('# Running header')
-        l("hdr = sec.header; hdr.is_linked_to_previous = False")
-        _hdr_align = h['align'] if h['align'] in ('LEFT','CENTER','RIGHT','JUSTIFY','DISTRIBUTE') else 'CENTER'
-        l(f"hp = hdr.paragraphs[0]; hp.alignment = WD_ALIGN_PARAGRAPH.{_hdr_align}")
-        _hdr_font = h.get('font') or '宋体'
-        _hdr_size = h.get('size') or 9
-        l(f"r = hp.add_run('{h['text']}')")
-        l(f"r.font.size = Pt({_hdr_size}); r.font.name = '{_hdr_font}'")
-        l('rp = r._element.get_or_add_rPr()')
-        l('rf = rp.find(qn("w:rFonts"))')
-        l('if rf is None: rf = OxmlElement("w:rFonts"); rp.insert(0, rf)')
-        l(f'rf.set(qn("w:eastAsia"), "{_hdr_font}"); rf.set(qn("w:hint"), "eastAsia")')
-        l(f"r.bold = {h['bold']}; r.italic = {h['italic']}")
-        l('# Header bottom border (horizontal line)')
-        l('pPr = hp._element.get_or_add_pPr()')
-        l('pBdr = OxmlElement("w:pBdr")')
-        l('bottom = OxmlElement("w:bottom")')
-        l('bottom.set(qn("w:val"), "single")')
-        l('bottom.set(qn("w:sz"), "4")')
-        l('bottom.set(qn("w:space"), "1")')
-        l('bottom.set(qn("w:color"), "auto")')
-        l('pBdr.append(bottom)')
-        l('pPr.append(pBdr)')
-        l('')
 
     # ═══ DEFAULT STYLE ═══
     l('# Default paragraph style')
@@ -1242,6 +1197,64 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
         l('')
     else:
         l('# (no cover elements found in template)')
+        l('')
+
+    # Section break: cover has no header/footer, body does
+    l('# ── Section break: cover -> body ──')
+    l('doc.add_section()')
+    l('sec = doc.sections[-1]')
+    l('# Re-apply page setup to new section')
+    l(f'sec.page_width = Cm({P["page_w"]}); sec.page_height = Cm({P["page_h"]})')
+    l(f'sec.top_margin = Cm({P["mt"]}); sec.bottom_margin = Cm({P["mb"]})')
+    l(f'sec.left_margin = Cm({P["ml"]}); sec.right_margin = Cm({P["mr"]})')
+    l('')
+
+    # Footer for body section
+    l('# Footer: PAGE field code (body section)')
+    l("footer = sec.footer; footer.is_linked_to_previous = False")
+    l("fp = footer.paragraphs[0]; fp.alignment = WD_ALIGN_PARAGRAPH.CENTER")
+    _ftr_font = D.get('footer_font', '宋体')
+    _ftr_size = D.get('footer_size', 9)
+    l(f"rf = fp.add_run(); rf.font.size = Pt({_ftr_size}); rf.font.name = '{_ftr_font}'")
+    l('rp = rf._element.get_or_add_rPr()')
+    l('rf2 = rp.find(qn("w:rFonts"))')
+    l('if rf2 is None: rf2 = OxmlElement("w:rFonts"); rp.insert(0, rf2)')
+    l(f'rf2.set(qn("w:eastAsia"), "{_ftr_font}"); rf2.set(qn("w:hint"), "eastAsia")')
+    l('for tag, attrs in [("w:fldChar", {qn("w:fldCharType"): "begin"}),')
+    l('                   ("w:instrText", {}),')
+    l('                   ("w:fldChar", {qn("w:fldCharType"): "end"})]:')
+    l('    el = OxmlElement(tag)')
+    l('    for k, v in attrs.items(): el.set(k, v)')
+    l('    if tag == "w:instrText":')
+    l('        el.set(qn("xml:space"), "preserve"); el.text = " PAGE "')
+    l('    rf._element.append(el)')
+    l('')
+    # Header for body section
+    if P['header']:
+        h = P['header']
+        l('# Running header (body section)')
+        l("hdr = sec.header; hdr.is_linked_to_previous = False")
+        _hdr_align = h['align'] if h['align'] in ('LEFT','CENTER','RIGHT','JUSTIFY','DISTRIBUTE') else 'CENTER'
+        l(f"hp = hdr.paragraphs[0]; hp.alignment = WD_ALIGN_PARAGRAPH.{_hdr_align}")
+        _hdr_font = h.get('font') or '宋体'
+        _hdr_size = h.get('size') or 9
+        l(f"r = hp.add_run('{h['text']}')")
+        l(f"r.font.size = Pt({_hdr_size}); r.font.name = '{_hdr_font}'")
+        l('rp = r._element.get_or_add_rPr()')
+        l('rf = rp.find(qn("w:rFonts"))')
+        l('if rf is None: rf = OxmlElement("w:rFonts"); rp.insert(0, rf)')
+        l(f'rf.set(qn("w:eastAsia"), "{_hdr_font}"); rf.set(qn("w:hint"), "eastAsia")')
+        l(f"r.bold = {h['bold']}; r.italic = {h['italic']}")
+        l('# Header bottom border (horizontal line)')
+        l('pPr = hp._element.get_or_add_pPr()')
+        l('pBdr = OxmlElement("w:pBdr")')
+        l('bottom = OxmlElement("w:bottom")')
+        l('bottom.set(qn("w:val"), "single")')
+        l('bottom.set(qn("w:sz"), "4")')
+        l('bottom.set(qn("w:space"), "1")')
+        l('bottom.set(qn("w:color"), "auto")')
+        l('pBdr.append(bottom)')
+        l('pPr.append(pBdr)')
         l('')
 
     # Insert TOC after cover page
