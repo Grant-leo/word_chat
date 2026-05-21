@@ -678,7 +678,7 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
     l('    tr._element.append(fld_begin)')
     l('    instr = OxmlElement("w:instrText")')
     l('    instr.set(qn("xml:space"), "preserve")')
-    l("    instr.text = ' TOC \\\\o \"1-3\" \\\\h \\\\z \\\\u '")
+    l("    instr.text = ' TOC \\o \"1-3\" \\h \\z \\u '")
     l('    tr._element.append(instr)')
     l('    fld_sep = OxmlElement("w:fldChar")')
     l('    fld_sep.set(qn("w:fldCharType"), "separate")')
