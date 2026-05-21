@@ -3,6 +3,13 @@ format_extractor.py — OOXML-direct format extraction with style resolution.
 Solves python-docx API limitation: no more None values from style inheritance.
 """
 import json, os, hashlib, re
+from io import BytesIO
+
+try:
+    from PIL import Image
+except Exception:
+    Image = None
+
 from docx import Document
 from docx.oxml.ns import qn
 from lxml import etree
@@ -492,6 +499,43 @@ def extract(docx_path):
     return fmt, '\n'.join(md_lines)
 
 
+def _crop_blob_by_src_rect(blob, src_rect, ext):
+    if not src_rect or Image is None:
+        return blob, ext
+    try:
+        img = Image.open(BytesIO(blob))
+        w, h = img.size
+        l = int(src_rect.get('l', 0) or 0) / 100000.0
+        t = int(src_rect.get('t', 0) or 0) / 100000.0
+        r = int(src_rect.get('r', 0) or 0) / 100000.0
+        b = int(src_rect.get('b', 0) or 0) / 100000.0
+        box = (
+            max(0, int(w * l)),
+            max(0, int(h * t)),
+            min(w, int(w * (1 - r))),
+            min(h, int(h * (1 - b))),
+        )
+        if box[2] <= box[0] or box[3] <= box[1]:
+            return blob, ext
+        out = BytesIO()
+        img.crop(box).save(out, format='PNG')
+        return out.getvalue(), 'png'
+    except Exception:
+        return blob, ext
+
+
+def _save_cover_image_asset(rel, assets_dir, idx, src_rect):
+    ext = rel.target_ref.rsplit('.', 1)[-1].lower() if '.' in rel.target_ref else 'png'
+    if ext not in ('png', 'jpg', 'jpeg', 'bmp', 'gif', 'tiff'):
+        ext = 'png'
+    blob, ext = _crop_blob_by_src_rect(rel.target_part.blob, src_rect, ext)
+    fname = f'cover_img_{idx:03d}.{ext}'
+    fpath = os.path.join(assets_dir, fname)
+    with open(fpath, 'wb') as f:
+        f.write(blob)
+    return fname
+
+
 def _extract_cover(doc, assets_dir=None):
     """Walk template body from start, extract cover+declaration elements with full formatting.
     Stops at abstract/TOC/body content. Returns list of element dicts or [] if no cover."""
@@ -504,7 +548,7 @@ def _extract_cover(doc, assets_dir=None):
         os.makedirs(assets_dir, exist_ok=True)
     image_counter = 0
 
-    def _save_image_by_rid(rid):
+    def _save_image_by_rid(rid, src_rect=None):
         nonlocal image_counter
         if not rid or rid not in doc.part.rels:
             return None
@@ -514,12 +558,15 @@ def _extract_cover(doc, assets_dir=None):
         ext = rel.target_ref.rsplit('.', 1)[-1].lower() if '.' in rel.target_ref else 'png'
         if ext not in ('png', 'jpg', 'jpeg', 'gif', 'bmp', 'tif', 'tiff', 'emf', 'wmf'):
             ext = 'png'
+        blob = rel.target_part.blob
+        if src_rect:
+            blob, ext = _crop_blob_by_src_rect(blob, src_rect, ext)
         image_counter += 1
         fname = f'cover_img_{image_counter:03d}.{ext}'
         if assets_dir:
             fpath = os.path.join(assets_dir, fname)
             with open(fpath, 'wb') as f:
-                f.write(rel.target_part.blob)
+                f.write(blob)
             return fname
         return fname
 
@@ -539,7 +586,7 @@ def _extract_cover(doc, assets_dir=None):
                     break
             if rid:
                 break
-        asset = _save_image_by_rid(rid) if rid else None
+        asset = _save_image_by_rid(rid, src_rect) if rid else None
         if not asset:
             return None
         return {'asset': asset, 'extent': extent, 'srcRect': src_rect, 'rEmbed': rid}

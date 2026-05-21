@@ -676,10 +676,66 @@ def set_cell_borders(cell, **sides):
     tcPr.append(tcB)
 
 
+def render_school_or_degree_code_line(el, first_key):
+    """学校编码/学位编码不要按两列表格渲染，直接渲染为左侧一行。"""
+    cover_info = DATA.get('cover_info') or {}
+
+    code_value = ''
+    if '学校编码' in first_key:
+        code_value = cover_info.get('school_code', '') or cover_info.get('degree_code', '')
+        label = '学校编码：'
+    else:
+        code_value = cover_info.get('degree_code', '') or cover_info.get('school_code', '')
+        label = '学位编码：'
+
+    if not code_value:
+        try:
+            code_value = ''.join(
+                r.get('t', '')
+                for r in el.get('rows', [])[0][1].get('p', [])[0].get('r', [])
+            ).strip()
+        except Exception:
+            code_value = ''
+
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    p.paragraph_format.left_indent = Cm(0)
+    p.paragraph_format.first_line_indent = Cm(0)
+
+    rd_label = {}
+    rd_value = {}
+    try:
+        rd_label = el['rows'][0][0]['p'][0]['r'][0]
+    except Exception:
+        pass
+    try:
+        rd_value = el['rows'][0][1]['p'][0]['r'][0]
+    except Exception:
+        pass
+
+    r1 = p.add_run(label)
+    apply_cover_run(r1, rd_label)
+
+    r2 = p.add_run('    ' + code_value)
+    apply_cover_run(r2, rd_value or rd_label)
+
+    return p
+
+
 def render_cover_table(el):
     rows = el.get('rows', [])
     if not rows:
         return None
+
+    first_key = ''
+    if rows and rows[0] and rows[0][0].get('p'):
+        first_key = normalize_label(
+            ''.join(r.get('t', '') for r in rows[0][0]['p'][0].get('r', []))
+        )
+
+    if '学校编码' in first_key or '学位编码' in first_key:
+        return render_school_or_degree_code_line(el, first_key)
+
     ncols = max(len(r) for r in rows)
     table = doc.add_table(rows=len(rows), cols=ncols)
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
@@ -739,6 +795,18 @@ def render_cover_table(el):
     return table
 
 
+def is_empty_cover_element(el):
+    return el.get('type') == 'empty' and not para_text_from_cover_el(el).strip()
+
+
+def next_nonempty_cover_text(cover, idx):
+    for j in range(idx + 1, len(cover)):
+        t = para_text_from_cover_el(cover[j]).strip()
+        if t:
+            return t
+    return ''
+
+
 def render_cover_and_declarations():
     setup_section(doc.sections[0])
     clear_header_footer(doc.sections[0])
@@ -746,17 +814,30 @@ def render_cover_and_declarations():
     if not cover:
         return add_section_with_header('upperRoman', 1)
     front_started = False
-    for el in cover:
+    empty_run = 0
+    for idx, el in enumerate(cover):
         text = para_text_from_cover_el(el)
+
+        if is_empty_cover_element(el):
+            empty_run += 1
+            next_text = next_nonempty_cover_text(cover, idx)
+            if '论文题目' in next_text and empty_run > 1:
+                continue
+            if '学位评定委员会' in next_text and empty_run > 1:
+                continue
+        else:
+            empty_run = 0
+
+        if (not front_started) and ('原创性声明' in text or '版权使用授权书' in text):
+            front_started = True
+            add_section_with_header('upperRoman', 1)
+
         if el.get('type') in ('para', 'empty'):
             render_cover_para(el)
         elif el.get('type') == 'table':
             render_cover_table(el)
         elif el.get('type') == 'image':
             render_cover_image(el)
-        if (not front_started) and ('学位评定委员会' in text or '委员会' in text):
-            front_started = True
-            add_section_with_header('upperRoman', 1)
     if not front_started:
         add_section_with_header('upperRoman', 1)
     return doc.sections[-1]
