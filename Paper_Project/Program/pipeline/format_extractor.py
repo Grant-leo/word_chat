@@ -2,7 +2,7 @@
 format_extractor.py — OOXML-direct format extraction with style resolution.
 Solves python-docx API limitation: no more None values from style inheritance.
 """
-import json, os, hashlib
+import json, os, hashlib, re
 from docx import Document
 from docx.oxml.ns import qn
 from lxml import etree
@@ -23,6 +23,212 @@ def _pt(half_pts_str):
 def _emu_to_pt(emu):
     try: return round(int(emu) / 12700, 1)
     except: return None
+
+
+def _twips_to_pt(v):
+    try: return round(int(v) / 20.0, 2)
+    except Exception: return None
+
+def _twips_to_cm(v):
+    try: return round(int(v) / 567.0, 2)
+    except Exception: return None
+
+def _paragraph_metrics(p_elem):
+    """Extract paragraph metrics directly from OOXML.
+
+    Returns both Word-style raw values and python-friendly normalized values.
+    The important part is preserving fixed line spacing: w:line="560"
+    with w:lineRule="exact" means exactly 28 pt, not a 2.33 multiple.
+    """
+    info = {
+        'alignment': 'DEFAULT', 'line_spacing_val': None, 'line_spacing_rule': None,
+        'line_spacing_fixed_pt': None, 'space_before_pt': None, 'space_after_pt': None,
+        'first_indent_cm': 0,
+    }
+    pPr = p_elem.find(qn('w:pPr'))
+    if pPr is None:
+        return info
+    jc = pPr.find(qn('w:jc'))
+    if jc is not None:
+        v = _val(jc)
+        info['alignment'] = {'left':'LEFT','center':'CENTER','right':'RIGHT','both':'JUSTIFY','distribute':'DISTRIBUTE'}.get(v, 'DEFAULT')
+    spacing = pPr.find(qn('w:spacing'))
+    if spacing is not None:
+        line = spacing.get(qn('w:line'))
+        rule = spacing.get(qn('w:lineRule'))
+        info['line_spacing_rule'] = rule
+        if line:
+            try:
+                n = int(line)
+                if rule in ('exact', 'atLeast'):
+                    info['line_spacing_fixed_pt'] = round(n / 20.0, 2)
+                    info['line_spacing_val'] = info['line_spacing_fixed_pt']
+                else:
+                    info['line_spacing_val'] = round(n / 240.0, 4)
+            except Exception:
+                pass
+        info['space_before_pt'] = _twips_to_pt(spacing.get(qn('w:before')))
+        info['space_after_pt'] = _twips_to_pt(spacing.get(qn('w:after')))
+    ind = pPr.find(qn('w:ind'))
+    if ind is not None:
+        fi = ind.get(qn('w:firstLine'))
+        if fi:
+            info['first_indent_cm'] = _twips_to_cm(fi) or 0
+    return info
+
+
+def _first_real_run(p):
+    for r in p.get('runs', []):
+        if r.get('text', '').strip() or r.get('size_pt'):
+            return r
+    return (p.get('runs') or [{}])[0] if p.get('runs') else {}
+
+
+def _profile_from_paragraph(p):
+    r = _first_real_run(p)
+    return {
+        'font': r.get('font') or '宋体',
+        'size': r.get('size_pt') or 12,
+        'bold': bool(r.get('bold', False)),
+        'italic': bool(r.get('italic', False)),
+        'align': p.get('alignment') or p.get('align') or 'LEFT',
+        'line_spacing_val': p.get('line_spacing_val') or p.get('ls'),
+        'line_spacing_rule': p.get('line_spacing_rule'),
+        'line_spacing_fixed_pt': p.get('line_spacing_fixed_pt'),
+        'space_before_pt': p.get('space_before_pt'),
+        'space_after_pt': p.get('space_after_pt'),
+        'first_indent_cm': p.get('first_indent_cm') if p.get('first_indent_cm') is not None else p.get('indent', 0),
+    }
+
+
+def _build_style_profiles(fmt):
+    """Infer semantic style profiles from the template examples/instructions.
+
+    This is intentionally role-based instead of school-specific.  The generator
+    consumes these roles and no longer hardcodes CENTER/黑体/16pt etc.
+    """
+    profiles = {}
+    paras = fmt.get('paragraphs', [])
+
+    def put(role, p):
+        if role not in profiles and p:
+            profiles[role] = _profile_from_paragraph(p)
+
+    for p in paras:
+        txt = (p.get('text') or '').strip()
+        if not txt:
+            continue
+        no_space = txt.replace(' ', '')
+        # Front matter roles
+        if '论文' in txt and '题目' in txt and ('居中' in txt or p.get('style') == '论文题目'):
+            put('cn_title', p)
+        if no_space.startswith('摘要') or no_space.startswith('摘要（') or no_space.startswith('摘要(') or no_space.startswith('摘要'):
+            if len(txt) < 30:
+                put('cn_abstract_heading', p)
+        if txt.startswith('摘要是') or ('中文摘要300' in txt and len(txt) > 50):
+            put('cn_abstract_body', p)
+        if txt.startswith('关键词'):
+            put('cn_keywords', p)
+        if '英文题目' in txt and ('Times' in txt or 'Roman' in txt):
+            put('en_title', p)
+        if txt.upper().startswith('ABSTRACT') and len(txt) < 40:
+            put('en_abstract_heading', p)
+        if len(txt) > 80 and sum(1 for c in txt[:120] if c.isascii() and c.isalpha()) > 50:
+            put('en_abstract_body', p)
+        if txt.upper().startswith('KEY WORD') or txt.upper().startswith('KEYWORDS'):
+            put('en_keywords', p)
+        if no_space in ('目录', '目 录'.replace(' ', '')) or no_space.startswith('目录'):
+            put('toc_title', p)
+        # Body heading examples
+        if ('一级标题' in txt or '第1章' in txt) and len(txt) < 80:
+            put('h1', p)
+        if ('二级标题' in txt or re.match(r'^1\.1\s+', txt)) and len(txt) < 80:
+            put('h2', p)
+        if ('三级标题' in txt or re.match(r'^1\.1\.1\s+', txt)) and len(txt) < 80:
+            put('h3', p)
+
+    # Prefer actual body heading examples over TOC entries or textual notes.
+    def _score_heading_candidate(p, level):
+        txt = (p.get('text') or '').strip()
+        r = _first_real_run(p)
+        font = r.get('font') or ''
+        size = r.get('size_pt') or 0
+        score = 0
+        if font and font not in ('Arial', 'Times New Roman', 'Calibri'):
+            score += 10
+        if level == 1 and re.match(r'^第[一二三四五六七八九十\d]+章\s+', txt):
+            score += 8
+        if level == 2 and re.match(r'^\d+\.\d+\s+', txt):
+            score += 8
+        if level == 3 and re.match(r'^\d+\.\d+\.\d+\s+', txt):
+            score += 8
+        if size:
+            score += min(float(size), 20) / 2
+        if '标题' in txt and '（' in txt:
+            score -= 4  # instruction line, not rendered sample
+        if '目录' in txt:
+            score -= 8
+        return score
+
+    for _role, _level, _pat in [
+        ('h1', 1, r'^第[一二三四五六七八九十\d]+章\s+'),
+        ('h2', 2, r'^\d+\.\d+\s+'),
+        ('h3', 3, r'^\d+\.\d+\.\d+\s+'),
+    ]:
+        _cands = [p for p in paras if re.match(_pat, (p.get('text') or '').strip()) and len((p.get('text') or '').strip()) < 80]
+        if _cands:
+            _best = max(_cands, key=lambda p: _score_heading_candidate(p, _level))
+            profiles[_role] = _profile_from_paragraph(_best)
+            profiles[_role]['bold'] = bool(profiles[_role].get('bold')) or True
+            profiles[_role]['first_indent_cm'] = 0 if _level == 1 else profiles[_role].get('first_indent_cm', 0)
+
+    # Body = most common long CJK paragraph that is not declaration/format note
+    candidates = []
+    for p in paras:
+        txt = (p.get('text') or '').strip()
+        if len(txt) < 80:
+            continue
+        if any(k in txt[:60] for k in ['本人郑重声明', '本人在导师', '格式', '要求', '行距', '字号', '页眉']):
+            continue
+        if any('\u4e00' <= c <= '\u9fff' for c in txt[:120]):
+            candidates.append(p)
+    if candidates:
+        put('body', candidates[0])
+
+    # Fallbacks based on available roles
+    body = profiles.get('body') or {'font':'宋体','size':12,'align':'JUSTIFY','line_spacing_fixed_pt':28,'first_indent_cm':0.74}
+    profiles.setdefault('body', body)
+    profiles.setdefault('h1', {**body, 'font':'黑体', 'size':16, 'bold':True, 'align':'CENTER', 'first_indent_cm':0})
+    profiles.setdefault('h2', {**body, 'font':'黑体', 'size':14, 'bold':True, 'align':'LEFT', 'first_indent_cm':0})
+    profiles.setdefault('h3', {**body, 'font':'黑体', 'size':12, 'bold':True, 'align':'LEFT', 'first_indent_cm':0})
+    profiles.setdefault('cn_title', profiles['h1'])
+    profiles.setdefault('cn_abstract_heading', profiles['h1'])
+    profiles.setdefault('cn_abstract_body', body)
+    profiles.setdefault('cn_keywords', {**body, 'first_indent_cm':0})
+    profiles.setdefault('en_title', {**profiles['h1'], 'font':'Times New Roman'})
+    profiles.setdefault('en_abstract_heading', {**profiles['h1'], 'font':'Times New Roman', 'size':16, 'bold':True, 'align':'CENTER', 'first_indent_cm':0})
+    profiles.setdefault('en_abstract_body', {**body, 'font':'Times New Roman', 'line_spacing_fixed_pt':None, 'line_spacing_val':1.5, 'first_indent_cm':0.9})
+    profiles.setdefault('figure_caption', {**body, 'font':'宋体', 'size':10.5, 'align':'CENTER', 'first_indent_cm':0, 'space_before_pt':6, 'space_after_pt':6, 'line_spacing_fixed_pt':28})
+    profiles.setdefault('table_caption', {**profiles['figure_caption']})
+    profiles.setdefault('code', {**body, 'font':'Consolas', 'size':10.5, 'align':'LEFT', 'first_indent_cm':0, 'line_spacing_fixed_pt':None, 'line_spacing_val':1.0})
+    profiles.setdefault('reference', {**body, 'font':'宋体', 'size':12, 'align':'JUSTIFY', 'first_indent_cm':0, 'line_spacing_fixed_pt':28, 'space_before_pt':6, 'space_after_pt':6})
+    profiles.setdefault('en_keywords', {**profiles['en_abstract_body'], 'bold':True, 'first_indent_cm':0})
+    profiles.setdefault('toc_title', profiles['h1'])
+
+    # Sanitize inherited python-docx Length objects that can appear as huge
+    # numbers in style-derived line_spacing. Headings without explicit line
+    # spacing should inherit the body line-spacing role.
+    for _role in ('h1', 'h2', 'h3', 'cn_title', 'cn_abstract_heading', 'toc_title'):
+        _p = profiles.get(_role, {})
+        try:
+            _ls = float(_p.get('line_spacing_val') or 0)
+        except Exception:
+            _ls = 0
+        if _ls > 10 and not _p.get('line_spacing_fixed_pt'):
+            _p['line_spacing_val'] = body.get('line_spacing_val')
+            _p['line_spacing_fixed_pt'] = body.get('line_spacing_fixed_pt')
+            _p['line_spacing_rule'] = body.get('line_spacing_rule')
+    return profiles
 
 
 class StyleResolver:
@@ -204,6 +410,22 @@ def extract(docx_path):
                 pinfo['ls'] = info['ls']
                 pinfo['indent'] = info['indent']
 
+        # Add paragraph-level aliases consumed by the generator.
+        # Older output used only align/ls/indent; newer generator uses the
+        # clearer alignment/line_spacing_val/first_indent_cm names.
+        m = _paragraph_metrics(p._element)
+        if 'align' not in pinfo:
+            pinfo['align'] = m['alignment']
+            pinfo['ls'] = m['line_spacing_val'] or 1.15
+            pinfo['indent'] = m['first_indent_cm'] or 0
+        pinfo['alignment'] = m['alignment'] if m['alignment'] != 'DEFAULT' else pinfo.get('align', 'DEFAULT')
+        pinfo['line_spacing_val'] = m['line_spacing_val'] if m['line_spacing_val'] is not None else pinfo.get('ls')
+        pinfo['line_spacing_rule'] = m['line_spacing_rule']
+        pinfo['line_spacing_fixed_pt'] = m['line_spacing_fixed_pt']
+        pinfo['space_before_pt'] = m['space_before_pt']
+        pinfo['space_after_pt'] = m['space_after_pt']
+        pinfo['first_indent_cm'] = m['first_indent_cm'] if m['first_indent_cm'] is not None else pinfo.get('indent', 0)
+
         fmt['paragraphs'].append(pinfo)
 
         # MD
@@ -251,7 +473,9 @@ def extract(docx_path):
     md_lines.append(f'- 节:   JSON={len(fmt["sections"])} docx={len(doc.sections)} ✓')
 
     # ── Cover extraction: walk body elements until abstract/body content ──
-    fmt['cover'] = _extract_cover(doc)
+    asset_dir = os.path.splitext(docx_path)[0] + '_assets'
+    fmt['_meta']['assets_dir'] = os.path.abspath(asset_dir)
+    fmt['cover'] = _extract_cover(doc, asset_dir)
 
     # ── Normal style: extract for cover empty paragraph spacing ──
     ns = doc.styles['Normal']
@@ -262,16 +486,63 @@ def extract(docx_path):
         'line_spacing_rule': str(ns.paragraph_format.line_spacing_rule) if ns.paragraph_format.line_spacing_rule else None,
     }
 
+    # Semantic style profiles consumed by script_generator.py.
+    fmt['style_profiles'] = _build_style_profiles(fmt)
+
     return fmt, '\n'.join(md_lines)
 
 
-def _extract_cover(doc):
+def _extract_cover(doc, assets_dir=None):
     """Walk template body from start, extract cover+declaration elements with full formatting.
     Stops at abstract/TOC/body content. Returns list of element dicts or [] if no cover."""
     W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
     A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
     R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
     WP = 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing'
+
+    if assets_dir:
+        os.makedirs(assets_dir, exist_ok=True)
+    image_counter = 0
+
+    def _save_image_by_rid(rid):
+        nonlocal image_counter
+        if not rid or rid not in doc.part.rels:
+            return None
+        rel = doc.part.rels[rid]
+        if 'image' not in rel.reltype:
+            return None
+        ext = rel.target_ref.rsplit('.', 1)[-1].lower() if '.' in rel.target_ref else 'png'
+        if ext not in ('png', 'jpg', 'jpeg', 'gif', 'bmp', 'tif', 'tiff', 'emf', 'wmf'):
+            ext = 'png'
+        image_counter += 1
+        fname = f'cover_img_{image_counter:03d}.{ext}'
+        if assets_dir:
+            fpath = os.path.join(assets_dir, fname)
+            with open(fpath, 'wb') as f:
+                f.write(rel.target_part.blob)
+            return fname
+        return fname
+
+    def _image_payload(elem):
+        extent = None
+        src_rect = {}
+        rid = None
+        for inline in elem.iter(f'{{{WP}}}inline'):
+            ext = inline.find(f'{{{WP}}}extent')
+            if ext is not None:
+                extent = {'cx': ext.get('cx', '0'), 'cy': ext.get('cy', '0')}
+            for sr in inline.iter(f'{{{A}}}srcRect'):
+                src_rect = {'l': sr.get('l', '0'), 't': sr.get('t', '0'), 'r': sr.get('r', '0'), 'b': sr.get('b', '0')}
+            for blip in inline.iter(f'{{{A}}}blip'):
+                rid = blip.get(f'{{{R}}}embed')
+                if rid:
+                    break
+            if rid:
+                break
+        asset = _save_image_by_rid(rid) if rid else None
+        if not asset:
+            return None
+        return {'asset': asset, 'extent': extent, 'srcRect': src_rect, 'rEmbed': rid}
 
     STOP_KW = ['摘 要', '摘要', '目  录', '目录', '目 录', 'ABSTRACT', '第1章', '1.1 ', '1.1.']
     SKIP_KW = ['页边距要求', '碳素笔', '完成后删除', '封面要求', '1.论文题目', '毕业论文（设计）题目为',
@@ -325,7 +596,13 @@ def _extract_cover(doc):
                                     fsz = int(sz.get(f'{{{W}}}val', '0')) // 2
                                 _b_el = rPr.find(f'{{{W}}}b'); fbold = _b_el is not None and _b_el.get(f'{{{W}}}val', '1') not in ('0', 'false', 'False')
                             txt = ''.join(t.text or '' for t in r.findall(f'{{{W}}}t'))
-                            runs.append({'t': txt, 'fn': fn_ascii, 'fe': fn_ea, 'sz': fsz, 'b': fbold})
+                            payload = _image_payload(r)
+                            if txt:
+                                runs.append({'t': txt, 'fn': fn_ascii, 'fe': fn_ea, 'sz': fsz, 'b': fbold})
+                            if payload:
+                                runs.append({'t': '', 'fn': fn_ascii, 'fe': fn_ea, 'sz': fsz, 'b': fbold, **payload})
+                            if not txt and not payload:
+                                runs.append({'t': txt, 'fn': fn_ascii, 'fe': fn_ea, 'sz': fsz, 'b': fbold})
                         cell_paras.append({'al': palign, 'r': runs})
                     cells_data.append({'w': cell_w, 'borders': cell_borders, 'p': cell_paras})
                 rows_data.append(cells_data)
@@ -393,30 +670,15 @@ def _extract_cover(doc):
             if len(full_text) > 40 and '删除' in full_text[:80]:
                 continue
 
-        # Check for images
-        has_img = False
-        img_extent = None
-        img_srcRect = {}
-        for inline in child.iter(f'{{{WP}}}inline'):
-            ext = inline.find(f'{{{WP}}}extent')
-            if ext is not None:
-                img_extent = {'cx': ext.get('cx', '0'), 'cy': ext.get('cy', '0')}
-            for sr in inline.iter(f'{{{A}}}srcRect'):
-                img_srcRect = {'l': sr.get('l', '0'), 't': sr.get('t', '0'),
-                               'r': sr.get('r', '0'), 'b': sr.get('b', '0')}
-            for blip in inline.iter(f'{{{A}}}blip'):
-                emb = blip.get(f'{{{R}}}embed')
-                if emb and emb in doc.part.rels and 'image' in doc.part.rels[emb].reltype:
-                    has_img = True
-                    break
-            break
+        # Check for images and save binary assets so the generator can reinsert logos.
+        img_payload = _image_payload(child)
 
-        if has_img:
+        if img_payload:
             elements.append({
                 'type': 'image',
                 'al': palign, 'ls_val': line_val, 'ls_rule': lineRule,
-                'extent': img_extent, 'srcRect': img_srcRect,
-                'rEmbed': emb,
+                'sp_before': before_val, 'fl_indent': first_line,
+                **img_payload,
                 'r': runs,
             })
         elif not full_text:

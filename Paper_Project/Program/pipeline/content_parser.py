@@ -91,9 +91,17 @@ def detect_heading_level(para):
         if re.match(pat, text):
             return lvl
 
-    # ── Chinese chapter headings: "第X章" pattern ──
+    # ── Explicit heading patterns should win over font heuristics ──
+    # Chapter: 第1章 / 第一章 / 1 绪论 / Chapter 1
     if re.match(r'^第[一二三四五六七八九十\d]+章', text):
         return 1
+    if re.match(r'^(?:Chapter\s*)?\d+\s+[\u4e00-\u9fffA-Za-z]', text) and not re.match(r'^\d+\.\d+', text):
+        return 1
+    # Numbered: 1.1 = level 2, 1.1.1 = level 3
+    if re.match(r'^\d+\.\d+\.\d+\s*', text):
+        return 3
+    if re.match(r'^\d+\.\d+\s*', text):
+        return 2
     # ── Numbered heading patterns for long paragraphs (>200 chars) ──
     if len(text) > 200:
         heading_patterns = [
@@ -195,6 +203,126 @@ def extract_images_from_para(para, fig_dir, prefix='img'):
     return saved
 
 
+
+
+
+def _normalize_role_heading(text):
+    return re.sub(r'\s+', ' ', str(text or '').strip())
+
+
+def _classify_section_role(heading, level=0):
+    """Map a detected heading to a semantic role used by the renderer."""
+    h = _normalize_role_heading(heading)
+    h_compact = re.sub(r'[\s：:]+', '', h).lower()
+    if h_compact in ('摘要', '中文摘要'):
+        return 'cn_abstract'
+    if h_compact in ('关键词', '关键字') or h.startswith('关键词'):
+        return 'cn_keywords'
+    if h_compact in ('abstract', 'englishabstract'):
+        return 'en_abstract'
+    if h.upper().replace(' ', '').startswith('KEYWORDS') or re.match(r'(?i)^key\s*words?', h):
+        return 'en_keywords'
+    if re.match(r'(?i)^references?$', h) or h.startswith('参考文献'):
+        return 'references'
+    if re.search(r'致\s*谢', h):
+        return 'acknowledgement'
+    if re.search(r'附\s*录', h):
+        return 'appendix'
+    if level and level > 0:
+        return 'heading'
+    return 'body'
+
+
+def _split_heading_number(text):
+    """Return (number, title) for headings such as '1.1标题' or '第1章绪论'."""
+    t = str(text or '').strip()
+    m = re.match(r'^(第[一二三四五六七八九十百千万\d]+章)\s*(.+)$', t)
+    if m:
+        return m.group(1), m.group(2).strip()
+    m = re.match(r'^(\d+(?:\.\d+)*)\s*(.+)$', t)
+    if m:
+        return m.group(1), m.group(2).strip()
+    return '', t
+
+
+def _normalize_heading_spacing(text):
+    num, title = _split_heading_number(text)
+    return f'{num} {title}'.strip() if num and title else str(text or '').strip()
+
+
+def _is_figure_caption(text):
+    return bool(re.match(r'^图\s*\d+(?:[.-]\d+)?\s*[^\d\s]', str(text or '').strip()))
+
+
+def _is_table_caption(text):
+    return bool(re.match(r'^表\s*\d+(?:[.-]\d+)?\s*[^\d\s]', str(text or '').strip()))
+
+
+def _normalize_caption_spacing(text):
+    t = str(text or '').strip()
+    return re.sub(r'^(图|表)\s*(\d+(?:[.-]\d+)?)\s*', r'\1 \2 ', t).strip()
+
+
+def _paragraph_plain_text_from_ooxml(p_elem):
+    W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    pieces = []
+    for r in p_elem.findall(f'{{{W}}}r'):
+        part = ''.join(t.text or '' for t in r.findall(f'{{{W}}}t'))
+        if r.find(f'{{{W}}}br') is not None and not part:
+            part = '\n'
+        pieces.append(part)
+    return ''.join(pieces)
+
+
+def _extract_table_rows_from_ooxml(tbl_elem):
+    """Preserve cell paragraph breaks so code/config tables do not collapse into one line."""
+    W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    rows = []
+    for tr in tbl_elem.findall(f'{{{W}}}tr'):
+        cells = []
+        for tc in tr.findall(f'{{{W}}}tc'):
+            paras = []
+            for p in tc.findall(f'{{{W}}}p'):
+                txt = _paragraph_plain_text_from_ooxml(p).rstrip()
+                if txt:
+                    paras.append(txt)
+            cells.append('\n'.join(paras).strip())
+        rows.append(cells)
+    return rows
+
+def _looks_like_code_line(text):
+    """Heuristic for network/device configuration or command-line code.
+
+    Kept generic: it detects syntax-like command lines rather than any
+    particular vendor, university, or template.
+    """
+    t = (text or '').strip()
+    if not t or len(t) > 220:
+        return False
+    if re.match(r'^[A-Za-z0-9_.-]+[>#]', t):
+        return True
+    if re.match(r'^(interface|vlan|ip route|ip address|router|switchport|acl|rule|nat|dhcp|dns|ospf|bgp|display|show|ping|tracert|undo|quit|return|sysname|description|gateway|firewall|security-policy)\b', t, re.I):
+        return True
+    if re.match(r'^[a-z][a-z0-9_-]+\s+[-A-Za-z0-9_/.:]+', t) and any(ch in t for ch in ['/', '.', '-', '_']):
+        return True
+    return False
+
+def _append_text_or_code(section, text, in_appendix=False):
+    """Append semantic blocks while preserving captions, code and inline citations."""
+    if not text:
+        return
+    text = str(text).strip()
+    if not text:
+        return
+    if _is_figure_caption(text):
+        section['paragraphs'].append({'role': 'figure_caption', 'text': _normalize_caption_spacing(text)})
+    elif _is_table_caption(text):
+        section['paragraphs'].append({'role': 'table_caption', 'text': _normalize_caption_spacing(text)})
+    elif in_appendix and (_looks_like_code_line(text) or '\n' in text):
+        section['paragraphs'].append({'role': 'code', 'code': text})
+    else:
+        section['paragraphs'].append(text)
+
 def extract(docx_path, output_dir='Inputs'):
     """Extract content from a content docx into structured JSON + copy images."""
     doc = Document(docx_path)
@@ -244,7 +372,7 @@ def extract(docx_path, output_dir='Inputs'):
     # ── Extract cover info from content docx tables ──
     cover_info = {}
     _COVER_LABEL_MAP = {
-        '学校编码': 'school_code', '论文题目': 'paper_title',
+        '学校编码': 'school_code', '学位编码': 'degree_code', '论文题目': 'paper_title',
         '学生姓名': 'student_name', '学号': 'student_id', '学    号': 'student_id',
         '所属学院': 'college', '专业班级': 'class_name',
         '指导老师': 'advisor', '指导教师': 'advisor',
@@ -261,12 +389,14 @@ def extract(docx_path, output_dir='Inputs'):
                             content['cover_info'][key] = value
                             cover_info[key] = value
                             break
-    if not content['title_info'].get('title_cn') and cover_info.get('paper_title'):
+    # Cover table is the most reliable source for the paper title.
+    # The old heuristic sometimes picked declaration/footer text with large font.
+    if cover_info.get('paper_title'):
         content['title_info']['title_cn'] = cover_info['paper_title']
 
     # ── Parse sections ──
     W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
-    current_section = {'heading': '正文', 'level': 1, 'paragraphs': [], 'images': []}
+    current_section = {'heading': '正文', 'level': 1, 'role': 'body', 'paragraphs': [], 'images': []}
     sections = [current_section]
     ref_section = None
 
@@ -292,6 +422,15 @@ def extract(docx_path, output_dir='Inputs'):
                 ref_section = {'heading': text, 'entries': []}
                 continue
 
+            # Back matter after references (致谢/附录) must not be swallowed
+            # by the reference collector. Treat it as normal sections again.
+            if ref_section is not None and level > 0 and re.search(r'(致\s*谢|附\s*录)', text):
+                _h = _normalize_heading_spacing(text.split('（')[0].strip())
+                current_section = {'heading': _h, 'level': level, 'role': _classify_section_role(_h, level), 'paragraphs': [], 'images': []}
+                sections.append(current_section)
+                ref_section = None
+                continue
+
             if level > 0:
                 clean_heading = text.split('（')[0].strip()
                 if not clean_heading:
@@ -304,10 +443,14 @@ def extract(docx_path, output_dir='Inputs'):
                 else:
                     heading_part = clean_heading
                     body_part = ''
-                current_section = {'heading': heading_part, 'level': level, 'paragraphs': [], 'images': []}
+                heading_part = _normalize_heading_spacing(heading_part)
+                role = _classify_section_role(heading_part, level)
+                current_section = {'heading': heading_part, 'level': level, 'role': role, 'paragraphs': [], 'images': []}
+                if role == 'en_abstract':
+                    current_section['page_break_before'] = True
                 sections.append(current_section)
                 if body_part:
-                    current_section['paragraphs'].append(body_part)
+                    _append_text_or_code(current_section, body_part, in_appendix=False)
             elif ref_section is not None:
                 if text:
                     ref_section['entries'].append(text)
@@ -321,33 +464,39 @@ def extract(docx_path, output_dir='Inputs'):
                         'math': math_list,
                     })
                 elif clean_text:
-                    current_section['paragraphs'].append(clean_text)
+                    _append_text_or_code(current_section, clean_text, in_appendix=bool(re.search(r'(附\s*录|配置|命令|代码)', current_section.get('heading',''))))
 
         elif _tag == 'tbl' and _started:
-            # Body table — extract rows/cells
-            _rows = []
-            for _tr in _child.findall(f'{{{W}}}tr'):
-                _cells = []
-                for _tc in _tr.findall(f'{{{W}}}tc'):
-                    _ct = ''
-                    for _p in _tc.findall(f'{{{W}}}p'):
-                        for _r in _p.findall(f'{{{W}}}r'):
-                            for _t in _r.findall(f'{{{W}}}t'):
-                                _ct += _t.text or ''
-                    _cells.append(_ct.strip())
-                _rows.append(_cells)
+            # Body table — preserve paragraph breaks inside each cell.
+            _rows = _extract_table_rows_from_ooxml(_child)
             if _rows:
-                current_section['paragraphs'].append({'table_rows': _rows})
+                current_section['paragraphs'].append({'role': 'table', 'table_rows': _rows})
 
     if ref_section and ref_section['entries']:
         content['references'] = ref_section['entries']
 
-    # Filter: keep sections that have content OR are level-1 chapter containers
-    content['sections'] = [s for s in sections
-                           if (s['paragraphs'] or s['images'] or s['level'] == 1)
-                           and (s['heading'] != '正文' or len(sections) == 1)]
+    # Filter empty placeholder sections, but KEEP structural headings.
+    # A level-1 chapter can legitimately have no direct paragraphs because it is
+    # followed immediately by 1.1/1.2 subsections. Dropping it breaks TOC and body
+    # structure, so keep every non-placeholder heading even when empty.
+    content['sections'] = []
+    for s in sections:
+        # If real headings were detected, the initial placeholder section is
+        # almost always cover/declaration/title residue. Keep it only when it
+        # is the sole section in an unstructured document.
+        if s['heading'] == '正文' and len(sections) > 1:
+            continue
+        if s['paragraphs'] or s['images'] or (s.get('heading') and s.get('heading') != '正文'):
+            content['sections'].append(s)
     if ref_section:
         content['references'] = ref_section['entries']
+
+    # Mark the first real body chapter so renderers can start it on a new page.
+    _front_roles = {'cn_abstract', 'cn_keywords', 'en_abstract', 'en_keywords'}
+    for _s in content['sections']:
+        if _s.get('role') not in _front_roles and not _s.get('page_break_before'):
+            _s.setdefault('page_break_before', True)
+            break
 
     # Extract all images from entire document (including those not in body text)
     all_imgs = []
@@ -362,7 +511,7 @@ def extract(docx_path, output_dir='Inputs'):
                     all_imgs.extend(extract_images_from_para(p, fig_dir, f'{base}_tbl_img'))
 
     content['_meta']['images_extracted'] = len(all_imgs)
-    content['_meta']['images_dir'] = fig_dir
+    content['_meta']['images_dir'] = os.path.abspath(fig_dir)
 
     return content
 
