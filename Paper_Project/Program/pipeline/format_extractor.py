@@ -499,42 +499,135 @@ def extract(docx_path):
     return fmt, '\n'.join(md_lines)
 
 
+
 def _crop_blob_by_src_rect(blob, src_rect, ext):
+    """Crop a DOCX image blob according to DrawingML a:srcRect.
+
+    Word stores crop values as 1/1000 percent.  If a template uses one
+    composite logo image and displays two cropped views, saving the raw blob
+    would reproduce the composite image twice.  Cropping here turns each view
+    into its own asset, while keeping the renderer role-driven.
+    """
     if not src_rect or Image is None:
+        return blob, ext
+    try:
+        vals = {k: int(src_rect.get(k, 0) or 0) for k in ('l', 't', 'r', 'b')}
+    except Exception:
+        return blob, ext
+    if not any(vals.values()):
         return blob, ext
     try:
         img = Image.open(BytesIO(blob))
         w, h = img.size
-        l = int(src_rect.get('l', 0) or 0) / 100000.0
-        t = int(src_rect.get('t', 0) or 0) / 100000.0
-        r = int(src_rect.get('r', 0) or 0) / 100000.0
-        b = int(src_rect.get('b', 0) or 0) / 100000.0
-        box = (
-            max(0, int(w * l)),
-            max(0, int(h * t)),
-            min(w, int(w * (1 - r))),
-            min(h, int(h * (1 - b))),
-        )
-        if box[2] <= box[0] or box[3] <= box[1]:
+        # OOXML srcRect is expressed in 1/100000 of the source dimension.
+        left = max(0, int(w * vals['l'] / 100000.0))
+        top = max(0, int(h * vals['t'] / 100000.0))
+        right = min(w, int(w * (1 - vals['r'] / 100000.0)))
+        bottom = min(h, int(h * (1 - vals['b'] / 100000.0)))
+        if right <= left or bottom <= top:
             return blob, ext
         out = BytesIO()
-        img.crop(box).save(out, format='PNG')
+        img.crop((left, top, right, bottom)).save(out, format='PNG')
         return out.getvalue(), 'png'
     except Exception:
         return blob, ext
 
 
-def _save_cover_image_asset(rel, assets_dir, idx, src_rect):
-    ext = rel.target_ref.rsplit('.', 1)[-1].lower() if '.' in rel.target_ref else 'png'
-    if ext not in ('png', 'jpg', 'jpeg', 'bmp', 'gif', 'tiff'):
-        ext = 'png'
-    blob, ext = _crop_blob_by_src_rect(rel.target_part.blob, src_rect, ext)
-    fname = f'cover_img_{idx:03d}.{ext}'
-    fpath = os.path.join(assets_dir, fname)
-    with open(fpath, 'wb') as f:
-        f.write(blob)
-    return fname
+def _cover_table_role(rows_data):
+    """Infer cover table role from structure instead of school-specific text."""
+    def cell_text(cell):
+        return ''.join(r.get('t', '') for pp in cell.get('p', []) for r in pp.get('r', []))
+    first_col = []
+    for row in rows_data or []:
+        if row:
+            first_col.append(re.sub(r'[\s：:]+', '', cell_text(row[0])))
+    if first_col and len(rows_data or []) <= 2 and all(x.endswith('编码') for x in first_col if x):
+        return 'cover_code_table'
+    if len(rows_data or []) >= 3 and sum(1 for x in first_col if x.endswith(('题目', '姓名', '学号', '学院', '班级', '老师', '教师'))) >= 2:
+        return 'cover_info_table'
+    return 'cover_table'
 
+
+def _ooxml_attrs(el, ns):
+    """Return OOXML attributes without namespace prefixes for JSON storage."""
+    if el is None:
+        return {}
+    out = {}
+    for k, v in el.attrib.items():
+        key = k.split('}')[-1] if '}' in k else k
+        out[key] = v
+    return out
+
+
+def _extract_margin_box(parent, ns, child_name):
+    box = parent.find(f'{{{ns}}}{child_name}') if parent is not None else None
+    if box is None:
+        return {}
+    res = {}
+    for side in ('top', 'left', 'bottom', 'right', 'start', 'end'):
+        el = box.find(f'{{{ns}}}{side}')
+        if el is not None:
+            res[side] = _ooxml_attrs(el, ns)
+    return res
+
+
+def _extract_tbl_props(tbl_elem):
+    """Extract table-level layout properties so cover tables can be replayed.
+
+    This is deliberately structural: alignment, indent, width, grid columns,
+    layout mode, margins and row heights are copied from the template instead
+    of being guessed from labels such as school code or committee text.
+    """
+    W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    props = {'tblW': {}, 'tblInd': {}, 'jc': None, 'tblLayout': None,
+             'cellMar': {}, 'grid_cols': [], 'rows': []}
+    tblPr = tbl_elem.find(f'{{{W}}}tblPr')
+    if tblPr is not None:
+        for name in ('tblW', 'tblInd', 'tblLayout'):
+            el = tblPr.find(f'{{{W}}}{name}')
+            if el is not None:
+                props[name] = _ooxml_attrs(el, W)
+        jc = tblPr.find(f'{{{W}}}jc')
+        if jc is not None:
+            props['jc'] = jc.get(f'{{{W}}}val')
+        props['cellMar'] = _extract_margin_box(tblPr, W, 'tblCellMar')
+    grid = tbl_elem.find(f'{{{W}}}tblGrid')
+    if grid is not None:
+        for gc in grid.findall(f'{{{W}}}gridCol'):
+            w = gc.get(f'{{{W}}}w')
+            if w:
+                props['grid_cols'].append(w)
+    for tr in tbl_elem.findall(f'{{{W}}}tr'):
+        trp = {'height': {}, 'cantSplit': False}
+        trPr = tr.find(f'{{{W}}}trPr')
+        if trPr is not None:
+            h = trPr.find(f'{{{W}}}trHeight')
+            if h is not None:
+                trp['height'] = _ooxml_attrs(h, W)
+            trp['cantSplit'] = trPr.find(f'{{{W}}}cantSplit') is not None
+        props['rows'].append(trp)
+    return props
+
+
+def _extract_tc_props(tcPr):
+    W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    info = {'tcW': {}, 'tcMar': {}, 'vAlign': None, 'gridSpan': None, 'vMerge': None}
+    if tcPr is None:
+        return info
+    tcW = tcPr.find(f'{{{W}}}tcW')
+    if tcW is not None:
+        info['tcW'] = _ooxml_attrs(tcW, W)
+    info['tcMar'] = _extract_margin_box(tcPr, W, 'tcMar')
+    va = tcPr.find(f'{{{W}}}vAlign')
+    if va is not None:
+        info['vAlign'] = va.get(f'{{{W}}}val')
+    gs = tcPr.find(f'{{{W}}}gridSpan')
+    if gs is not None:
+        info['gridSpan'] = gs.get(f'{{{W}}}val')
+    vm = tcPr.find(f'{{{W}}}vMerge')
+    if vm is not None:
+        info['vMerge'] = vm.get(f'{{{W}}}val') or 'continue'
+    return info
 
 def _extract_cover(doc, assets_dir=None):
     """Walk template body from start, extract cover+declaration elements with full formatting.
@@ -558,9 +651,7 @@ def _extract_cover(doc, assets_dir=None):
         ext = rel.target_ref.rsplit('.', 1)[-1].lower() if '.' in rel.target_ref else 'png'
         if ext not in ('png', 'jpg', 'jpeg', 'gif', 'bmp', 'tif', 'tiff', 'emf', 'wmf'):
             ext = 'png'
-        blob = rel.target_part.blob
-        if src_rect:
-            blob, ext = _crop_blob_by_src_rect(blob, src_rect, ext)
+        blob, ext = _crop_blob_by_src_rect(rel.target_part.blob, src_rect, ext)
         image_counter += 1
         fname = f'cover_img_{image_counter:03d}.{ext}'
         if assets_dir:
@@ -574,13 +665,14 @@ def _extract_cover(doc, assets_dir=None):
         extent = None
         src_rect = {}
         rid = None
-        for inline in elem.iter(f'{{{WP}}}inline'):
-            ext = inline.find(f'{{{WP}}}extent')
+        drawing_nodes = list(elem.iter(f'{{{WP}}}inline')) + list(elem.iter(f'{{{WP}}}anchor'))
+        for drawing in drawing_nodes:
+            ext = drawing.find(f'{{{WP}}}extent')
             if ext is not None:
                 extent = {'cx': ext.get('cx', '0'), 'cy': ext.get('cy', '0')}
-            for sr in inline.iter(f'{{{A}}}srcRect'):
+            for sr in drawing.iter(f'{{{A}}}srcRect'):
                 src_rect = {'l': sr.get('l', '0'), 't': sr.get('t', '0'), 'r': sr.get('r', '0'), 'b': sr.get('b', '0')}
-            for blip in inline.iter(f'{{{A}}}blip'):
+            for blip in drawing.iter(f'{{{A}}}blip'):
                 rid = blip.get(f'{{{R}}}embed')
                 if rid:
                     break
@@ -602,6 +694,7 @@ def _extract_cover(doc, assets_dir=None):
             break
 
         if tag == 'tbl':
+            tbl_props = _extract_tbl_props(child)
             rows_data = []
             for row in child.findall(f'{{{W}}}tr'):
                 cells_data = []
@@ -629,6 +722,13 @@ def _extract_cover(doc, assets_dir=None):
                         pPr = p.find(f'{{{W}}}pPr')
                         jc = pPr.find(f'{{{W}}}jc') if pPr is not None else None
                         palign = jc.get(f'{{{W}}}val') if jc is not None else None
+                        spacing = pPr.find(f'{{{W}}}spacing') if pPr is not None else None
+                        p_line = spacing.get(f'{{{W}}}line') if spacing is not None else None
+                        p_rule = spacing.get(f'{{{W}}}lineRule') if spacing is not None else None
+                        p_before = spacing.get(f'{{{W}}}before') if spacing is not None else None
+                        p_after = spacing.get(f'{{{W}}}after') if spacing is not None else None
+                        p_ind = pPr.find(f'{{{W}}}ind') if pPr is not None else None
+                        p_first = p_ind.get(f'{{{W}}}firstLine') if p_ind is not None else None
                         runs = []
                         for r in p.findall(f'{{{W}}}r'):
                             rPr = r.find(f'{{{W}}}rPr')
@@ -650,10 +750,12 @@ def _extract_cover(doc, assets_dir=None):
                                 runs.append({'t': '', 'fn': fn_ascii, 'fe': fn_ea, 'sz': fsz, 'b': fbold, **payload})
                             if not txt and not payload:
                                 runs.append({'t': txt, 'fn': fn_ascii, 'fe': fn_ea, 'sz': fsz, 'b': fbold})
-                        cell_paras.append({'al': palign, 'r': runs})
-                    cells_data.append({'w': cell_w, 'borders': cell_borders, 'p': cell_paras})
+                        cell_paras.append({'al': palign, 'ls_val': p_line, 'ls_rule': p_rule,
+                                           'sp_before': p_before, 'sp_after': p_after,
+                                           'fl_indent': p_first, 'r': runs})
+                    cells_data.append({'w': cell_w, 'tcPr': _extract_tc_props(tcPr), 'borders': cell_borders, 'p': cell_paras})
                 rows_data.append(cells_data)
-            elements.append({'type': 'table', 'rows': rows_data})
+            elements.append({'type': 'table', 'role': _cover_table_role(rows_data), 'tblPr': tbl_props, 'rows': rows_data})
             continue
 
         if tag != 'p':
@@ -661,6 +763,7 @@ def _extract_cover(doc, assets_dir=None):
 
         # Extract paragraph data
         pPr = child.find(f'{{{W}}}pPr')
+        has_sectPr = pPr.find(f'{{{W}}}sectPr') is not None if pPr is not None else False
         jc = pPr.find(f'{{{W}}}jc') if pPr is not None else None
         palign = jc.get(f'{{{W}}}val') if jc is not None else None
 
@@ -727,6 +830,7 @@ def _extract_cover(doc, assets_dir=None):
                 'sp_before': before_val, 'fl_indent': first_line,
                 **img_payload,
                 'r': runs,
+                'section_break_after': has_sectPr,
             })
         elif not full_text:
             elements.append({
@@ -734,6 +838,7 @@ def _extract_cover(doc, assets_dir=None):
                 'al': palign, 'ls_val': line_val, 'ls_rule': lineRule,
                 'sp_before': before_val, 'fl_indent': first_line,
                 'r': runs,  # run font sizes control paragraph height even when empty
+                'section_break_after': has_sectPr,
             })
         else:
             elements.append({
@@ -741,6 +846,7 @@ def _extract_cover(doc, assets_dir=None):
                 'al': palign, 'ls_val': line_val, 'ls_rule': lineRule,
                 'sp_before': before_val, 'fl_indent': first_line,
                 'r': runs,
+                'section_break_after': has_sectPr,
             })
 
     return elements

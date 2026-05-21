@@ -76,6 +76,9 @@ def detect_heading_level(para):
     text = para.text.strip()
     if not text:
         return 0
+    # Figure/table captions are captions, not outline headings or TOC entries.
+    if re.match(r'^(图|表)\s*\d+(?:[.-]\d+)?\s*', text):
+        return 0
 
     # ── Label-style headings (Abstract:, Key words:, 摘要：, 关键词：) ──
     # These are detected by text pattern regardless of paragraph length or OOXML formatting,
@@ -307,6 +310,37 @@ def _looks_like_code_line(text):
         return True
     return False
 
+
+
+def _table_rows_look_like_code(rows):
+    """Classify one-/two-column command tables as code, not academic tables."""
+    flat = []
+    for row in rows or []:
+        for cell in row or []:
+            for line in str(cell or '').splitlines():
+                if line.strip():
+                    flat.append(line.strip())
+    if not flat:
+        return False
+    ncols = max((len(r) for r in rows or []), default=0)
+    hits = sum(1 for x in flat if _looks_like_code_line(x))
+    if ncols <= 1 and len(flat) >= 2 and hits >= 2:
+        return True
+    if ncols <= 2 and len(flat) >= 4 and hits >= max(2, len(flat) // 3):
+        return True
+    return False
+
+
+def _code_text_from_table_rows(rows):
+    lines = []
+    for row in rows or []:
+        cells = [str(c or '').rstrip() for c in row]
+        if len(cells) == 1:
+            lines.append(cells[0])
+        else:
+            lines.append('    '.join(cells).rstrip())
+    return '\n'.join(lines).rstrip()
+
 def _append_text_or_code(section, text, in_appendix=False):
     """Append semantic blocks while preserving captions, code and inline citations."""
     if not text:
@@ -470,7 +504,10 @@ def extract(docx_path, output_dir='Inputs'):
             # Body table — preserve paragraph breaks inside each cell.
             _rows = _extract_table_rows_from_ooxml(_child)
             if _rows:
-                current_section['paragraphs'].append({'role': 'table', 'table_rows': _rows})
+                if _table_rows_look_like_code(_rows):
+                    current_section['paragraphs'].append({'role': 'code', 'code': _code_text_from_table_rows(_rows), 'table_rows': _rows})
+                else:
+                    current_section['paragraphs'].append({'role': 'table', 'table_rows': _rows})
 
     if ref_section and ref_section['entries']:
         content['references'] = ref_section['entries']
