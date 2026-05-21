@@ -250,7 +250,182 @@ def extract(docx_path):
     md_lines.append(f'- 表格: JSON={len(fmt["tables"])} docx={len(doc.tables)} ✓')
     md_lines.append(f'- 节:   JSON={len(fmt["sections"])} docx={len(doc.sections)} ✓')
 
+    # ── Cover extraction: walk body elements until abstract/body content ──
+    fmt['cover'] = _extract_cover(doc)
+
     return fmt, '\n'.join(md_lines)
+
+
+def _extract_cover(doc):
+    """Walk template body from start, extract cover+declaration elements with full formatting.
+    Stops at abstract/TOC/body content. Returns list of element dicts or [] if no cover."""
+    W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+    R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+    WP = 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing'
+
+    STOP_KW = ['摘 要', '摘要', '目  录', '目录', '目 录', 'ABSTRACT', '第1章', '1.1 ', '1.1.']
+    SKIP_KW = ['页边距要求', '碳素笔', '完成后删除', '封面要求', '1.论文题目', '毕业论文（设计）题目为',
+               '按答辩时间', '提交论文', '禁止使用']
+
+    elements = []
+    for child in doc.element.body:
+        tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
+        if tag == 'sectPr':
+            break
+
+        if tag == 'tbl':
+            rows_data = []
+            for row in child.findall(f'{{{W}}}tr'):
+                cells_data = []
+                for tc in row.findall(f'{{{W}}}tc'):
+                    tcPr = tc.find(f'{{{W}}}tcPr')
+                    # Cell width
+                    tcW = tcPr.find(f'{{{W}}}tcW') if tcPr is not None else None
+                    cell_w = int(tcW.get(f'{{{W}}}w', '0')) if tcW is not None else 0
+                    # Cell borders
+                    cell_borders = {}
+                    tcBorders = tcPr.find(f'{{{W}}}tcBorders') if tcPr is not None else None
+                    if tcBorders is not None:
+                        for b in tcBorders:
+                            btag = b.tag.split('}')[-1]
+                            bval = b.get(f'{{{W}}}val', 'nil')
+                            if bval not in (None, 'nil', 'none'):
+                                cell_borders[btag] = {
+                                    'val': bval,
+                                    'sz': b.get(f'{{{W}}}sz', '0'),
+                                    'color': b.get(f'{{{W}}}color', '000000'),
+                                }
+                    # Cell paragraphs
+                    cell_paras = []
+                    for p in tc.findall(f'{{{W}}}p'):
+                        pPr = p.find(f'{{{W}}}pPr')
+                        jc = pPr.find(f'{{{W}}}jc') if pPr is not None else None
+                        palign = jc.get(f'{{{W}}}val') if jc is not None else None
+                        runs = []
+                        for r in p.findall(f'{{{W}}}r'):
+                            rPr = r.find(f'{{{W}}}rPr')
+                            fn_ascii, fn_ea, fsz, fbold = '', '', 0, False
+                            if rPr is not None:
+                                rf = rPr.find(f'{{{W}}}rFonts')
+                                if rf is not None:
+                                    fn_ascii = rf.get(f'{{{W}}}ascii', '') or ''
+                                    fn_ea = rf.get(f'{{{W}}}eastAsia', '') or ''
+                                sz = rPr.find(f'{{{W}}}sz')
+                                if sz is not None:
+                                    fsz = int(sz.get(f'{{{W}}}val', '0')) // 2
+                                fbold = rPr.find(f'{{{W}}}b') is not None
+                            txt = ''.join(t.text or '' for t in r.findall(f'{{{W}}}t'))
+                            runs.append({'t': txt, 'fn': fn_ascii, 'fe': fn_ea, 'sz': fsz, 'b': fbold})
+                        cell_paras.append({'al': palign, 'r': runs})
+                    cells_data.append({'w': cell_w, 'borders': cell_borders, 'p': cell_paras})
+                rows_data.append(cells_data)
+            elements.append({'type': 'table', 'rows': rows_data})
+            continue
+
+        if tag != 'p':
+            continue
+
+        # Extract paragraph data
+        pPr = child.find(f'{{{W}}}pPr')
+        jc = pPr.find(f'{{{W}}}jc') if pPr is not None else None
+        palign = jc.get(f'{{{W}}}val') if jc is not None else None
+
+        spacing = pPr.find(f'{{{W}}}spacing') if pPr is not None else None
+        line_val = spacing.get(f'{{{W}}}line') if spacing is not None else None
+        lineRule = spacing.get(f'{{{W}}}lineRule') if spacing is not None else None
+        before_val = spacing.get(f'{{{W}}}before') if spacing is not None else None
+
+        indent = pPr.find(f'{{{W}}}ind') if pPr is not None else None
+        first_line = indent.get(f'{{{W}}}firstLine') if indent is not None else None
+
+        runs = []
+        for r in child.findall(f'{{{W}}}r'):
+            rPr = r.find(f'{{{W}}}rPr')
+            fn_ascii, fn_ea, fsz, fbold = '', '', 0, False
+            if rPr is not None:
+                rf = rPr.find(f'{{{W}}}rFonts')
+                if rf is not None:
+                    fn_ascii = rf.get(f'{{{W}}}ascii', '') or ''
+                    fn_ea = rf.get(f'{{{W}}}eastAsia', '') or ''
+                sz = rPr.find(f'{{{W}}}sz')
+                if sz is not None:
+                    fsz = int(sz.get(f'{{{W}}}val', '0')) // 2
+                fbold = rPr.find(f'{{{W}}}b') is not None
+            txt = ''.join(t.text or '' for t in r.findall(f'{{{W}}}t'))
+            runs.append({'t': txt, 'fn': fn_ascii, 'fe': fn_ea, 'sz': fsz, 'b': fbold})
+
+        full_text = ''.join(r['t'] for r in runs).strip()
+
+        # ── Heuristic: is this paragraph a format instruction? ──
+        # Format notes specify fonts, sizes, alignments — not actual content.
+        _fmt_font = any(f in full_text for f in ['黑体', '宋体', '楷体', '华文', '方正', 'Times New Roman'])
+        _fmt_size = any(kw in full_text for kw in ['二号', '三号', '四号', '小四', '五号', '小五',
+                                                    '号加粗', '号居中', 'pt', '号字'])
+        _fmt_align = any(kw in full_text for kw in ['居中', '加粗', '缩进', '对齐', '行距', '段前', '段后',
+                                                     '固定值', '倍行距', '1.5倍', '双倍'])
+        _fmt_paren = '（' in full_text and '）' in full_text
+        _is_fmt_note = (_fmt_paren and (_fmt_font or _fmt_size)) or (_fmt_font and _fmt_size and _fmt_align)
+        _is_fmt_note = _is_fmt_note or (_fmt_paren and any(kw in full_text for kw in ['空一行', '空两行', '空行', '空  行']))
+        _is_fmt_header = any(kw in full_text[:60] for kw in ['页眉页脚', '页眉', '页码', '字体要求',
+                                                               '字号要求', '格式要求', '排版要求'])
+
+        # Stop at abstract/TOC/body (real content, not format notes)
+        if full_text and any(kw in full_text[:20] for kw in STOP_KW):
+            if not _is_fmt_note:
+                break
+
+        # Skip individual format notes & section headers
+        if full_text:
+            if _is_fmt_note or _is_fmt_header:
+                continue
+            if any(kw in full_text[:30] for kw in SKIP_KW):
+                continue
+            if len(full_text) > 40 and '删除' in full_text[:80]:
+                continue
+
+        # Check for images
+        has_img = False
+        img_extent = None
+        img_srcRect = {}
+        for inline in child.iter(f'{{{WP}}}inline'):
+            ext = inline.find(f'{{{WP}}}extent')
+            if ext is not None:
+                img_extent = {'cx': ext.get('cx', '0'), 'cy': ext.get('cy', '0')}
+            for sr in inline.iter(f'{{{A}}}srcRect'):
+                img_srcRect = {'l': sr.get('l', '0'), 't': sr.get('t', '0'),
+                               'r': sr.get('r', '0'), 'b': sr.get('b', '0')}
+            for blip in inline.iter(f'{{{A}}}blip'):
+                emb = blip.get(f'{{{R}}}embed')
+                if emb and emb in doc.part.rels and 'image' in doc.part.rels[emb].reltype:
+                    has_img = True
+                    break
+            break
+
+        if has_img:
+            elements.append({
+                'type': 'image',
+                'al': palign, 'ls_val': line_val, 'ls_rule': lineRule,
+                'extent': img_extent, 'srcRect': img_srcRect,
+                'rEmbed': emb,
+                'r': runs,
+            })
+        elif not full_text:
+            elements.append({
+                'type': 'empty',
+                'al': palign, 'ls_val': line_val, 'ls_rule': lineRule,
+                'sp_before': before_val, 'fl_indent': first_line,
+                'r': runs,  # run font sizes control paragraph height even when empty
+            })
+        else:
+            elements.append({
+                'type': 'para',
+                'al': palign, 'ls_val': line_val, 'ls_rule': lineRule,
+                'sp_before': before_val, 'fl_indent': first_line,
+                'r': runs,
+            })
+
+    return elements
 
 
 if __name__ == '__main__':

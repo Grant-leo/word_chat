@@ -157,28 +157,38 @@ def detect_heading_level(para):
 
 
 def extract_images_from_para(para, fig_dir, prefix='img'):
-    """Extract inline images, save with plain-ASCII safe names. Returns list of filenames."""
+    """Extract inline images by rId. Returns list of filenames."""
     saved = []
+    A_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+    R_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+    _existing = len([f for f in os.listdir(fig_dir) if f.startswith(prefix)])
     for run in para.runs:
         xml = run._element.xml
         if 'w:drawing' not in xml and 'wp:inline' not in xml:
             continue
-        for rel in para.part.rels.values():
-            if 'image' not in rel.reltype:
-                continue
-            try:
-                ext = rel.target_ref.rsplit('.', 1)[-1]
-                if ext.lower() not in ('png', 'jpg', 'jpeg', 'gif', 'bmp', 'tiff'):
-                    ext = 'png'
-                seq = len([f for f in os.listdir(fig_dir) if f.startswith(prefix)]) + 1
-                fname = f'{prefix}_{seq:03d}.{ext}'
-                fpath = os.path.join(fig_dir, fname)
-                if not os.path.exists(fpath):
-                    with open(fpath, 'wb') as f:
-                        f.write(rel.target_part.blob)
-                saved.append(fname)
-            except:
-                pass
+        seen_rids = set()
+        for blip in run._element.iter(f'{{{A_NS}}}blip'):
+            embed = blip.get(f'{{{R_NS}}}embed')
+            if embed and embed not in seen_rids:
+                seen_rids.add(embed)
+        for rid in seen_rids:
+            if rid in para.part.rels:
+                rel = para.part.rels[rid]
+                if 'image' not in rel.reltype:
+                    continue
+                try:
+                    ext = rel.target_ref.rsplit('.', 1)[-1]
+                    if ext.lower() not in ('png', 'jpg', 'jpeg', 'gif', 'bmp', 'tiff'):
+                        ext = 'png'
+                    _existing += 1
+                    fname = f'{prefix}_{_existing:03d}.{ext}'
+                    fpath = os.path.join(fig_dir, fname)
+                    if not os.path.exists(fpath):
+                        with open(fpath, 'wb') as f:
+                            f.write(rel.target_part.blob)
+                    saved.append(fname)
+                except:
+                    pass
     return saved
 
 
@@ -227,6 +237,29 @@ def extract(docx_path, output_dir='Inputs'):
     if best_title[0]:
         content['title_info']['title_cn'] = best_title[0]
         text_start = best_title[2] + 1
+
+    # ── Extract cover info from content docx tables ──
+    cover_info = {}
+    _COVER_LABEL_MAP = {
+        '学校编码': 'school_code', '论文题目': 'paper_title',
+        '学生姓名': 'student_name', '学号': 'student_id', '学    号': 'student_id',
+        '所属学院': 'college', '专业班级': 'class_name',
+        '指导老师': 'advisor', '指导教师': 'advisor',
+    }
+    for table in doc.tables[:5]:
+        for row in table.rows:
+            if len(row.cells) >= 2:
+                label = row.cells[0].text.strip()
+                value = row.cells[1].text.strip()
+                if label and value:
+                    for kw, key in _COVER_LABEL_MAP.items():
+                        if kw in label:
+                            content['cover_info'] = content.get('cover_info', {})
+                            content['cover_info'][key] = value
+                            cover_info[key] = value
+                            break
+    if not content['title_info'].get('title_cn') and cover_info.get('paper_title'):
+        content['title_info']['title_cn'] = cover_info['paper_title']
 
     # ── Parse sections ──
     current_section = {'heading': '正文', 'level': 1, 'paragraphs': [], 'images': []}
