@@ -323,7 +323,7 @@ def _extract_cover(doc):
                                 sz = rPr.find(f'{{{W}}}sz')
                                 if sz is not None:
                                     fsz = int(sz.get(f'{{{W}}}val', '0')) // 2
-                                fbold = rPr.find(f'{{{W}}}b') is not None
+                                _b_el = rPr.find(f'{{{W}}}b'); fbold = _b_el is not None and _b_el.get(f'{{{W}}}val', '1') not in ('0', 'false', 'False')
                             txt = ''.join(t.text or '' for t in r.findall(f'{{{W}}}t'))
                             runs.append({'t': txt, 'fn': fn_ascii, 'fe': fn_ea, 'sz': fsz, 'b': fbold})
                         cell_paras.append({'al': palign, 'r': runs})
@@ -360,7 +360,7 @@ def _extract_cover(doc):
                 sz = rPr.find(f'{{{W}}}sz')
                 if sz is not None:
                     fsz = int(sz.get(f'{{{W}}}val', '0')) // 2
-                fbold = rPr.find(f'{{{W}}}b') is not None
+                _b_el = rPr.find(f'{{{W}}}b'); fbold = _b_el is not None and _b_el.get(f'{{{W}}}val', '1') not in ('0', 'false', 'False')
             txt = ''.join(t.text or '' for t in r.findall(f'{{{W}}}t'))
             runs.append({'t': txt, 'fn': fn_ascii, 'fe': fn_ea, 'sz': fsz, 'b': fbold})
 

@@ -84,13 +84,16 @@ def detect_heading_level(para):
     label_patterns = [
         (r'(?i)^(Abstract\s*:?)', 2),
         (r'(?i)^(Key\s*words?\s*:?)', 2),
-        (r'^(摘要\s*[：:])', 2),
-        (r'^(关键词\s*[：:])', 2),
+        (r'^(摘要\s*[：:]?)', 2),
+        (r'^(关键词\s*[：:]?)', 2),
     ]
     for pat, lvl in label_patterns:
         if re.match(pat, text):
             return lvl
 
+    # ── Chinese chapter headings: "第X章" pattern ──
+    if re.match(r'^第[一二三四五六七八九十\d]+章', text):
+        return 1
     # ── Numbered heading patterns for long paragraphs (>200 chars) ──
     if len(text) > 200:
         heading_patterns = [

@@ -254,9 +254,20 @@ def _extract_params(fmt):
 
     # ── Header ──
     hdr = None
-    if s0.get('header'):
-        h0 = s0['header'][0]
-        r0 = h0['runs'][0] if h0.get('runs') else {}
+    # Search all sections for first non-empty header (section 0 is usually empty/cover)
+    for _sec in fmt.get('sections', []):
+        _sh = _sec.get('header', [])
+        if not _sh or not _sh[0].get('text', '').strip():
+            continue
+        h0 = _sh[0]
+        # Prefer the run that has actual text and font (not empty placeholder)
+        _hruns = h0.get('runs', [])
+        r0 = {}
+        for _hr in _hruns:
+            if _hr.get('text', '').strip() or (_hr.get('font') and _hr.get('size_pt')):
+                r0 = _hr; break
+        if not r0 and _hruns:
+            r0 = _hruns[0]
         hdr_text = h0.get('text', '')
         # Strip Chinese formatting notes like "（新罗马字体，五号加粗居中）"
         hdr_text = re.sub(r'（[^）]*[号字体新罗马粗细斜居左右顶格][^）]*）', '', hdr_text).strip()
@@ -271,6 +282,7 @@ def _extract_params(fmt):
             'bold': r0.get('bold', False),
             'italic': r0.get('italic', False),
         }
+        break
     P['header'] = hdr
 
     # ── Body text: sample from long paragraphs (real content, not cover/headings/declarations) ──
@@ -531,6 +543,16 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
         l('if rf is None: rf = OxmlElement("w:rFonts"); rp.insert(0, rf)')
         l(f'rf.set(qn("w:eastAsia"), "{_hdr_font}"); rf.set(qn("w:hint"), "eastAsia")')
         l(f"r.bold = {h['bold']}; r.italic = {h['italic']}")
+        l('# Header bottom border (horizontal line)')
+        l('pPr = hp._element.get_or_add_pPr()')
+        l('pBdr = OxmlElement("w:pBdr")')
+        l('bottom = OxmlElement("w:bottom")')
+        l('bottom.set(qn("w:val"), "single")')
+        l('bottom.set(qn("w:sz"), "4")')
+        l('bottom.set(qn("w:space"), "1")')
+        l('bottom.set(qn("w:color"), "auto")')
+        l('pBdr.append(bottom)')
+        l('pPr.append(pBdr)')
         l('')
 
     # ═══ DEFAULT STYLE ═══
@@ -668,8 +690,7 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
     l('    fld_end.set(qn("w:fldCharType"), "end")')
     l('    tr2._element.append(fld_end)')
     l('')
-    l('# Uncomment the next line to insert TOC after cover page:')
-    l('# insert_toc(doc)')
+    l('# TOC inserted after cover page — see below')
     l('')
 
     # ═══ CROSS-REFERENCES (Acta architecture) ═══
@@ -1223,14 +1244,28 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
         l('# (no cover elements found in template)')
         l('')
 
-    # -- Title --
+    # Insert TOC after cover page
+    l('# ── Table of Contents (after cover) ──')
+    l('insert_toc(doc)')
+    l('doc.add_page_break()')
+    l('')
+
+    # -- Paper title before abstract --
     ti = cnt.get('title_info', {})
+    ci = cnt.get('cover_info', {})
+    _paper_title = ci.get('paper_title', '') or ti.get('title_cn', '')
+    if _paper_title:
+        l(f"heading1('{_q(_paper_title)}')")
+        l('')
+
     # Sections
     fig_num = 0
     for sec in cnt.get('sections', []):
         h = sec.get('heading', '').strip()
         lv = sec.get('level', 0)
-        if h:
+        # Keywords: combine label + content into one paragraph
+        _is_kw = h in ('关键词：', '关键词', 'KEYWORDS:', 'KEY WORDS:')
+        if h and not _is_kw:
             safe = _q(h)
             # English abstract/keywords headings should be 16pt (heading1 size)
             _use_lv = lv
@@ -1280,8 +1315,28 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
             # Use english_body for English sections (Abstract, KEYWORDS)
             _h_eng = sum(1 for c in h if c.isascii() and c.isalpha())
             _is_eng_section = _h_eng > len(h) * 0.5 or h in ('Abstract', 'KEYWORDS:', 'KEY WORDS:')
-            _body_fn = 'english_body' if _is_eng_section else 'body'
-            l(f"{_body_fn}('{_q(p)}')")
+            if _is_kw:
+                # Keywords: single paragraph, label bold + content normal
+                _kw_label = h.rstrip('：').rstrip(':')
+                l(f"p = doc.add_paragraph()")
+                l(f"r = p.add_run('{_kw_label}：')")
+                _kw_is_eng = _h_eng > len(h) * 0.5 or h in ('KEYWORDS:', 'KEY WORDS:')
+                _kw_font = 'Times New Roman' if _kw_is_eng else P.get('body_font', '宋体')
+                _kw_size = P.get('body_size', 12)
+                l(f"r.font.size = Pt({_kw_size}); r.font.name = '{_kw_font}'; r.bold = True")
+                l(f"rp = r._element.get_or_add_rPr()")
+                l(f"rf = rp.find(qn('w:rFonts'))")
+                l(f"if rf is None: rf = OxmlElement('w:rFonts'); rp.insert(0, rf)")
+                l(f"rf.set(qn('w:eastAsia'), '{_kw_font}'); rf.set(qn('w:hint'), 'eastAsia')")
+                l(f"r2 = p.add_run('{_q(p)}')")
+                l(f"r2.font.size = Pt({_kw_size}); r2.font.name = '{_kw_font}'")
+                l(f"rp = r2._element.get_or_add_rPr()")
+                l(f"rf = rp.find(qn('w:rFonts'))")
+                l(f"if rf is None: rf = OxmlElement('w:rFonts'); rp.insert(0, rf)")
+                l(f"rf.set(qn('w:eastAsia'), '{_kw_font}'); rf.set(qn('w:hint'), 'eastAsia')")
+            else:
+                _body_fn = 'english_body' if _is_eng_section else 'body'
+                l(f"{_body_fn}('{_q(p)}')")
         l('')
 
     # ═══ REFERENCES ═══
