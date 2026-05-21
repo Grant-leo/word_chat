@@ -342,9 +342,9 @@ def extract(docx_path, output_dir='Inputs'):
     if ref_section and ref_section['entries']:
         content['references'] = ref_section['entries']
 
-    # Filter empty sections and placeholder "正文"
+    # Filter: keep sections that have content OR are level-1 chapter containers
     content['sections'] = [s for s in sections
-                           if (s['paragraphs'] or s['images'])
+                           if (s['paragraphs'] or s['images'] or s['level'] == 1)
                            and (s['heading'] != '正文' or len(sections) == 1)]
     if ref_section:
         content['references'] = ref_section['entries']
