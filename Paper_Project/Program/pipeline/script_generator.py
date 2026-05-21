@@ -1257,12 +1257,6 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
         l('pPr.append(pBdr)')
         l('')
 
-    # Insert TOC after cover page
-    l('# ── Table of Contents (after cover) ──')
-    l('insert_toc(doc)')
-    l('doc.add_page_break()')
-    l('')
-
     # -- Paper title before abstract --
     ti = cnt.get('title_info', {})
     ci = cnt.get('cover_info', {})
@@ -1273,9 +1267,17 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
 
     # Sections
     fig_num = 0
+    _toc_done = False
     for sec in cnt.get('sections', []):
         h = sec.get('heading', '').strip()
         lv = sec.get('level', 0)
+        # Insert TOC before first chapter heading (after English abstract)
+        if not _toc_done and lv == 1 and (h.startswith('第') or 'Chapter' in h):
+            l('# ── Table of Contents ──')
+            l('insert_toc(doc)')
+            l('doc.add_page_break()')
+            l('')
+            _toc_done = True
         # Keywords: combine label + content into one paragraph
         _is_kw = h in ('关键词：', '关键词', 'KEYWORDS:', 'KEY WORDS:')
         if h and not _is_kw:
