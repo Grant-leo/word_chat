@@ -46,20 +46,26 @@ def _parse_text_instructions(fmt):
         return default
 
     # ── Heading levels ──
+    # Template text often combines all levels: "一级标题 黑体三号加粗、二级标题 黑体四号加粗 三级标题 黑体小四加粗"
+    # Split by level markers to isolate each level's spec
+    _h_specs = re.split(r'(?=一[级二]标题|二[级二]标题|三[级二]标题)', all_text)
     for level_name, level_key in [('一级标题', 'h1'), ('二级标题', 'h2'), ('三级标题', 'h3')]:
-        pattern = re.compile(rf'{level_name}[^。）]*(?:。|；|）)')
-        matches = pattern.findall(all_text)
-        # Prefer body format over TOC: body instructions are longer and contain '加粗'
-        body_matches = [m for m in matches if '加粗' in m and '目录' not in m]
-        use = body_matches if body_matches else matches
-        # Take the longest match (most detailed instruction)
-        combined = max(use, key=len) if use else ''
+        # Find spec chunks that start with this level name
+        _chunks = [c for c in _h_specs if c.strip().startswith(level_name)]
+        if not _chunks:
+            # Fallback: old regex approach
+            pattern = re.compile(rf'{level_name}[^。）]*(?:。|；|）)')
+            _chunks = pattern.findall(all_text)
+        # Prefer chunks with font/size info, exclude TOC
+        _good = [c for c in _chunks if '加粗' in c and '目录' not in c and _get_size(c) is not None]
+        _use = _good if _good else _chunks
+        combined = max(_use, key=len) if _use else ''
         if combined:
             rules[level_key] = {
                 'size': _get_size(combined, 15 if level_key == 'h1' else 14 if level_key == 'h2' else 12),
-                'font': _get_font(combined, 'Times New Roman'),
+                'font': _get_font(combined, '黑体'),
                 'bold': '加粗' in combined,
-                'align': _get_align(combined, 'CENTER' if level_key == 'h1' else 'LEFT'),
+                'align': _get_align(combined, 'CENTER'),
             }
 
     # ── Cover page — extract text from template tables, ZERO hardcoding ──
@@ -115,21 +121,54 @@ def _parse_text_instructions(fmt):
     }
 
     # ── Body text ──
-    body_pattern = re.compile(r'正文[^。）]*(?:。|；|）)')
+    # Template text may have: "正文：黑体三号加粗…固定值28磅" or "正文宋体小四…"
+    # Search broadly for any text containing "正文" with format specs
+    body_pattern = re.compile(r'正文[^。\n]{0,120}')
     body_matches = body_pattern.findall(all_text)
-    # Prefer matches that specify BOTH line spacing AND indent/alignment
-    best = [m for m in body_matches if '行距' in m and ('缩进' in m or '对齐' in m)]
-    # Fall back to any match with line spacing
-    if not best:
-        best = [m for m in body_matches if '行距' in m]
-    body_text = best[0] if best else (body_matches[0] if body_matches else '')
+    # Find matches with line spacing info
+    _with_ls = [m for m in body_matches if '行距' in m or '固定值' in m]
+    # Also search for "固定值28磅" anywhere (even without "正文" prefix)
+    if not _with_ls:
+        _ls_anywhere = re.findall(r'[^。\n]{0,60}固定值\s*\d+[^。\n]{0,60}', all_text)
+        if _ls_anywhere:
+            body_text = _ls_anywhere[0]
+        else:
+            body_text = body_matches[0] if body_matches else ''
+    else:
+        body_text = _with_ls[0]
+
     if body_text:
+        # Detect line spacing from "固定值28磅" or "1.5倍" or "双倍"
+        _ls_fixed = re.search(r'固定值\s*(\d+(?:\.\d+)?)\s*磅', body_text)
+        if _ls_fixed:
+            _ls_val = f'Pt({float(_ls_fixed.group(1))})'
+        elif '1.5倍' in body_text:
+            _ls_val = 1.5
+        elif '双倍' in body_text:
+            _ls_val = 2.0
+        else:
+            _ls_val = None
+        # Only extract font/size if the match is about body format, not headings
+        # Check if this is a heading instruction misidentified as body
+        _is_heading_spec = any(kw in body_text for kw in ['一级标题', '二级标题', '三级标题', '标题', '目录'])
+        if _is_heading_spec:
+            # The match is about heading specs within body — don't extract body font from it
+            _body_size = 12
+            _body_font = '宋体'
+            _body_align = 'JUSTIFY'
+            _body_indent = 0.74
+        else:
+            _body_size = _get_size(body_text, 12)
+            _body_font = _get_font(body_text, '宋体')
+            _body_align = _get_align(body_text, 'JUSTIFY')
+            _body_indent = 0.74 if '缩进' in body_text and ('2字符' in body_text or '2个汉字' in body_text) else 0
         rules['body'] = {
-            'size': _get_size(body_text, 12),
-            'font': _get_font(body_text, 'Times New Roman'),
-            'ls': 1.5 if '1.5倍' in body_text else (2.0 if '双倍' in body_text else None),
-            'align': _get_align(body_text, 'JUSTIFY'),
-            'indent': 0.74 if '缩进' in body_text and '2字符' in body_text else 0,
+            'size': _body_size,
+            'font': _body_font,
+            'ls': _ls_val,
+            'ls_fixed_pt': float(_ls_fixed.group(1)) if _ls_fixed else None,
+            'align': _body_align,
+            'indent': _body_indent,
         }
 
     # ── Specific labels ──
@@ -231,16 +270,25 @@ def _extract_params(fmt):
         }
     P['header'] = hdr
 
-    # ── Body text: sample from actual content paragraphs (not formatting notes) ──
+    # ── Body text: sample from long paragraphs (real content, not cover/headings/declarations) ──
     samples = []
     for p in fmt['paragraphs']:
         txt = p.get('text', '').strip()
-        if len(txt) < 30:
+        # Must be long enough to be real body content
+        if len(txt) < 100:
             continue
-        if txt.startswith('（') and any(k in txt[:60] for k in ['号', '行距', '缩进', '对齐', '空一行', '备注']):
+        # Skip format notes that start with （
+        if txt.startswith('（') or txt.startswith('('):
+            continue
+        # Skip known cover/declaration content
+        if any(kw in txt[:30] for kw in ['本人郑重', '本科生毕业', '学位评定', '本人在导师', '原创性声明', '版权使用']):
+            continue
+        # Must contain Chinese text (periods, commas, or CJK characters)
+        has_cjk = any('一' <= c <= '鿿' for c in txt[:200])
+        if not has_cjk:
             continue
         for r in p.get('runs', []):
-            if r.get('size_pt') and r.get('font') and not r.get('bold'):
+            if r.get('size_pt') and r.get('font'):
                 samples.append({
                     'size': round(r['size_pt'], 1),
                     'font': r['font'],
@@ -258,8 +306,8 @@ def _extract_params(fmt):
         P['body_align']  = 'JUSTIFY' if raw_align == 'DEFAULT' else raw_align
         P['body_indent'] = Counter(s['indent'] for s in samples).most_common(1)[0][0]
     else:
-        P['body_size'] = 12; P['body_font'] = 'Times New Roman'
-        P['body_ls'] = 1.5; P['body_align'] = 'JUSTIFY'; P['body_indent'] = 0
+        P['body_size'] = 12; P['body_font'] = '宋体'
+        P['body_ls'] = None; P['body_align'] = 'JUSTIFY'; P['body_indent'] = 0.74
 
     # ── CJK font: detect from template paragraphs that contain Chinese characters ──
     cjk_fonts = []
@@ -330,10 +378,40 @@ def _extract_params(fmt):
     if 'body' in text_rules:
         b = text_rules['body']
         if b.get('size'): P['body_size'] = b['size']
-        if b.get('font'): P['body_font'] = b['font']  # use text instruction font
+        if b.get('font'): P['body_font'] = b['font']
         if b.get('ls'): P['body_ls'] = b['ls']
+        if b.get('ls_fixed_pt'): P['body_ls_fixed_pt'] = b['ls_fixed_pt']
         if b.get('align'): P['body_align'] = b['align']
         if b.get('indent') is not None: P['body_indent'] = b['indent']
+
+    # ── English abstract format: read from format.json P39-P43 ──
+    P['eng_abs'] = {}
+    for p in fmt['paragraphs']:
+        txt = p.get('text', '').strip()
+        # P39: ABSTRACT heading
+        if 'ABSTRACT' in txt and len(txt) < 30:
+            for r in p.get('runs', []):
+                if r.get('size_pt') and r.get('size_pt') >= 14:
+                    P['eng_abs']['heading_font'] = r.get('font', 'Times New Roman')
+                    P['eng_abs']['heading_size'] = r['size_pt']
+                    P['eng_abs']['heading_align'] = p.get('alignment', 'CENTER')
+                    P['eng_abs']['heading_bold'] = r.get('bold', True)
+                    break
+        # P40: English abstract body
+        if len(txt) > 100 and all(ord(c) < 128 or c == ' ' for c in txt[:50]):
+            for r in p.get('runs', []):
+                if r.get('size_pt'):
+                    P['eng_abs']['body_font'] = r.get('font', 'Times New Roman')
+                    P['eng_abs']['body_size'] = r['size_pt']
+                    break
+            P['eng_abs']['body_align'] = p.get('alignment', 'JUSTIFY')
+            P['eng_abs']['body_ls'] = p.get('line_spacing_val', 1.5)
+            P['eng_abs']['body_indent'] = p.get('first_indent_cm', 0.9)
+            break
+    if not P['eng_abs']:
+        P['eng_abs'] = {'heading_font': 'Times New Roman', 'heading_size': 16,
+                        'body_font': 'Times New Roman', 'body_size': 12,
+                        'body_align': 'JUSTIFY', 'body_ls': 1.5, 'body_indent': 0.9}
 
     return P
 
@@ -407,7 +485,11 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
     l("sec = doc.sections[0]")
     l("footer = sec.footer; footer.is_linked_to_previous = False")
     l("fp = footer.paragraphs[0]; fp.alignment = WD_ALIGN_PARAGRAPH.CENTER")
-    l(f"rf = fp.add_run(); rf.font.size = Pt({D['footer_size']}); rf.font.name = '{D['footer_font']}'")
+    l("rf = fp.add_run(); rf.font.size = Pt(9); rf.font.name = '宋体'")
+    l('rp = rf._element.get_or_add_rPr()')
+    l('rf2 = rp.find(qn("w:rFonts"))')
+    l('if rf2 is None: rf2 = OxmlElement("w:rFonts"); rp.insert(0, rf2)')
+    l('rf2.set(qn("w:eastAsia"), "宋体"); rf2.set(qn("w:hint"), "eastAsia")')
     l('for tag, attrs in [("w:fldChar", {qn("w:fldCharType"): "begin"}),')
     l('                   ("w:instrText", {}),')
     l('                   ("w:fldChar", {qn("w:fldCharType"): "end"})]:')
@@ -426,7 +508,11 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
         _hdr_align = h['align'] if h['align'] in ('LEFT','CENTER','RIGHT','JUSTIFY','DISTRIBUTE') else 'CENTER'
         l(f"hp = hdr.paragraphs[0]; hp.alignment = WD_ALIGN_PARAGRAPH.{_hdr_align}")
         l(f"r = hp.add_run('{h['text']}')")
-        l(f"r.font.size = Pt({h['size']}); r.font.name = '{h['font']}'")
+        l(f"r.font.size = Pt(9); r.font.name = '宋体'")
+        l('rp = r._element.get_or_add_rPr()')
+        l('rf = rp.find(qn("w:rFonts"))')
+        l('if rf is None: rf = OxmlElement("w:rFonts"); rp.insert(0, rf)')
+        l('rf.set(qn("w:eastAsia"), "宋体"); rf.set(qn("w:hint"), "eastAsia")')
         l(f"r.bold = {h['bold']}; r.italic = {h['italic']}")
         l('')
 
@@ -434,8 +520,8 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
     l('# Default paragraph style')
     l('style = doc.styles["Normal"]')
     l(f"style.font.name = '{P['body_font']}'")
-    l(f'style.font.size = Pt({P["body_size"]})')
-    l(f'style.paragraph_format.line_spacing = {P["body_ls"]}')
+    l('style.font.size = Pt(10)  # match template Normal for cover empties')
+    l('style.paragraph_format.line_spacing = 1.0  # single spacing')
     l('style.paragraph_format.space_after  = Pt(0)')
     l('style.paragraph_format.space_before = Pt(0)')
     l('')
@@ -452,42 +538,89 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
     need_eastAsia = (P['body_font'] != cjk)
 
     # body()
+    _body_ls = P.get('body_ls_fixed_pt')
+    if _body_ls:
+        _ls_code = f'Pt({_body_ls})'
+    elif isinstance(P.get('body_ls'), str) and P['body_ls'].startswith('Pt('):
+        _ls_code = P['body_ls']
+    elif P.get('body_ls'):
+        _ls_code = str(P['body_ls'])
+    else:
+        _ls_code = 'Pt(28.0)'
+    _body_indent_pt = round(P['body_indent'] * 28.35) if P['body_indent'] > 0 else 24
+    _body_font = P.get('body_font', '宋体')
+    _body_size = P.get('body_size', 12)
+    _body_align = P.get('body_align', 'JUSTIFY')
+    _cjk = P.get('cjk_font', '宋体')
+    # Sanity: if body values look like heading format, use sensible defaults
+    if _body_size >= 16 and _body_font == '黑体':
+        _body_size = 12
+        _body_font = '宋体'
+        _body_align = 'JUSTIFY'
+        _body_indent_pt = 24
+    if _body_align not in ('LEFT', 'RIGHT', 'CENTER', 'JUSTIFY', 'DISTRIBUTE'):
+        _body_align = 'JUSTIFY'
+    # Body text should never be CENTER — that's for headings only
+    if _body_align == 'CENTER':
+        _body_align = 'JUSTIFY'
     l('def body(text, first_indent=True, comment=None):')
     l('    p = doc.add_paragraph()')
-    l(f'    p.alignment = WD_ALIGN_PARAGRAPH.{align}')
-    l(f'    pf = p.paragraph_format; pf.line_spacing = {ls}')
-    if indent_pt:
-        l('    if first_indent:')
-        l(f'        pf.first_line_indent = Pt({indent_pt})')
+    l(f'    p.alignment = WD_ALIGN_PARAGRAPH.{_body_align}')
+    l(f'    pf = p.paragraph_format; pf.line_spacing = {_ls_code}')
+    l('    pf.space_after = Pt(0)')
+    l('    pf.space_before = Pt(0)')
+    l('    if first_indent:')
+    l(f'        pf.first_line_indent = Pt({_body_indent_pt})')
     l('    r = p.add_run(text)')
-    l(f"    r.font.name = '{P['body_font']}'; r.font.size = Pt({P['body_size']})")
-    if need_eastAsia:
-        l(f'    rp = r._element.get_or_add_rPr()')
-        l(f'    rf = rp.find(qn("w:rFonts"))')
-        l(f'    if rf is None: rf = OxmlElement("w:rFonts"); rp.insert(0, rf)')
-        l(f'    rf.set(qn("w:eastAsia"), "{cjk}"); rf.set(qn("w:hint"), "eastAsia")')
+    l(f"    r.font.name = '{_body_font}'; r.font.size = Pt({_body_size})")
+    l('    rp = r._element.get_or_add_rPr()')
+    l('    rf = rp.find(qn("w:rFonts"))')
+    l('    if rf is None: rf = OxmlElement("w:rFonts"); rp.insert(0, rf)')
+    l(f'    rf.set(qn("w:eastAsia"), "{_cjk}"); rf.set(qn("w:hint"), "eastAsia")')
     l('    if comment:')
     l('        _cc.add(p, comment)')
     l('    return p')
     l('')
 
-    # headings
+    # headings — with English detection for auto TNR
+    # sizes: H1=三号16pt, H2=四号14pt, H3=小四12pt
+    _h_sizes = {1: 16, 2: 14, 3: 12}
     for hl in P['h_levels']:
         n = hl['level']
+        _hsz = _h_sizes.get(n, hl.get('size', 12))
         l(f'def heading{n}(text, comment=None):')
         l('    p = doc.add_paragraph()')
-        l(f'    p.alignment = WD_ALIGN_PARAGRAPH.{hl["align"]}')
-        l(f'    pf = p.paragraph_format; pf.line_spacing = {ls}')
+        l(f'    p.alignment = WD_ALIGN_PARAGRAPH.CENTER')
+        l('    pf = p.paragraph_format; pf.line_spacing = Pt(28.0)')
         l(f'    pf.space_before = Pt({hl["space_before"]})')
         l('    r = p.add_run(text); r.bold = True')
-        l(f"    r.font.name = '{P['body_font']}'; r.font.size = Pt({hl['size']})")
-        if need_eastAsia:
-            l(f'    rp = r._element.get_or_add_rPr()')
-            l(f'    rf = rp.find(qn("w:rFonts"))')
-            l(f'    if rf is None: rf = OxmlElement("w:rFonts"); rp.insert(0, rf)')
-            l(f'    rf.set(qn("w:eastAsia"), "{cjk}"); rf.set(qn("w:hint"), "eastAsia")')
+        l('    eng = sum(1 for c in text if c.isascii() and c.isalpha()) / max(len(text),1)')
+        l('    fn = "Times New Roman" if eng > 0.5 else "黑体"')
+        l(f'    r.font.name = fn; r.font.size = Pt({_hsz})')
+        l('    rp = r._element.get_or_add_rPr()')
+        l('    rf = rp.find(qn("w:rFonts"))')
+        l('    if rf is None: rf = OxmlElement("w:rFonts"); rp.insert(0, rf)')
+        l('    rf.set(qn("w:eastAsia"), fn); rf.set(qn("w:hint"), "eastAsia")')
         l('    if comment:')
         l('        _cc.add(p, comment)')
+        l('    return p')
+        l('')
+        l('')
+        _ea = P['eng_abs']
+        l('# English body text — format from template English abstract section')
+        l('def english_body(text):')
+        l('    p = doc.add_paragraph()')
+        l(f"    p.alignment = WD_ALIGN_PARAGRAPH.{_ea['body_align']}")
+        l(f'    pf = p.paragraph_format; pf.line_spacing = {_ea["body_ls"]}')
+        l('    pf.space_after = Pt(0)')
+        l('    pf.space_before = Pt(0)')
+        l(f'    pf.first_line_indent = Cm({_ea["body_indent"]})')
+        l('    r = p.add_run(text)')
+        l(f"    r.font.name = '{_ea['body_font']}'; r.font.size = Pt({_ea['body_size']})")
+        l('    rp = r._element.get_or_add_rPr()')
+        l('    rf = rp.find(qn("w:rFonts"))')
+        l('    if rf is None: rf = OxmlElement("w:rFonts"); rp.insert(0, rf)')
+        l(f'    rf.set(qn("w:eastAsia"), "{_ea["body_font"]}"); rf.set(qn("w:hint"), "eastAsia")')
         l('    return p')
         l('')
 
@@ -867,149 +1000,221 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
     # ═══ CONTENT ═══
     l('# ═══════════════════ CONTENT ═══════════════════')
     l('')
+    # -- Cover page -- use pre-extracted cover elements from format.json --
+    cover_elements = fmt.get('cover', [])
+    cover_info = cnt.get('cover_info', {})
+    _content_map = {}
+    if cover_info:
+        _ci = cover_info
+        _LABELS = {
+            'school_code': '学校编码：', 'paper_title': '论文题目：',
+            'student_name': '学生姓名：', 'student_id': '学    号：',
+            'college': '所属学院：', 'class_name': '专业班级：',
+            'advisor': '指导老师：',
+        }
+        for _k, _label_tmpl in _LABELS.items():
+            if _k in _ci:
+                _content_map[_label_tmpl] = _ci[_k]
 
-    # ── Cover page — ALL from template body analysis ──
-    cover = P.get('_text_rules', {}).get('cover')
-    bf = P['body_font']
-    if cover and cover.get('labels'):
-        cv = cover
-        labels = cv['labels']
-        ti = cnt.get('title_info', {})
-        paper_title = _q(ti.get('title_cn', 'Paper Title'))
-
-        # Read template docx to count exact empty-paragraph gaps between cover elements
-        template_path = os.path.join(TEMPLATE_DIR if 'TEMPLATE_DIR' in dir() else 'Templates',
-                                     fmt['_meta']['source'])
-        from docx import Document as _Doc
-        try:
-            _tpl = _Doc(template_path)
-            _body = _tpl.element.body
-            _gaps = []  # consecutive empty paragraph counts between non-empty elements
-            _empty_run = 0
-            for _ch in _body:
-                _tag = _ch.tag.split('}')[-1]
-                if _tag == 'p':
-                    _txt = ''
-                    for _r in _ch:
-                        for _t in _r:
-                            if _t.tag.split('}')[-1] == 't':
-                                _txt += (_t.text or '')
-                    if not _txt.strip():
-                        _empty_run += 1
-                    else:
-                        if _empty_run > 0:
-                            _gaps.append(_empty_run)
-                        _empty_run = 0
-                elif _tag == 'tbl':
-                    if _empty_run > 0:
-                        _gaps.append(_empty_run)
-                    _empty_run = 0
-            if _empty_run > 0:
-                _gaps.append(_empty_run)
-        except Exception:
-            _gaps = [6, 4, 2, 0, 1]  # fallback from template analysis
-
-        # _gaps are the empty paragraph counts between cover elements in order:
-        # [before_title, after_title, between_tables, after_info_table, before_date]
-        g = _gaps + [1] * (5 - len(_gaps))  # pad if needed
-        g0, g1, g2, g3, g4 = g[0], g[1], g[2], g[3], g[4]
-
-        l('# ═══════════════════ COVER ═══════════════════')
-        l('from docx.oxml import OxmlElement as _OE')
-        l('from docx.oxml.ns import qn as _qn')
-        l(f'for _ in range({g0}): doc.add_paragraph()')
-        ct_text = _q(cv.get('title_text', ''))
-        if ct_text:
-            l(f'p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER')
-            l(f"r = p.add_run('{ct_text}'); r.bold = True")
-            l(f'r.font.size = Pt({cv["title_size"]}); r.font.name = "{cv["title_font"]}"')
-            # Set east-asia font so WPS renders CJK correctly
-            cv_font_name = cv["title_font"]
-            l(f'if "{cv_font_name}" != "Times New Roman":')
-            l(f'    rp = r._element.get_or_add_rPr()')
-            l(f'    rf = rp.find(_qn("w:rFonts"))')
-            l(f'    if rf is None: rf = _OE("w:rFonts"); rp.insert(0, rf)')
-            l(f'    rf.set(_qn("w:eastAsia"), "{cv_font_name}")')
-        l(f'for _ in range({g1}): doc.add_paragraph()')
-        l(f't_title = doc.add_table(rows=1, cols=2)')
-        l(f"r = t_title.rows[0].cells[0].paragraphs[0].add_run('{_q(labels[0])}')")
-        l(f'r.font.size = Pt({cv["label_size"]}); r.font.name = "{cv["label_font"]}"; r.bold = True')
-        l(f'if "{cv["label_font"]}" != "Times New Roman":')
-        l(f'    rp = r._element.get_or_add_rPr()')
-        l(f'    rf = rp.find(_qn("w:rFonts"))')
-        l(f'    if rf is None: rf = _OE("w:rFonts"); rp.insert(0, rf)')
-        l(f'    rf.set(_qn("w:eastAsia"), "{cv["label_font"]}")')
-        l(f"r = t_title.rows[0].cells[1].paragraphs[0].add_run('{paper_title}')")
-        l(f'r.font.size = Pt({cv["label_size"]}); r.font.name = "{bf}"')
-        if need_eastAsia:
-            l(f'rp = r._element.get_or_add_rPr()')
-            l(f'rf = rp.find(_qn("w:rFonts"))')
-            l(f'if rf is None: rf = _OE("w:rFonts"); rp.insert(0, rf)')
-            l(f'rf.set(_qn("w:eastAsia"), "{cjk}")')
-        l('for t in [t_title]:')
-        l('    for row in t.rows:')
-        l('        tr = row._tr; trPr = tr.find(_qn("w:trPr"))')
-        l('        if trPr is None: trPr = _OE("w:trPr"); tr.insert(0, trPr)')
-        l('        th = _OE("w:trHeight"); th.set(_qn("w:val"), "510")')
-        l('        th.set(_qn("w:hRule"), "atLeast"); trPr.append(th)')
-        l(f'for _ in range({g2}): doc.add_paragraph()')
-        l(f't_info = doc.add_table(rows={len(labels)-1}, cols=2)')
-        l(f'info_labels = [')
-        for lb in labels[1:]:
-            l(f"    '{_q(lb)}',")
-        l(']')
-        l('for i, label in enumerate(info_labels):')
-        l(f'    r = t_info.rows[i].cells[0].paragraphs[0].add_run(label)')
-        l(f'    r.font.size = Pt({cv["label_size"]}); r.font.name = "{cv["label_font"]}"; r.bold = True')
-        l(f'    if "{cv["label_font"]}" != "Times New Roman":')
-        l(f'        rp = r._element.get_or_add_rPr()')
-        l(f'        rf = rp.find(_qn("w:rFonts"))')
-        l(f'        if rf is None: rf = _OE("w:rFonts"); rp.insert(0, rf)')
-        l(f'        rf.set(_qn("w:eastAsia"), "{cv["label_font"]}")')
-        l('    tr = t_info.rows[i]._tr; trPr = tr.find(_qn("w:trPr"))')
-        l('    if trPr is None: trPr = _OE("w:trPr"); tr.insert(0, trPr)')
-        l('    th = _OE("w:trHeight"); th.set(_qn("w:val"), "510")')
-        l('    th.set(_qn("w:hRule"), "atLeast"); trPr.append(th)')
-        l(f'for _ in range({g3}): doc.add_paragraph()')
-        l(f'p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER')
-        l(f"r = p.add_run('（完成时间按照答辩时间填写）'); r.bold = True")
-        l(f'r.font.size = Pt({cv["label_size"]}); r.font.name = "{bf}"')
-        if need_eastAsia:
-            l(f'rp = r._element.get_or_add_rPr()')
-            l(f'rf = rp.find(_qn("w:rFonts"))')
-            l(f'if rf is None: rf = _OE("w:rFonts"); rp.insert(0, rf)')
-            l(f'rf.set(_qn("w:eastAsia"), "{cjk}")')
-        l(f'for _ in range({g4}): doc.add_paragraph()')
-        l(f'p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER')
-        l(f"r = p.add_run('年  月  日')")
-        l(f'r.font.size = Pt({cv["label_size"]}); r.font.name = "{bf}"')
-        if need_eastAsia:
-            l(f'rp = r._element.get_or_add_rPr()')
-            l(f'rf = rp.find(_qn("w:rFonts"))')
-            l(f'if rf is None: rf = _OE("w:rFonts"); rp.insert(0, rf)')
-            l(f'rf.set(_qn("w:eastAsia"), "{cjk}")')
+    if cover_elements:
         l('')
+        l('# ' + '='*20 + ' COVER ' + '='*20)
+        l('from docx import Document as _Doc')
+        l('import io as _io, os as _os')
+        _tp = os.path.abspath(os.path.join('Templates', fmt['_meta']['source'])).replace(chr(92), chr(47))
+        l(f"_tpl = _Doc(r'{_tp}')")
+        l('_tpl_rels = _tpl.part.rels')
+        l('from PIL import Image as _PILImg')
+        l('from docx.enum.text import WD_LINE_SPACING')
+        l('')
+        _els_json = json.dumps(cover_elements, ensure_ascii=False)
+        _els_json = _els_json.replace('true', 'True').replace('false', 'False').replace('null', 'None')
+        l('_cover_els = ' + _els_json)
+        l('')
+        l('_cmap = {')
+        for _k, _v in sorted(_content_map.items(), key=lambda x: -len(x[0])):
+            l(f"    '{_q(_k)}': '{_q(_v)}',")
+        l('}')
+        l('')
+        l('_img_seq = 0')
+        l('_img_dir = _os.path.join(BASE, "cover_images")')
+        l('_os.makedirs(_img_dir, exist_ok=True)')
+        l('')
+        l('for _el in _cover_els:')
+        l('    _etyp = _el.get("type","")')
+        l('')
+        l('    if _etyp in ("empty","para"):')
+        l('        p = doc.add_paragraph()')
+        l('        pf = p.paragraph_format')
+        l('        _al = _el.get("al")')
+        l('        _am = {"left":"LEFT","center":"CENTER","right":"RIGHT","both":"JUSTIFY","distribute":"DISTRIBUTE"}')
+        l('        if _al: setattr(p, "alignment", getattr(WD_ALIGN_PARAGRAPH, _am.get(_al, "LEFT")))')
+        l('        _ls_val = _el.get("ls_val")')
+        l('        _ls_rule = _el.get("ls_rule")')
+        l('        if _ls_val:')
+        l('            _ls_n = int(_ls_val)')
+        l('            if _ls_rule in ("exact",):')
+        l('                pf.line_spacing = Pt(_ls_n / 20)')
+        l('                pf.line_spacing_rule = WD_LINE_SPACING.EXACTLY')
+        l('            elif _ls_rule in ("atLeast",):')
+        l('                pf.line_spacing = Pt(_ls_n / 20)')
+        l('                pf.line_spacing_rule = WD_LINE_SPACING.AT_LEAST')
+        l('            else:')
+        l('                pf.line_spacing = _ls_n / 240')
+        l('        _sp_before = _el.get("sp_before")')
+        l('        if _sp_before: pf.space_before = Pt(int(_sp_before) / 20)')
+        l('        _fl_indent = _el.get("fl_indent")')
+        l('        if _fl_indent:')
+        l('            _fli = int(_fl_indent)')
+        l('            if _fli > 0: pf.first_line_indent = Pt(_fli / 20)')
+        l('        _ft = "".join(r.get("t","") for r in _el.get("r",[]))')
+        l('        for _r in _el.get("r",[]):')
+        l('            _rt = _r.get("t","")')
+        l('            _fn = _r.get("fn") or _r.get("fe") or ""')
+        l('            _fea = _r.get("fe") or ""')
+        l('            _fsz = _r.get("sz") or 0')
+        l('            _fb = _r.get("b", False)')
+        l('            if _etyp == "empty" and _fsz <= 0 and not _rt: continue')
+        l('            rr = p.add_run(_rt)')
+        l('            if _fsz > 0: rr.font.size = Pt(_fsz)')
+        l('            rr.font.name = _fn')
+        l('            if _fb: rr.bold = True')
+        l('            if _fea:')
+        l('                rp = rr._element.get_or_add_rPr()')
+        l('                rf = rp.find(qn("w:rFonts"))')
+        l('                if rf is None: rf = OxmlElement("w:rFonts"); rp.insert(0, rf)')
+        l('                rf.set(qn("w:eastAsia"), _fea); rf.set(qn("w:hint"), "eastAsia")')
+        l('        if "学位评定委员会" in _ft:')
+        l('            _r = p.add_run()')
+        l('            _br = OxmlElement("w:br"); _br.set(qn("w:type"), "page")')
+        l('            _r._element.append(_br)')
+        l('')
+        l('    elif _etyp =="image":')
+        l('        _ext = _el.get("extent",{})')
+        l('        _cx = max(0.5, int(_ext.get("cx","0")) / 914400) if _ext else 5')
+        l('        _src = _el.get("srcRect",{})')
+        l('        _rEmbed = _el.get("rEmbed","")')
+        l('        _fp = _os.path.join(_img_dir, f"cover_img_{_img_seq:02d}.png")')
+        l('        if not _os.path.exists(_fp):')
+        l('            if _rEmbed and _rEmbed in _tpl_rels:')
+        l('                _rel = _tpl_rels[_rEmbed]')
+        l('                if "image" in _rel.reltype:')
+        l('                    _blob = _rel.target_part.blob')
+        l('                    if _src:')
+        l('                        _pi = _PILImg.open(_io.BytesIO(_blob))')
+        l('                        _pic_w, _pic_h = _pi.size')
+        l('                        _l = int(_pic_w*int(_src.get("l","0"))/100000)')
+        l('                        _t = int(_pic_h*int(_src.get("t","0"))/100000)')
+        l('                        _r = int(_pic_w*int(_src.get("r","0"))/100000)')
+        l('                        _b = int(_pic_h*int(_src.get("b","0"))/100000)')
+        l('                        _pi.crop((_l,_t,_pic_w-_r,_pic_h-_b)).save(_fp,"PNG")')
+        l('                    else:')
+        l('                        with open(_fp,"wb") as _f: _f.write(_blob)')
+        l('        if _os.path.exists(_fp):')
+        l('            doc.add_picture(_fp, width=Inches(_cx))')
+        l('            pf = doc.paragraphs[-1].paragraph_format')
+        l('            _al = _el.get("al")')
+        l('            _am = {"left":"LEFT","center":"CENTER","right":"RIGHT","both":"JUSTIFY","distribute":"DISTRIBUTE"}')
+        l('            if _al: doc.paragraphs[-1].alignment = getattr(WD_ALIGN_PARAGRAPH, _am.get(_al, "CENTER"))')
+        l('            _ls_val = _el.get("ls_val")')
+        l('            _ls_rule = _el.get("ls_rule")')
+        l('            if _ls_val:')
+        l('                _ls_n = int(_ls_val)')
+        l('                if _ls_rule in ("exact",):')
+        l('                    pf.line_spacing = Pt(_ls_n / 20)')
+        l('                    pf.line_spacing_rule = WD_LINE_SPACING.EXACTLY')
+        l('                elif _ls_rule in ("atLeast",):')
+        l('                    pf.line_spacing = Pt(_ls_n / 20)')
+        l('                    pf.line_spacing_rule = WD_LINE_SPACING.AT_LEAST')
+        l('                else:')
+        l('                    pf.line_spacing = _ls_n / 240')
+        l('            for _r in _el.get("r",[]):')
+        l('                _rt = _r.get("t","")')
+        l('                if not _rt: continue')
+        l('                _fn = _r.get("fn") or _r.get("fe") or ""')
+        l('                _fea = _r.get("fe") or ""')
+        l('                _fsz = _r.get("sz") or 0')
+        l('                rr = doc.paragraphs[-1].add_run(_rt)')
+        l('                if _fsz > 0: rr.font.size = Pt(_fsz)')
+        l('                if _fn: rr.font.name = _fn')
+        l('                if _fea:')
+        l('                    rp = rr._element.get_or_add_rPr()')
+        l('                    rf = rp.find(qn("w:rFonts"))')
+        l('                    if rf is None: rf = OxmlElement("w:rFonts"); rp.insert(0, rf)')
+        l('                    rf.set(qn("w:eastAsia"), _fea); rf.set(qn("w:hint"), "eastAsia")')
+        l('        _img_seq += 1')
+        l('')
+        l('    elif _etyp =="table":')
+        l('        _rows = _el.get("rows",[])')
+        l('        _nrows = len(_rows)')
+        l('        _ncols = max(len(r) for r in _rows) if _rows else 2')
+        l('        t = doc.add_table(rows=_nrows, cols=_ncols)')
+        l('        for _ri, _row in enumerate(_rows):')
+        l('            _row_label = ""')
+        l('            if len(_row) > 0:')
+        l('                _p0_l = _row[0].get("p",[{}])[0] if _row[0].get("p") else {}')
+        l('                _runs_l = _p0_l.get("r",[])')
+        l('                _row_label = "".join(r.get("t","") for r in _runs_l).strip()')
+        l('            _row_val = _cmap.get(_row_label, "")')
+        l('            if not _row_val:')
+        l('                for _ck, _cv in _cmap.items():')
+        l('                    if _ck in _row_label or _row_label in _ck:')
+        l('                        _row_val = _cv; break')
+        l('            for _ci, _cell in enumerate(_row):')
+        l('                _paras = _cell.get("p",[])')
+        l('                if not _paras: continue')
+        l('                _p0 = _paras[0]')
+        l('                _runs0 = _p0.get("r",[])')
+        l('                if not _runs0: continue')
+        l('                _cell_label = "".join(r.get("t","") for r in _runs0).strip()')
+        l('                if _ci == 1 and _row_val:')
+        l('                    _use = _row_val')
+        l('                else:')
+        l('                    _use = _cell_label')
+        l('                _r0 = _runs0[0]')
+        l('                _fn2 = _r0.get("fn") or _r0.get("fe") or ""')
+        l('                _fea2 = _r0.get("fe") or ""')
+        l('                _fsz2 = _r0.get("sz") or 0')
+        l('                _fb2 = _r0.get("b", False)')
+        l('                _al2 = _p0.get("al")')
+        l('                _am2 = {"left":"LEFT","center":"CENTER","right":"RIGHT","both":"JUSTIFY"}')
+        l('                cell = t.rows[_ri].cells[_ci]')
+        l('                cell.text = ""')
+        l('                if _al2: cell.paragraphs[0].alignment = getattr(WD_ALIGN_PARAGRAPH, _am2.get(_al2, "CENTER"))')
+        l('                r = cell.paragraphs[0].add_run(_use)')
+        l('                r.font.name = _fn2 if _fn2 else "宋体"')
+        l('                if _fsz2 > 0: r.font.size = Pt(_fsz2)')
+        l('                if _fb2: r.bold = True')
+        l('                _ea = _fea2 if _fea2 else "宋体"')
+        l('                rp = r._element.get_or_add_rPr()')
+        l('                rf = rp.find(qn("w:rFonts"))')
+        l('                if rf is None: rf = OxmlElement("w:rFonts"); rp.insert(0, rf)')
+        l('                rf.set(qn("w:eastAsia"), _ea); rf.set(qn("w:hint"), "eastAsia")')
+        l('                _borders = _cell.get("borders",{})')
+        l('                if _borders:')
+        l('                    tcPr = cell._tc.get_or_add_tcPr()')
+        l('                    for old in tcPr.findall(qn("w:tcBorders")): tcPr.remove(old)')
+        l('                    tcB = OxmlElement("w:tcBorders"); tcPr.append(tcB)')
+        l('                    for _bp, _bv in _borders.items():')
+        l('                        if isinstance(_bv, dict):')
+        l('                            b = OxmlElement(f"w:{_bp}")')
+        l('                            b.set(qn("w:val"), _bv.get("val","single"))')
+        l('                            b.set(qn("w:sz"), _bv.get("sz","4"))')
+        l('                            b.set(qn("w:space"), "0")')
+        l('                            b.set(qn("w:color"), _bv.get("color","000000"))')
+        l('                            tcB.append(b)')
+        l('                _cw = _cell.get("w",0)')
+        l('                if _cw: cell.width = Cm(round(_cw/567,1))')
+        l('')
+        l('# Page break after cover+declarations')
         l('doc.add_page_break()')
         l('')
-
-    # ── Title ──
-    ti = cnt.get('title_info', {})
-    title_text = ti.get('title_cn', '')
-    if title_text:
-        l(f'# Title')
-        l('p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER')
-        l(f"r = p.add_run('{_q(title_text)}'); r.bold = True")
-        if P['h_levels']:
-            l(f'r.font.size = Pt({P["h_levels"][0]["size"]})')
-        l(f"r.font.name = '{P['body_font']}'")
-        if need_eastAsia:
-            l(f'rp = r._element.get_or_add_rPr()')
-            l(f'rf = rp.find(qn("w:rFonts"))')
-            l(f'if rf is None: rf = OxmlElement("w:rFonts"); rp.insert(0, rf)')
-            l(f'rf.set(qn("w:eastAsia"), "{cjk}"); rf.set(qn("w:hint"), "eastAsia")')
+    else:
+        l('# (no cover elements found in template)')
         l('')
-    l('')
 
+    # -- Title --
+    ti = cnt.get('title_info', {})
     # Sections
     fig_num = 0
     for sec in cnt.get('sections', []):
@@ -1017,8 +1222,12 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
         lv = sec.get('level', 0)
         if h:
             safe = _q(h)
-            if lv >= 1 and lv <= 3:
-                l(f'heading{lv}("{safe}")')
+            # English abstract/keywords headings should be 16pt (heading1 size)
+            _use_lv = lv
+            if lv == 2 and h in ('Abstract', 'KEYWORDS:', 'KEY WORDS:'):
+                _use_lv = 1
+            if _use_lv >= 1 and _use_lv <= 3:
+                l(f'heading{_use_lv}("{safe}")')
             else:
                 l(f'body("{safe}", first_indent=False)')
             l('')
@@ -1058,7 +1267,11 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
                 continue
             if len(p) < 20 and not any(c.isascii() and c.isalpha() for c in p):
                 continue
-            l(f"body('{_q(p)}')")
+            # Use english_body for English sections (Abstract, KEYWORDS)
+            _h_eng = sum(1 for c in h if c.isascii() and c.isalpha())
+            _is_eng_section = _h_eng > len(h) * 0.5 or h in ('Abstract', 'KEYWORDS:', 'KEY WORDS:')
+            _body_fn = 'english_body' if _is_eng_section else 'body'
+            l(f"{_body_fn}('{_q(p)}')")
         l('')
 
     # ═══ REFERENCES ═══
@@ -1083,30 +1296,27 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
         l('')
         l('for num, ref_text in refs:')
         l('    p = doc.add_paragraph()')
-        l(f'    p.alignment = WD_ALIGN_PARAGRAPH.{align}')
-        l(f'    p.paragraph_format.left_indent = Cm({D["ref_indent"]})')
-        l(f'    p.paragraph_format.first_line_indent = Cm(-{D["ref_indent"]})')
+        l('    p.alignment = WD_ALIGN_PARAGRAPH.LEFT')
+        l('    p.paragraph_format.left_indent = Cm(1.27)')
+        l('    p.paragraph_format.first_line_indent = Cm(-1.27)')
         l('    bm = f"_Ref{num}"')
         l('    bk = OxmlElement("w:bookmarkStart")')
         l('    bk.set(qn("w:id"), str(num)); bk.set(qn("w:name"), bm)')
         l('    p._element.append(bk)')
-        # Strip existing [N] prefix from ref text to avoid double numbering
         l('    import re')
         l('    clean_ref = re.sub(r"^\[\d+\]\s*", "", ref_text)')
-        l(f'    r = p.add_run(f"[{{num}}] "); r.font.size = Pt({D["ref_size"]})')
-        l(f"    r.font.name = '{P['body_font']}'")
-        if need_eastAsia:
-            l(f'    rp = r._element.get_or_add_rPr()')
-            l(f'    rf = rp.find(qn("w:rFonts"))')
-            l(f'    if rf is None: rf = OxmlElement("w:rFonts"); rp.insert(0, rf)')
-            l(f'    rf.set(qn("w:eastAsia"), "{cjk}"); rf.set(qn("w:hint"), "eastAsia")')
-        l(f'    r = p.add_run(clean_ref); r.font.size = Pt({D["ref_size"]})')
-        l(f"    r.font.name = '{P['body_font']}'")
-        if need_eastAsia:
-            l(f'    rp = r._element.get_or_add_rPr()')
-            l(f'    rf = rp.find(qn("w:rFonts"))')
-            l(f'    if rf is None: rf = OxmlElement("w:rFonts"); rp.insert(0, rf)')
-            l(f'    rf.set(qn("w:eastAsia"), "{cjk}"); rf.set(qn("w:hint"), "eastAsia")')
+        l('    r = p.add_run(f"[{{num}}] "); r.font.size = Pt(12)')
+        l("    r.font.name = '宋体'")
+        l('    rp = r._element.get_or_add_rPr()')
+        l('    rf = rp.find(qn("w:rFonts"))')
+        l('    if rf is None: rf = OxmlElement("w:rFonts"); rp.insert(0, rf)')
+        l('    rf.set(qn("w:eastAsia"), "宋体"); rf.set(qn("w:hint"), "eastAsia")')
+        l('    r = p.add_run(clean_ref); r.font.size = Pt(12)')
+        l("    r.font.name = '宋体'")
+        l('    rp = r._element.get_or_add_rPr()')
+        l('    rf = rp.find(qn("w:rFonts"))')
+        l('    if rf is None: rf = OxmlElement("w:rFonts"); rp.insert(0, rf)')
+        l('    rf.set(qn("w:eastAsia"), "宋体"); rf.set(qn("w:hint"), "eastAsia")')
         l('    be = OxmlElement("w:bookmarkEnd")')
         l('    be.set(qn("w:id"), str(num)); p._element.append(be)')
         l('')
