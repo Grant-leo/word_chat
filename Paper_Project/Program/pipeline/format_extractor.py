@@ -253,6 +253,15 @@ def extract(docx_path):
     # ── Cover extraction: walk body elements until abstract/body content ──
     fmt['cover'] = _extract_cover(doc)
 
+    # ── Normal style: extract for cover empty paragraph spacing ──
+    ns = doc.styles['Normal']
+    fmt['normal_style'] = {
+        'font_name': ns.font.name,
+        'font_size_pt': round(ns.font.size / 12700, 1) if ns.font.size else None,
+        'line_spacing': ns.paragraph_format.line_spacing,
+        'line_spacing_rule': str(ns.paragraph_format.line_spacing_rule) if ns.paragraph_format.line_spacing_rule else None,
+    }
+
     return fmt, '\n'.join(md_lines)
 
 

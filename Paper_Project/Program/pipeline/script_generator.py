@@ -260,10 +260,13 @@ def _extract_params(fmt):
         hdr_text = h0.get('text', '')
         # Strip Chinese formatting notes like "（新罗马字体，五号加粗居中）"
         hdr_text = re.sub(r'（[^）]*[号字体新罗马粗细斜居左右顶格][^）]*）', '', hdr_text).strip()
+        _hdr_font = r0.get('font')
+        if not _hdr_font or _hdr_font == 'Times New Roman':
+            _hdr_font = '宋体'  # CJK default for Chinese templates
         hdr = {
             'text': _q(hdr_text[:120]),
             'align': h0.get('alignment', 'RIGHT'),
-            'font': r0.get('font') or 'Times New Roman',
+            'font': _hdr_font,
             'size': r0.get('size_pt', 9),
             'bold': r0.get('bold', False),
             'italic': r0.get('italic', False),
@@ -384,6 +387,17 @@ def _extract_params(fmt):
         if b.get('align'): P['body_align'] = b['align']
         if b.get('indent') is not None: P['body_indent'] = b['indent']
 
+    # ── Sanity: if body values still look like heading, use defaults ──
+    if P.get('body_size', 0) >= 16 and P.get('body_font') == '黑体':
+        P['body_size'] = 12
+        P['body_font'] = '宋体'
+        P['body_align'] = 'JUSTIFY'
+        P['body_indent'] = 0.74
+    if P.get('body_align') not in ('LEFT', 'RIGHT', 'CENTER', 'JUSTIFY', 'DISTRIBUTE'):
+        P['body_align'] = 'JUSTIFY'
+    if P.get('body_align') == 'CENTER':
+        P['body_align'] = 'JUSTIFY'
+
     # ── English abstract format: read from format.json P39-P43 ──
     P['eng_abs'] = {}
     for p in fmt['paragraphs']:
@@ -433,19 +447,18 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
 
     # ── Derived parameters (ALL from format.json, zero hardcoding) ──
     D = {}  # derived
-    D['footer_size'] = round(P['body_size'] * 0.85, 1)
-    D['ref_size'] = max(P['body_size'] - 2, 8)
+    _hdr = P.get('header') or {}
+    D['footer_size'] = _hdr.get('size', 9) if _hdr else 9
+    D['footer_font'] = _hdr.get('font', '宋体') if _hdr else '宋体'
+    D['ref_size'] = P['body_size']  # same as body text per template
     D['caption_size'] = max(P['body_size'] - 2, 8)
     D['ref_sep_size'] = max(P['body_size'] - 3, 7)
-    # Usable page height in pt: (page_h - top - bottom) / 0.0352778, +0.5cm tolerance
     D['usable_pt'] = (P['page_h'] - P['mt'] - P['mb']) / 0.0352778 + 0.5
-    # Image width: 55% of text width, capped at 4.2 inches (safe for A4)
     text_w = P['page_w'] - P['ml'] - P['mr']
     D['img_width'] = min(round(text_w * 0.55, 1), 4.2)
-    # Reference hanging indent (cm)
-    D['ref_indent'] = 1.27 if P['body_indent'] < 0.5 else round(P['body_indent'] + 0.5, 1)
+    # Reference hanging indent: standard 1.27cm (0.5in) in Chinese academic papers
+    D['ref_indent'] = 1.27
     D['table_cell_size'] = max(P['body_size'] - 3, 8)
-    D['footer_font'] = P['header']['font'] if P['header'] else P['body_font']
 
     L = []
     def l(s=''): L.append(s)
@@ -485,11 +498,13 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
     l("sec = doc.sections[0]")
     l("footer = sec.footer; footer.is_linked_to_previous = False")
     l("fp = footer.paragraphs[0]; fp.alignment = WD_ALIGN_PARAGRAPH.CENTER")
-    l("rf = fp.add_run(); rf.font.size = Pt(9); rf.font.name = '宋体'")
+    _ftr_font = D.get('footer_font', '宋体')
+    _ftr_size = D.get('footer_size', 9)
+    l(f"rf = fp.add_run(); rf.font.size = Pt({_ftr_size}); rf.font.name = '{_ftr_font}'")
     l('rp = rf._element.get_or_add_rPr()')
     l('rf2 = rp.find(qn("w:rFonts"))')
     l('if rf2 is None: rf2 = OxmlElement("w:rFonts"); rp.insert(0, rf2)')
-    l('rf2.set(qn("w:eastAsia"), "宋体"); rf2.set(qn("w:hint"), "eastAsia")')
+    l(f'rf2.set(qn("w:eastAsia"), "{_ftr_font}"); rf2.set(qn("w:hint"), "eastAsia")')
     l('for tag, attrs in [("w:fldChar", {qn("w:fldCharType"): "begin"}),')
     l('                   ("w:instrText", {}),')
     l('                   ("w:fldChar", {qn("w:fldCharType"): "end"})]:')
@@ -507,12 +522,14 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
         l("hdr = sec.header; hdr.is_linked_to_previous = False")
         _hdr_align = h['align'] if h['align'] in ('LEFT','CENTER','RIGHT','JUSTIFY','DISTRIBUTE') else 'CENTER'
         l(f"hp = hdr.paragraphs[0]; hp.alignment = WD_ALIGN_PARAGRAPH.{_hdr_align}")
+        _hdr_font = h.get('font') or '宋体'
+        _hdr_size = h.get('size') or 9
         l(f"r = hp.add_run('{h['text']}')")
-        l(f"r.font.size = Pt(9); r.font.name = '宋体'")
+        l(f"r.font.size = Pt({_hdr_size}); r.font.name = '{_hdr_font}'")
         l('rp = r._element.get_or_add_rPr()')
         l('rf = rp.find(qn("w:rFonts"))')
         l('if rf is None: rf = OxmlElement("w:rFonts"); rp.insert(0, rf)')
-        l('rf.set(qn("w:eastAsia"), "宋体"); rf.set(qn("w:hint"), "eastAsia")')
+        l(f'rf.set(qn("w:eastAsia"), "{_hdr_font}"); rf.set(qn("w:hint"), "eastAsia")')
         l(f"r.bold = {h['bold']}; r.italic = {h['italic']}")
         l('')
 
@@ -520,8 +537,11 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
     l('# Default paragraph style')
     l('style = doc.styles["Normal"]')
     l(f"style.font.name = '{P['body_font']}'")
-    l('style.font.size = Pt(10)  # match template Normal for cover empties')
-    l('style.paragraph_format.line_spacing = 1.0  # single spacing')
+    _ns = fmt.get('normal_style', {})
+    _ns_size = _ns.get('font_size_pt') or 10
+    _ns_ls = _ns.get('line_spacing') or 1.0
+    l(f'style.font.size = Pt({_ns_size})  # from template Normal style')
+    l(f'style.paragraph_format.line_spacing = {_ns_ls}  # from template Normal style')
     l('style.paragraph_format.space_after  = Pt(0)')
     l('style.paragraph_format.space_before = Pt(0)')
     l('')
@@ -552,17 +572,6 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
     _body_size = P.get('body_size', 12)
     _body_align = P.get('body_align', 'JUSTIFY')
     _cjk = P.get('cjk_font', '宋体')
-    # Sanity: if body values look like heading format, use sensible defaults
-    if _body_size >= 16 and _body_font == '黑体':
-        _body_size = 12
-        _body_font = '宋体'
-        _body_align = 'JUSTIFY'
-        _body_indent_pt = 24
-    if _body_align not in ('LEFT', 'RIGHT', 'CENTER', 'JUSTIFY', 'DISTRIBUTE'):
-        _body_align = 'JUSTIFY'
-    # Body text should never be CENTER — that's for headings only
-    if _body_align == 'CENTER':
-        _body_align = 'JUSTIFY'
     l('def body(text, first_indent=True, comment=None):')
     l('    p = doc.add_paragraph()')
     l(f'    p.alignment = WD_ALIGN_PARAGRAPH.{_body_align}')
@@ -591,7 +600,7 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
         l(f'def heading{n}(text, comment=None):')
         l('    p = doc.add_paragraph()')
         l(f'    p.alignment = WD_ALIGN_PARAGRAPH.CENTER')
-        l('    pf = p.paragraph_format; pf.line_spacing = Pt(28.0)')
+        l(f'    pf = p.paragraph_format; pf.line_spacing = {_ls_code}')
         l(f'    pf.space_before = Pt({hl["space_before"]})')
         l('    r = p.add_run(text); r.bold = True')
         l('    eng = sum(1 for c in text if c.isascii() and c.isalpha()) / max(len(text),1)')
@@ -1276,49 +1285,73 @@ def generate(format_json_path, content_json_path, output_dir, output_docx_name='
 
     # ═══ REFERENCES ═══
     refs = cnt.get('references', [])
-    if refs:
-        l('# ── References with bookmarks ──')
-        if P['h_levels']:
-            l(f'p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.{P["h_levels"][0]["align"]}')
-            l('r = p.add_run("References"); r.bold = True')
-            l(f'r.font.size = Pt({P["h_levels"][0]["size"]})')
-            l(f"r.font.name = '{P['body_font']}'")
-            if need_eastAsia:
-                l(f'rp = r._element.get_or_add_rPr()')
-                l(f'rf = rp.find(qn("w:rFonts"))')
-                l(f'if rf is None: rf = OxmlElement("w:rFonts"); rp.insert(0, rf)')
-                l(f'rf.set(qn("w:eastAsia"), "{cjk}"); rf.set(qn("w:hint"), "eastAsia")')
+    # Separate actual refs from 致谢/附录 — detect boundaries
+    _xie_start = None; _app_start = None
+    for _i, _r in enumerate(refs):
+        if '致谢' in _r or '致  谢' in _r:
+            _xie_start = _i
+        if _xie_start is not None and _app_start is None and ('附录' in _r or '附  录' in _r):
+            _app_start = _i
+    _pure_refs = refs[:_xie_start] if _xie_start else refs
+    _xie_items = refs[_xie_start:_app_start] if _xie_start else []
+    _app_items = refs[_app_start:] if _app_start else []
+
+    if _pure_refs:
+        l('# ── References ──')
+        l('doc.add_page_break()')
+        l("heading1('参考文献')")
         l('')
         l('refs = [')
-        for i, ref in enumerate(refs):
+        for i, ref in enumerate(_pure_refs):
             l(f"    ({i+1}, '{_q(ref)}'),")
         l(']')
         l('')
         l('for num, ref_text in refs:')
         l('    p = doc.add_paragraph()')
         l('    p.alignment = WD_ALIGN_PARAGRAPH.LEFT')
-        l('    p.paragraph_format.left_indent = Cm(1.27)')
-        l('    p.paragraph_format.first_line_indent = Cm(-1.27)')
+        l(f'    p.paragraph_format.left_indent = Cm({D["ref_indent"]})')
+        l(f'    p.paragraph_format.first_line_indent = Cm(-{D["ref_indent"]})')
         l('    bm = f"_Ref{num}"')
         l('    bk = OxmlElement("w:bookmarkStart")')
         l('    bk.set(qn("w:id"), str(num)); bk.set(qn("w:name"), bm)')
         l('    p._element.append(bk)')
         l('    import re')
         l('    clean_ref = re.sub(r"^\[\d+\]\s*", "", ref_text)')
-        l('    r = p.add_run(f"[{{num}}] "); r.font.size = Pt(12)')
-        l("    r.font.name = '宋体'")
+        _ref_font = P.get('body_font', '宋体')
+        _ref_size = D.get('ref_size', 12)
+        l(f'    r = p.add_run("[" + str(num) + "] "); r.font.size = Pt({_ref_size})')
+        l(f"    r.font.name = '{_ref_font}'")
         l('    rp = r._element.get_or_add_rPr()')
         l('    rf = rp.find(qn("w:rFonts"))')
         l('    if rf is None: rf = OxmlElement("w:rFonts"); rp.insert(0, rf)')
-        l('    rf.set(qn("w:eastAsia"), "宋体"); rf.set(qn("w:hint"), "eastAsia")')
-        l('    r = p.add_run(clean_ref); r.font.size = Pt(12)')
-        l("    r.font.name = '宋体'")
+        _ref_cjk = P.get('cjk_font', '宋体')
+        l(f'    rf.set(qn("w:eastAsia"), "{_ref_cjk}"); rf.set(qn("w:hint"), "eastAsia")')
+        l(f'    r = p.add_run(clean_ref); r.font.size = Pt({_ref_size})')
+        l(f"    r.font.name = '{_ref_font}'")
         l('    rp = r._element.get_or_add_rPr()')
         l('    rf = rp.find(qn("w:rFonts"))')
         l('    if rf is None: rf = OxmlElement("w:rFonts"); rp.insert(0, rf)')
-        l('    rf.set(qn("w:eastAsia"), "宋体"); rf.set(qn("w:hint"), "eastAsia")')
+        l(f'    rf.set(qn("w:eastAsia"), "{_ref_cjk}"); rf.set(qn("w:hint"), "eastAsia")')
         l('    be = OxmlElement("w:bookmarkEnd")')
         l('    be.set(qn("w:id"), str(num)); p._element.append(be)')
+        l('')
+
+    # ── 致谢 ──
+    if _xie_items:
+        l('# ── 致谢 ──')
+        l('doc.add_page_break()')
+        l("heading1('致  谢')")
+        for _xi in _xie_items[1:]:  # skip heading row
+            l(f"body('{_q(_xi)}')")
+        l('')
+
+    # ── 附录 ──
+    if _app_items:
+        l('# ── 附录 ──')
+        l('doc.add_page_break()')
+        l("heading1('附  录')")
+        for _ai in _app_items[1:]:  # skip heading row
+            l(f"body('{_q(_ai)}', first_indent=False)")
         l('')
 
     # ═══ PAGINATE + SAVE ═══
