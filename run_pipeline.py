@@ -26,12 +26,22 @@ OUTPUTS_DIR = os.path.join(BASE, 'Outputs')
 for d in [TEMPLATE_DIR, INPUTS_DIR, OUTPUTS_DIR]:
     os.makedirs(d, exist_ok=True)
 
-sys.path.insert(0, PIPELINE)
+# Prefer scripts placed beside this runner.  Fall back to the old project
+# layout only when someone keeps the historical directory structure.
+sys.path.insert(0, BASE)
+if os.path.isdir(PIPELINE):
+    sys.path.insert(1, PIPELINE)
+
 from format_extractor import extract as extract_format
 from content_parser import extract as extract_content
-from md_parser import extract_format as extract_md_format
-from md_parser import extract_content as extract_md_content
 from script_generator import generate as generate_script
+
+try:
+    from md_parser import extract_format as extract_md_format
+    from md_parser import extract_content as extract_md_content
+except Exception:
+    extract_md_format = None
+    extract_md_content = None
 
 
 def scan_inputs(folder, exts=('.docx', '.md')):
@@ -134,6 +144,9 @@ def run(template_file, content_file, md_file=None):
         content_name = os.path.splitext(os.path.basename(md_path))[0]
         use_md_format = True
         use_md_content = True
+        if extract_md_format is None or extract_md_content is None:
+            print('[ERROR] 当前脚本包未包含 md_parser.py，不能处理 Markdown 单文件模式。')
+            return None
     else:
         template_path = os.path.join(TEMPLATE_DIR, template_file)
         content_path  = os.path.join(INPUTS_DIR, content_file)
@@ -146,9 +159,18 @@ def run(template_file, content_file, md_file=None):
         content_name = os.path.splitext(content_file)[0]
         use_md_format = template_file.endswith('.md')
         use_md_content = content_file.endswith('.md')
+        if (use_md_format or use_md_content) and (extract_md_format is None or extract_md_content is None):
+            print('[ERROR] 当前脚本包未包含 md_parser.py，不能处理 Markdown 输入。请使用 .docx 模版和 .docx 内容。')
+            return None
 
-    folder_name  = f'{date.today().isoformat()}_{content_name}'
-    out_dir      = os.path.join(OUTPUTS_DIR, folder_name)
+    base_folder_name = f'{date.today().isoformat()}_{content_name}'
+    folder_name = base_folder_name
+    out_dir = os.path.join(OUTPUTS_DIR, folder_name)
+    suffix = 2
+    while os.path.exists(out_dir):
+        folder_name = f'{base_folder_name}_{suffix}'
+        out_dir = os.path.join(OUTPUTS_DIR, folder_name)
+        suffix += 1
     os.makedirs(out_dir, exist_ok=True)
 
     print(f'  输出目录: Outputs/{folder_name}/')
@@ -171,7 +193,7 @@ def run(template_file, content_file, md_file=None):
     # ── Phase 2: Content ──
     step('Phase 2/4: 提取文本内容')
     cnt_extractor = extract_md_content if use_md_content else extract_content
-    content = double_verify(cnt_extractor, content_path, 'Content', output_dir=INPUTS_DIR)
+    content = double_verify(cnt_extractor, content_path, 'Content', output_dir=out_dir)
 
     cnt_json_path = os.path.join(out_dir, 'content.json')
     cnt_md_path   = os.path.join(out_dir, '内容提取.md')
@@ -211,7 +233,7 @@ def run(template_file, content_file, md_file=None):
     print(f'  生成脚本: build_generated.py ({gen_size} chars)')
 
     # ── Phase 4: Build docx ──
-    step('Phase 4/4: 构建最终 docx')
+    step('Phase 4/4: 构建最终 docx（生成静态目录；可用 Word COM 时写入页码）')
 
     result = subprocess.run(
         [sys.executable, gen_py_path],
@@ -223,6 +245,7 @@ def run(template_file, content_file, md_file=None):
     if result.returncode == 0:
         print(out.strip())
         print(f'  [OK] 最终 docx -> Outputs/{folder_name}/{output_docx}')
+        print('  [OK] 已生成静态目录；若当前环境可调用 Word COM，会自动写入页码')
     else:
         print(f'  [ERROR] {err[:500]}')
         return None
@@ -239,8 +262,9 @@ def run(template_file, content_file, md_file=None):
     └── {output_docx}        <- 最终文件
 
   微调:
-    打开 build_generated.py，跟 Claude 对话修改排版
+    打开 build_generated.py，可继续微调排版
     改完运行: python Outputs/{folder_name}/build_generated.py
+    目录: 生成脚本会优先用 Word COM 解析正文标题页码；不可用时仍保留静态目录行
 ''')
     return out_dir
 

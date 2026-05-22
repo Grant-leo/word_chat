@@ -771,6 +771,7 @@ def _extract_cover(doc, assets_dir=None):
         line_val = spacing.get(f'{{{W}}}line') if spacing is not None else None
         lineRule = spacing.get(f'{{{W}}}lineRule') if spacing is not None else None
         before_val = spacing.get(f'{{{W}}}before') if spacing is not None else None
+        after_val = spacing.get(f'{{{W}}}after') if spacing is not None else None
 
         indent = pPr.find(f'{{{W}}}ind') if pPr is not None else None
         first_line = indent.get(f'{{{W}}}firstLine') if indent is not None else None
@@ -827,7 +828,7 @@ def _extract_cover(doc, assets_dir=None):
             elements.append({
                 'type': 'image',
                 'al': palign, 'ls_val': line_val, 'ls_rule': lineRule,
-                'sp_before': before_val, 'fl_indent': first_line,
+                'sp_before': before_val, 'sp_after': after_val, 'fl_indent': first_line,
                 **img_payload,
                 'r': runs,
                 'section_break_after': has_sectPr,
@@ -836,7 +837,7 @@ def _extract_cover(doc, assets_dir=None):
             elements.append({
                 'type': 'empty',
                 'al': palign, 'ls_val': line_val, 'ls_rule': lineRule,
-                'sp_before': before_val, 'fl_indent': first_line,
+                'sp_before': before_val, 'sp_after': after_val, 'fl_indent': first_line,
                 'r': runs,  # run font sizes control paragraph height even when empty
                 'section_break_after': has_sectPr,
             })
@@ -844,7 +845,7 @@ def _extract_cover(doc, assets_dir=None):
             elements.append({
                 'type': 'para',
                 'al': palign, 'ls_val': line_val, 'ls_rule': lineRule,
-                'sp_before': before_val, 'fl_indent': first_line,
+                'sp_before': before_val, 'sp_after': after_val, 'fl_indent': first_line,
                 'r': runs,
                 'section_break_after': has_sectPr,
             })

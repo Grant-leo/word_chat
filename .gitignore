@@ -1,4 +1,7 @@
 # Generated outputs
+Outputs/**
+!Outputs/
+!Outputs/*.txt
 Outputs/*.json
 Outputs/*.md
 !Outputs/输出放这里.txt
@@ -10,9 +13,13 @@ Paper_Project/Program/build_generated.py
 Paper_Project/Manuscripts/*.docx
 
 # User content
+Inputs/**
+!Inputs/
+!Inputs/*.txt
 Inputs/*.docx
 Inputs/*/
 Templates/*.docx
+Templates/*_assets/
 
 # Python
 __pycache__/

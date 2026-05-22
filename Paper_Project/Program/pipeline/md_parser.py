@@ -304,6 +304,23 @@ def _extract_images_from_text(text, fig_dir, prefix):
     return clean, imgs
 
 
+def _looks_like_formula_text(text):
+    t = str(text or '').strip()
+    if not t or len(t) > 180 or t.endswith(('。', '！', '？')):
+        return False
+    if not re.search(r'[=＝≈≤≥<>]', t) or not re.search(r'\d', t):
+        return False
+    return len(re.findall(r'[=＝+\-*/×÷%≈≤≥<>]', t)) >= 2
+
+
+def _latex_escape_text(text):
+    return str(text or '').replace('\\', r'\backslash ').replace('{', r'\{').replace('}', r'\}')
+
+
+def _latex_from_formula_text(text):
+    return r'\text{' + _latex_escape_text(str(text or '').strip()) + '}'
+
+
 def _parse_paragraph(text, fig_dir, prefix):
     """Parse a paragraph text into content.json paragraph entry.
     Detects inline $...$ math, images, and formatting marks."""
@@ -314,12 +331,14 @@ def _parse_paragraph(text, fig_dir, prefix):
     stripped = text.strip()
     if stripped.startswith('$$') and stripped.endswith('$$'):
         latex = stripped[2:-2].strip()
-        return {'text': '', 'math': [{'type': 'display', 'latex': latex}]}, images
+        return {'role': 'formula', 'text': '', 'latex': latex, 'math': [{'type': 'display', 'latex': latex}]}, images
 
     # Check for inline math
     if '$' not in text:
         # Strip markdown formatting
         clean = _strip_md_formatting(text)
+        if _looks_like_formula_text(clean):
+            return {'role': 'formula', 'text': clean, 'latex': _latex_from_formula_text(clean)}, images
         return (clean if clean else None), images
 
     # Process inline math spans

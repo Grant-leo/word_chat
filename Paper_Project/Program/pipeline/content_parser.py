@@ -170,41 +170,252 @@ def detect_heading_level(para):
     return 0
 
 
-def extract_images_from_para(para, fig_dir, prefix='img'):
-    """Extract inline images by rId. Returns list of filenames."""
+class ImageRegistry:
+    """Per-extraction image registry.
+
+    The same DOCX image relationship can be encountered more than once during
+    verification or when Word duplicates drawing markup.  Saving by a content
+    hash avoids the historical bug where one logical figure produced hundreds
+    or thousands of copied files.  The registry is local to one extraction, so
+    there is no university-, title-, or path-specific hardcoding.
+    """
+
+    def __init__(self, fig_dir, prefix='img'):
+        self.fig_dir = fig_dir
+        self.prefix = prefix
+        self.counter = 0
+        self.by_hash = {}
+
+    def save_relationship_image(self, rel):
+        if 'image' not in getattr(rel, 'reltype', ''):
+            return None
+        try:
+            blob = rel.target_part.blob
+            digest = hashlib.sha256(blob).hexdigest()[:20]
+            if digest in self.by_hash:
+                return self.by_hash[digest]
+
+            ext = rel.target_ref.rsplit('.', 1)[-1].lower()
+            if ext not in ('png', 'jpg', 'jpeg', 'gif', 'bmp', 'tif', 'tiff', 'webp'):
+                ext = 'png'
+            self.counter += 1
+            fname = f'{self.prefix}_{self.counter:03d}.{ext}'
+            fpath = os.path.join(self.fig_dir, fname)
+            with open(fpath, 'wb') as f:
+                f.write(blob)
+            self.by_hash[digest] = fname
+            return fname
+        except Exception:
+            return None
+
+
+def extract_images_from_para(para, fig_dir, prefix='img', registry=None):
+    """Extract inline images by rId. Returns filenames in paragraph order.
+
+    Fixes two duplicate sources without hardcoding:
+    1) `seen_rids` is paragraph-scoped, not run-scoped;
+    2) image bytes are de-duplicated by SHA-256 within the extraction pass.
+    """
     saved = []
+    registry = registry or ImageRegistry(fig_dir, prefix)
     A_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main'
     R_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
-    _existing = len([f for f in os.listdir(fig_dir) if f.startswith(prefix)])
+    seen_rids = set()
     for run in para.runs:
         xml = run._element.xml
-        if 'w:drawing' not in xml and 'wp:inline' not in xml:
+        if 'w:drawing' not in xml and 'wp:inline' not in xml and 'wp:anchor' not in xml:
             continue
-        seen_rids = set()
         for blip in run._element.iter(f'{{{A_NS}}}blip'):
             embed = blip.get(f'{{{R_NS}}}embed')
-            if embed and embed not in seen_rids:
-                seen_rids.add(embed)
-        for rid in seen_rids:
-            if rid in para.part.rels:
-                rel = para.part.rels[rid]
-                if 'image' not in rel.reltype:
-                    continue
-                try:
-                    ext = rel.target_ref.rsplit('.', 1)[-1]
-                    if ext.lower() not in ('png', 'jpg', 'jpeg', 'gif', 'bmp', 'tiff'):
-                        ext = 'png'
-                    _existing += 1
-                    fname = f'{prefix}_{_existing:03d}.{ext}'
-                    fpath = os.path.join(fig_dir, fname)
-                    if not os.path.exists(fpath):
-                        with open(fpath, 'wb') as f:
-                            f.write(rel.target_part.blob)
+            if not embed or embed in seen_rids:
+                continue
+            seen_rids.add(embed)
+            if embed in para.part.rels:
+                fname = registry.save_relationship_image(para.part.rels[embed])
+                if fname:
                     saved.append(fname)
-                except:
-                    pass
     return saved
 
+
+
+
+def _local_name(el):
+    return el.tag.split('}')[-1] if '}' in el.tag else el.tag
+
+
+def _run_text_preserve_breaks(r_elem):
+    """Return visible text carried by a run, preserving explicit breaks."""
+    W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    parts = []
+    for child in r_elem:
+        name = _local_name(child)
+        if name == 't':
+            parts.append(child.text or '')
+        elif name in ('tab',):
+            parts.append('\t')
+        elif name in ('br', 'cr'):
+            parts.append('\n')
+    return ''.join(parts)
+
+
+def _images_from_run_ooxml(run_elem, para, registry, seen_rids):
+    """Extract images from one OOXML run in its exact paragraph position."""
+    A_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+    R_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+    out = []
+    for blip in run_elem.iter(f'{{{A_NS}}}blip'):
+        embed = blip.get(f'{{{R_NS}}}embed')
+        if not embed or embed in seen_rids:
+            continue
+        seen_rids.add(embed)
+        if embed in para.part.rels:
+            fname = registry.save_relationship_image(para.part.rels[embed])
+            if fname:
+                out.append({'role': 'image', 'image': fname})
+    return out
+
+
+def paragraph_stream_items(para, registry):
+    """Yield paragraph text/image items in true OOXML run order.
+
+    The previous extractor saved all images first and appended paragraph text
+    afterwards, which could create: image -> body text -> caption.  This routine
+    flushes text before every drawing run, then emits the image token at the
+    exact location where Word stores the drawing.  It is structural and does not
+    depend on a school name, figure number, or fixed paragraph index.
+    """
+    items = []
+    buf = []
+    seen_rids = set()
+
+    def flush_text():
+        text = ''.join(buf).strip()
+        buf.clear()
+        if text:
+            items.append({'role': 'text', 'text': text})
+
+    for child in para._element:
+        name = _local_name(child)
+        if name == 'r':
+            has_drawing = '<w:drawing' in child.xml or '<w:pict' in child.xml
+            if has_drawing:
+                flush_text()
+                items.extend(_images_from_run_ooxml(child, para, registry, seen_rids))
+            txt = _run_text_preserve_breaks(child)
+            if txt:
+                buf.append(txt)
+        elif name in ('hyperlink',):
+            for r in child:
+                if _local_name(r) != 'r':
+                    continue
+                has_drawing = '<w:drawing' in r.xml or '<w:pict' in r.xml
+                if has_drawing:
+                    flush_text()
+                    items.extend(_images_from_run_ooxml(r, para, registry, seen_rids))
+                txt = _run_text_preserve_breaks(r)
+                if txt:
+                    buf.append(txt)
+        elif name in ('oMath', 'oMathPara'):
+            # Math text is handled by extract_math below.  Keep the token as
+            # text so formulas do not force surrounding images/captions to move.
+            mt = _math_text(child)
+            if mt:
+                buf.append(mt)
+    flush_text()
+    return items
+
+
+def _caption_kind(item):
+    if isinstance(item, dict):
+        role = item.get('role')
+        if role in ('figure_caption', 'table_caption'):
+            return role
+        text = item.get('text') or ''
+    else:
+        text = str(item or '')
+    if _is_figure_caption(text):
+        return 'figure_caption'
+    if _is_table_caption(text):
+        return 'table_caption'
+    return None
+
+
+def _is_image_item(item):
+    return isinstance(item, dict) and item.get('role') == 'image' and item.get('image')
+
+
+def _caption_text(item):
+    if isinstance(item, dict):
+        return item.get('text') or ''
+    return str(item or '')
+
+
+def pair_figure_blocks(paragraphs):
+    """Pair images with captions while preserving all text.
+
+    Besides the normal `image -> caption` layout, this fixes the two observed
+    drift patterns without hardcoding figure numbers or page positions:
+      * image, body text, caption  -> image+caption, body text
+      * image, image, caption, caption -> image+caption, image+caption
+
+    Look-ahead is deliberately small.  When no nearby figure caption exists the
+    image token is left unchanged so content is never dropped or invented.
+    """
+    out = []
+    i = 0
+    n = len(paragraphs or [])
+    while i < n:
+        item = paragraphs[i]
+        if not _is_image_item(item):
+            out.append(item)
+            i += 1
+            continue
+
+        images = []
+        while i < n and _is_image_item(paragraphs[i]):
+            images.append(paragraphs[i])
+            i += 1
+
+        # Look ahead through a small local window for captions.  Non-caption
+        # text between image and caption is temporarily held, then emitted after
+        # the paired figure so it can no longer split picture and title.
+        j = i
+        held_text = []
+        captions = []
+        max_probe = min(n, i + max(8, len(images) * 3 + 3))
+        while j < max_probe and len(captions) < len(images):
+            nxt = paragraphs[j]
+            if _is_image_item(nxt):
+                break
+            kind = _caption_kind(nxt)
+            if kind == 'figure_caption':
+                captions.append(nxt)
+                j += 1
+                # Continue consuming immediately stacked figure captions for
+                # the image,image,caption,caption case.
+                continue
+            if kind == 'table_caption':
+                break
+            held_text.append(nxt)
+            j += 1
+
+        if captions:
+            for idx, img in enumerate(images):
+                cap = captions[idx] if idx < len(captions) else None
+                if cap is not None:
+                    out.append({'role': 'figure', 'image': img.get('image'), 'caption': _caption_text(cap)})
+                else:
+                    out.append(img)
+            if len(captions) > len(images):
+                out.extend(captions[len(images):])
+            out.extend(held_text)
+            i = j
+            continue
+
+        # No nearby caption: keep all images in their original place and leave
+        # subsequent text to be processed normally.
+        out.extend(images)
+    return out
 
 
 
@@ -341,6 +552,43 @@ def _code_text_from_table_rows(rows):
             lines.append('    '.join(cells).rstrip())
     return '\n'.join(lines).rstrip()
 
+
+def _looks_like_formula_text(text):
+    """Detect standalone calculation/formula paragraphs.
+
+    The rule is intentionally structural: formulas are short standalone lines
+    with equality and mathematical operators/numbers, not normal prose.
+    """
+    t = str(text or '').strip()
+    if not t or len(t) > 180:
+        return False
+    if t.endswith(('。', '！', '？')):
+        return False
+    if not re.search(r'[=＝≈≤≥<>]', t):
+        return False
+    if not re.search(r'\d', t):
+        return False
+    op_hits = len(re.findall(r'[=＝+\-*/×÷%≈≤≥<>]', t))
+    if op_hits < 2:
+        return False
+    if re.search(r'^\[\d+\]', t) or re.search(r'\[\d+(?:[-,，、]\d+)*\]', t):
+        return False
+    return True
+
+
+def _latex_escape_text(text):
+    return str(text or '').replace('\\', r'\backslash ').replace('{', r'\{').replace('}', r'\}')
+
+
+def _latex_from_formula_text(text):
+    t = str(text or '').strip()
+    if t.startswith('$$') and t.endswith('$$'):
+        return t[2:-2].strip()
+    if t.startswith('$') and t.endswith('$'):
+        return t[1:-1].strip()
+    # Keep engineering units/Chinese labels intact inside native Word math.
+    return r'\text{' + _latex_escape_text(t) + '}'
+
 def _append_text_or_code(section, text, in_appendix=False):
     """Append semantic blocks while preserving captions, code and inline citations."""
     if not text:
@@ -352,6 +600,8 @@ def _append_text_or_code(section, text, in_appendix=False):
         section['paragraphs'].append({'role': 'figure_caption', 'text': _normalize_caption_spacing(text)})
     elif _is_table_caption(text):
         section['paragraphs'].append({'role': 'table_caption', 'text': _normalize_caption_spacing(text)})
+    elif _looks_like_formula_text(text):
+        section['paragraphs'].append({'role': 'formula', 'text': text, 'latex': _latex_from_formula_text(text)})
     elif in_appendix and (_looks_like_code_line(text) or '\n' in text):
         section['paragraphs'].append({'role': 'code', 'code': text})
     else:
@@ -362,10 +612,13 @@ def extract(docx_path, output_dir='Inputs'):
     doc = Document(docx_path)
     base = os.path.splitext(os.path.basename(docx_path))[0]
 
-    # Setup output dirs
+    # Setup output dirs.  Recreate figures for each extraction so repeated
+    # verification passes do not accumulate stale/duplicated files.
     content_dir = os.path.join(output_dir, base)
     fig_dir = os.path.join(content_dir, 'figures')
+    shutil.rmtree(fig_dir, ignore_errors=True)
     os.makedirs(fig_dir, exist_ok=True)
+    image_registry = ImageRegistry(fig_dir, f'{base}_img')
 
     content = {
         '_meta': {
@@ -489,16 +742,23 @@ def extract(docx_path, output_dir='Inputs'):
                 if text:
                     ref_section['entries'].append(text)
             else:
-                imgs = extract_images_from_para(p, fig_dir, f'{base}_img')
-                current_section['images'].extend(imgs)
+                # Preserve exact OOXML run order within the paragraph.  This is
+                # crucial when Word stores explanatory text, a drawing, and a
+                # caption in nearby runs/paragraphs.
+                stream_items = paragraph_stream_items(p, image_registry)
                 clean_text, math_list = extract_math(p)
-                if math_list:
-                    current_section['paragraphs'].append({
-                        'text': clean_text,
-                        'math': math_list,
-                    })
-                elif clean_text:
-                    _append_text_or_code(current_section, clean_text, in_appendix=bool(re.search(r'(附\s*录|配置|命令|代码)', current_section.get('heading',''))))
+                if not stream_items and clean_text:
+                    stream_items = [{'role': 'text', 'text': clean_text}]
+                for _it in stream_items:
+                    if _it.get('role') == 'image':
+                        current_section['images'].append(_it.get('image'))
+                        current_section['paragraphs'].append(_it)
+                    elif _it.get('role') == 'text':
+                        txt = _it.get('text') or ''
+                        if math_list and txt == clean_text:
+                            current_section['paragraphs'].append({'text': clean_text, 'math': math_list})
+                        else:
+                            _append_text_or_code(current_section, txt, in_appendix=bool(re.search(r'(附\s*录|配置|命令|代码)', current_section.get('heading',''))))
 
         elif _tag == 'tbl' and _started:
             # Body table — preserve paragraph breaks inside each cell.
@@ -535,19 +795,17 @@ def extract(docx_path, output_dir='Inputs'):
             _s.setdefault('page_break_before', True)
             break
 
-    # Extract all images from entire document (including those not in body text)
-    all_imgs = []
-    for p in doc.paragraphs:
-        all_imgs.extend(extract_images_from_para(p, fig_dir, f'{base}_img'))
+    # Pair images with following figure captions after all sections are built.
+    for _s in content['sections']:
+        _s['paragraphs'] = pair_figure_blocks(_s.get('paragraphs') or [])
 
-    # Also extract from tables
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                for p in cell.paragraphs:
-                    all_imgs.extend(extract_images_from_para(p, fig_dir, f'{base}_tbl_img'))
-
-    content['_meta']['images_extracted'] = len(all_imgs)
+    # Count saved images without running a second extraction pass.
+    # Re-extracting here used to create duplicate filenames and made figure
+    # captions drift away from their intended images.
+    content['_meta']['images_extracted'] = len([
+        f for f in os.listdir(fig_dir)
+        if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tif', '.tiff'))
+    ])
     content['_meta']['images_dir'] = os.path.abspath(fig_dir)
 
     return content
