@@ -49,7 +49,15 @@ python run_pipeline.py --template 模版.docx --content 论文.md
 python run_pipeline.py --md 论文.md
 ```
 
-每次运行生成独立目录 `Outputs/{日期}_{内容名}/`，互不覆盖。
+每次运行生成独立目录 `Outputs/{日期}_{内容名}/`，互不覆盖；同一天同名内容会自动追加 `_2`、`_3` 等后缀。
+
+## 当前实现要点
+
+- `Inputs/`、`Outputs/`、`Templates/*.docx` 和模板 assets 默认视为本地隐私数据，已通过 `.gitignore` 排除；不要提交论文原文、模板文件、生成的 docx/PDF/PNG。
+- `build_generated.py` 是每次流水线生成的中间脚本。需要长期保留的排版修复应改 `Paper_Project/Program/pipeline/` 下的核心引擎脚本，再重新运行流水线。
+- 内容文档中的图片会提取到本次输出目录的 `figures/`，避免污染 `Inputs/` 或覆盖其他任务的图片。
+- 目录默认生成静态目录行；在 Windows + Word COM 可用时，会自动读取正文标题页码并写入目录页码，不再依赖手动取消 TOC 注释。
+- 正文图片按正文文本宽度适配；封面图片按模板提取的宽高插入，避免校徽、Logo 被段落行高裁切。
 
 ### Markdown 文件格式
 
@@ -103,7 +111,7 @@ page_width_cm: 21.0
 
 ## 架构
 
-四个固定引擎 + 一个动态脚本 + 两个知识库：
+核心引擎 + 一个生成脚本 + 两个知识库：
 
 ```
 ┌──────────────────┐        ┌──────────────────┐
@@ -112,7 +120,7 @@ page_width_cm: 21.0
 │  内容解析器       │  │     │                  │
 │  脚本生成器       │  │传参  │  零硬编码        │──→ 最终论文
 │                  │──┘     │                  │
-│  （固定不改）     │        │  AI 对话微调      │
+│  （核心引擎）     │        │  生成中间脚本     │
 │                  │        │                  │
 └──────────────────┘        └──────────────────┘
 
@@ -121,13 +129,13 @@ page_width_cm: 21.0
  └── 基础操作.md     ← AI 工具箱（所有 OOXML 代码片段）
 ```
 
-- **四个固定引擎**：只需维护，不改动。通过 template/content JSON 传参
+- **核心引擎**：长期维护入口。所有可复用修复都应落在 `pipeline/` 脚本中，通过 template/content JSON 传参
 - **md_parser.py**：Markdown 解析器，从 `.md` 文件同时提取格式说明和论文内容
 - **latex_omath.py**：独立 LaTeX→OOXML 公式转换器，像写 `.tex` 一样写公式
 - **comment_utils.py**：Word 批注系统，`comment="导师: ..."` 即可添加批注
-- **build_generated.py**：引擎生成的零硬编码脚本，AI 可在此基础上对话微调
+- **build_generated.py**：每次运行生成的中间脚本，可用于排查；长期修复应回写核心引擎
 - **基础操作.md**：持续维护的代码片段库——测试越多越完善，AI 能改的功能越多
-- **模板缺的功能**（如交叉引用）→ 引擎不会生成 → 用户提出 → AI 查基础操作.md → 加代码 → 重跑
+- **模板缺的功能**（如交叉引用）→ 引擎不会生成 → 用户提出 → AI 查基础操作.md → 修改核心引擎 → 重跑流水线
 
 ## 输出结构
 
@@ -140,9 +148,11 @@ Outputs/
 │   ├── 内容提取.md          ← 核对文本内容
 │   ├── format.json
 │   ├── content.json
-│   ├── build_generated.py   ← 生成脚本（可对话微调）
+│   ├── figures/             ← 本次内容文档提取的图片
+│   ├── assets/              ← 本次模板提取的封面/Logo 资源
+│   ├── build_generated.py   ← 生成脚本（中间产物）
 │   └── 最终论文.docx
-├── 2026-05-07_另一篇/
+├── 2026-05-06_我的论文_2/
 │   └── ...
 ```
 
@@ -171,30 +181,30 @@ build_generated.py ──→ [Phase 4] python 运行 ──→ 最终论文.docx
 ## 微调排版
 
 ```bash
-# 打开生成脚本，改函数/参数，重跑
-python Outputs/<目录>/build_generated.py
+# 修改核心引擎后重跑流水线
+python run_pipeline.py --template 模版.docx --content 论文.docx
 ```
 
-| 意图 | 位置 |
+`Outputs/<目录>/build_generated.py` 是可读的调试产物，可用来定位生成逻辑，但不要把它作为长期修改入口；下一次运行流水线会重新生成它。
+
+| 意图 | 长期修改位置 |
 |------|------|
-| 改正文字号/字体/行距 | `body()` 函数 |
-| 改标题字号/居中 | `heading1/2/3()` 函数 |
-| 参考文献字号 | `D['ref_size']` |
-| 图片宽度 | `D['img_width']` |
-| 编辑公式（LaTeX） | `body_with_formula("", [latex_to_omath(r"...")])` |
-| 加批注 | `body("text", comment="导师: ...")` |
-| 加目录 | 取消 `# insert_toc(doc)` 的注释 |
+| 改正文/标题/参考文献样式 | `script_generator.py` 的样式推断和渲染函数 |
+| 改内容识别、章节、图片抽取 | `content_parser.py` |
+| 改模板格式、封面结构、页眉页脚抽取 | `format_extractor.py` |
+| 改 Markdown 输入规则 | `md_parser.py` |
+| 改输出目录、文件选择、双验证流程 | `run_pipeline.py` |
 
 ## 项目结构
 
 ```
 ├── run_pipeline.py              ← 一键入口
 ├── CLAUDE.md                    ← AI 工作流（Claude Code 自动加载）
-├── .claude/settings.json        ← 项目权限配置（可选）
+├── .claude/settings.local.json  ← 本地 Claude 权限配置（忽略提交）
 ├── .gitignore
 ├── Templates/模版放这里.txt
 ├── Inputs/文本资料放这里.txt
-├── Outputs/                     ← 每次运行生成独立子目录
+├── Outputs/                     ← 每次运行生成独立子目录（忽略提交）
 └── Paper_Project/
     ├── 基础操作.md               ← AI 工具箱（所有 OOXML 代码片段）
     └── Program/
@@ -228,7 +238,7 @@ python Outputs/<目录>/build_generated.py
 - **公式编号**：`\tag{1.1}`, `\begin{equation}`, `\begin{align}` 自动编号
 - **双线体/手写体**：`\mathbb{R}`, `\mathcal{F}` 等数学字体
 - **Word 批注**：`body("text", comment="导师: 请确认")` → 生成原生 Word 批注
-- **目录 (TOC)**：`insert_toc(doc)` 生成 Word 域代码，打开后右键更新
+- **目录 (TOC)**：默认生成静态目录；Word COM 可用时自动解析标题页码并写入目录
 - 传统公式工具：`formula_build_matrix()` 传参构建，`formula_text/remove/replace` 对话修改
 - 双验证提取（独立运行两次交叉比对，不一致第三轮仲裁）
 
@@ -276,11 +286,19 @@ python run_pipeline.py --template template.docx --content paper.md
 python run_pipeline.py --md paper.md
 ```
 
-Each run produces an independent directory `Outputs/{date}_{content_name}/`, never overwriting previous results.
+Each run produces an independent directory `Outputs/{date}_{content_name}/`, never overwriting previous results. If the same content name is run again on the same day, the folder gets `_2`, `_3`, etc.
+
+## Current Behavior
+
+- `Inputs/`, `Outputs/`, `Templates/*.docx`, and template assets are treated as local private data and ignored by Git. Do not commit paper content, templates, generated docx/PDF/PNG files, or QA renders.
+- `build_generated.py` is a generated intermediate script. Persistent formatting fixes belong in the core engine scripts under `Paper_Project/Program/pipeline/`, followed by a fresh pipeline run.
+- Images from the content document are extracted into the current output directory's `figures/` folder, so `Inputs/` is not polluted and runs do not overwrite each other's images.
+- TOC output is static by default; when Windows Word COM is available, the pipeline reads heading page numbers from Word and writes them into the visible TOC.
+- Body images fit the full text width. Cover images use the template-extracted width and height, preventing logos and seals from being clipped by paragraph line height.
 
 ## Architecture
 
-Four fixed engines + one dynamic script + two knowledge bases:
+Core engines + one generated script + two knowledge bases:
 
 ```
 +---------------------------+       +---------------------------+
@@ -288,8 +306,8 @@ Four fixed engines + one dynamic script + two knowledge bases:
 | content_parser.py         |       |   build_generated.py      |
 | script_generator.py       |params |                           |
 |                           |------>|   zero hardcoding         |---> final .docx
-| (fixed engines)           |       |                           |
-+---------------------------+       |   fine-tuned by Claude    |
+| (core engines)            |       |                           |
++---------------------------+       |   generated intermediate  |
                                     |   + 基础操作.md            |
                                     +---------------------------+
 
@@ -298,13 +316,13 @@ Four fixed engines + one dynamic script + two knowledge bases:
  +-- 基础操作.md      <- AI toolbox (all OOXML code snippets)
 ```
 
-- **Four fixed engines**: maintain only, never modify. Parameterized via template/content JSON
+- **Core engines**: the persistent maintenance surface. Reusable fixes belong in `pipeline/` scripts and stay parameterized via template/content JSON
 - **md_parser.py**: Markdown parser — extracts both format specs and content from `.md` files
 - **latex_omath.py**: standalone LaTeX→OOXML formula converter — write formulas like `.tex`
 - **comment_utils.py**: Word comment system — `comment="advisor: ..."` adds native Word comments
-- **build_generated.py**: zero-hardcoding generated script, AI can fine-tune iteratively
+- **build_generated.py**: zero-hardcoding generated intermediate, useful for debugging
 - **基础操作.md**: continuously maintained code snippet library — the more it's tested, the more AI can do
-- **Missing template features** (e.g. cross-references) → engine won't generate → user requests → AI checks 基础操作.md → adds code → re-run
+- **Missing template features** (e.g. cross-references) → engine won't generate → user requests → AI checks 基础操作.md → updates core engine → re-runs the pipeline
 
 ## Output Structure
 
@@ -317,9 +335,11 @@ Outputs/
 │   ├── 内容提取.md          ← verify content
 │   ├── format.json
 │   ├── content.json
-│   ├── build_generated.py   ← generated script (fine-tunable)
+│   ├── figures/             ← images extracted for this run
+│   ├── assets/              ← template assets for this run
+│   ├── build_generated.py   ← generated intermediate script
 │   └── final_paper.docx
-├── 2026-05-07_another_paper/
+├── 2026-05-06_my_paper_2/
 │   └── ...
 ```
 
@@ -335,7 +355,7 @@ Templates/template.docx → [Phase 1] format_extractor → format.json
                                                          format_report.md
 
 Inputs/content.docx ──→ [Phase 2] content_parser ──→ content.json
-                    (images → Inputs/xxx/figures/)    content_report.md
+                    (images → Outputs/<run>/figures/) content_report.md
 
 format.json ──┬──→ [Phase 3] script_generator ──→ build_generated.py
 content.json ─┘
@@ -348,30 +368,30 @@ Each stage has built-in dual verification: the extractor runs independently twic
 ## Fine-Tuning
 
 ```bash
-# Open the generated script, modify functions/parameters, re-run
-python Outputs/<directory>/build_generated.py
+# Update the core engine and run the whole pipeline again
+python run_pipeline.py --template template.docx --content paper.docx
 ```
 
-| Intent | Location |
+`Outputs/<directory>/build_generated.py` is readable and useful for debugging, but it is not the persistent edit point; the next pipeline run regenerates it.
+
+| Intent | Persistent edit point |
 |--------|----------|
-| Fix font size / typeface / line spacing | `body()` function |
-| Change heading size / centering | `heading1/2/3()` functions |
-| Reference font size | `D['ref_size']` |
-| Image width | `D['img_width']` |
-| Edit formulas (LaTeX) | `body_with_formula("", [latex_to_omath(r"...")])` |
-| Add comment | `body("text", comment="advisor: ...")` |
-| Add TOC | Uncomment `# insert_toc(doc)` |
+| Body, heading, references, TOC, cover rendering | `script_generator.py` |
+| Content recognition, sections, image extraction | `content_parser.py` |
+| Template formatting, cover, headers/footers | `format_extractor.py` |
+| Markdown input rules | `md_parser.py` |
+| Output directories, file selection, verification | `run_pipeline.py` |
 
 ## Project Structure
 
 ```
 ├── run_pipeline.py              ← one-click entry point
 ├── CLAUDE.md                    ← AI workflow (auto-loaded by Claude Code)
-├── .claude/settings.json        ← project permissions config (optional)
+├── .claude/settings.local.json  ← local Claude permissions (ignored)
 ├── .gitignore
 ├── Templates/                   ← place template docx here
 ├── Inputs/                      ← place content docx here
-├── Outputs/                     ← independent sub-directory per run
+├── Outputs/                     ← independent sub-directory per run (ignored)
 └── Paper_Project/
     ├── 基础操作.md               ← AI toolbox (all OOXML code snippets)
     └── Program/
@@ -405,7 +425,7 @@ python Outputs/<directory>/build_generated.py
 - **Formula numbering**: `\tag{1.1}`, `\begin{equation}`, `\begin{align}` auto-numbering
 - **Math fonts**: `\mathbb{R}`, `\mathcal{F}` etc.
 - **Word comments**: `body("text", comment="advisor: please confirm")` → native Word comments
-- **TOC**: `insert_toc(doc)` generates Word field codes, right-click to update
+- **TOC**: static visible TOC by default; Word COM can resolve and write heading page numbers automatically
 - Traditional formula tools: `formula_build_matrix()` parameterized construction
 - Dual verification extraction (two independent runs cross-compared, third arbitration on mismatch)
 
