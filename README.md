@@ -54,7 +54,8 @@ python run_pipeline.py --md 论文.md
 ## 当前实现要点
 
 - `Inputs/`、`Outputs/`、`Templates/*.docx` 和模板 assets 默认视为本地隐私数据，已通过 `.gitignore` 排除；不要提交论文原文、模板文件、生成的 docx/PDF/PNG。
-- `build_generated.py` 是每次流水线生成的中间脚本。需要长期保留的排版修复应改 `Paper_Project/Program/pipeline/` 下的核心引擎脚本，再重新运行流水线。
+- `build_generated.py` 是用户侧的对话微调层：普通用户只需要和 AI 对话修改当前输出目录里的生成脚本，再运行它得到本次最终稿。
+- `Paper_Project/Program/pipeline/` 是开发者维护层：通用能力、Bug 修复、格式规则升级应改核心引擎脚本，再重新运行流水线。
 - 内容文档中的图片会提取到本次输出目录的 `figures/`，避免污染 `Inputs/` 或覆盖其他任务的图片。
 - 目录默认生成静态目录行；在 Windows + Word COM 可用时，会自动读取正文标题页码并写入目录页码，不再依赖手动取消 TOC 注释。
 - 正文图片按正文文本宽度适配；封面图片按模板提取的宽高插入，避免校徽、Logo 被段落行高裁切。
@@ -120,7 +121,7 @@ page_width_cm: 21.0
 │  内容解析器       │  │     │                  │
 │  脚本生成器       │  │传参  │  零硬编码        │──→ 最终论文
 │                  │──┘     │                  │
-│  （核心引擎）     │        │  生成中间脚本     │
+│  （开发维护层）   │        │  用户微调层       │
 │                  │        │                  │
 └──────────────────┘        └──────────────────┘
 
@@ -129,13 +130,13 @@ page_width_cm: 21.0
  └── 基础操作.md     ← AI 工具箱（所有 OOXML 代码片段）
 ```
 
-- **核心引擎**：长期维护入口。所有可复用修复都应落在 `pipeline/` 脚本中，通过 template/content JSON 传参
+- **核心引擎**：开发者长期维护入口。所有可复用修复都应落在 `pipeline/` 脚本中，通过 template/content JSON 传参
 - **md_parser.py**：Markdown 解析器，从 `.md` 文件同时提取格式说明和论文内容
 - **latex_omath.py**：独立 LaTeX→OOXML 公式转换器，像写 `.tex` 一样写公式
 - **comment_utils.py**：Word 批注系统，`comment="导师: ..."` 即可添加批注
-- **build_generated.py**：每次运行生成的中间脚本，可用于排查；长期修复应回写核心引擎
+- **build_generated.py**：每次运行生成的用户微调脚本。用户通过 AI 改它即可完成当前文档的排版调整；长期修复由开发者回写核心引擎
 - **基础操作.md**：持续维护的代码片段库——测试越多越完善，AI 能改的功能越多
-- **模板缺的功能**（如交叉引用）→ 引擎不会生成 → 用户提出 → AI 查基础操作.md → 修改核心引擎 → 重跑流水线
+- **模板缺的功能**（如交叉引用）→ 引擎不会生成 → 用户提出 → AI 查基础操作.md → 先改当前 `build_generated.py` 完成本次文档；需要产品化时再由开发者沉淀到核心引擎
 
 ## 输出结构
 
@@ -150,7 +151,7 @@ Outputs/
 │   ├── content.json
 │   ├── figures/             ← 本次内容文档提取的图片
 │   ├── assets/              ← 本次模板提取的封面/Logo 资源
-│   ├── build_generated.py   ← 生成脚本（中间产物）
+│   ├── build_generated.py   ← 生成脚本（用户可通过 AI 微调）
 │   └── 最终论文.docx
 ├── 2026-05-06_我的论文_2/
 │   └── ...
@@ -181,19 +182,26 @@ build_generated.py ──→ [Phase 4] python 运行 ──→ 最终论文.docx
 ## 微调排版
 
 ```bash
-# 修改核心引擎后重跑流水线
+# 用户侧：让 AI 修改当前输出目录的生成脚本，然后重跑生成脚本
+python Outputs/<目录>/build_generated.py
+```
+
+`Outputs/<目录>/build_generated.py` 是用户侧微调入口，适合处理当前这篇文档的一次性排版要求。下一次重新运行完整流水线会覆盖它。
+
+开发者维护通用规则时，修改核心引擎后重跑流水线：
+
+```bash
 python run_pipeline.py --template 模版.docx --content 论文.docx
 ```
 
-`Outputs/<目录>/build_generated.py` 是可读的调试产物，可用来定位生成逻辑，但不要把它作为长期修改入口；下一次运行流水线会重新生成它。
-
-| 意图 | 长期修改位置 |
-|------|------|
-| 改正文/标题/参考文献样式 | `script_generator.py` 的样式推断和渲染函数 |
-| 改内容识别、章节、图片抽取 | `content_parser.py` |
-| 改模板格式、封面结构、页眉页脚抽取 | `format_extractor.py` |
-| 改 Markdown 输入规则 | `md_parser.py` |
-| 改输出目录、文件选择、双验证流程 | `run_pipeline.py` |
+| 意图 | 用户侧微调 | 开发者侧沉淀 |
+|------|------------|--------------|
+| 当前文档的正文/标题/参考文献样式 | `build_generated.py` | `script_generator.py` |
+| 当前文档的图片、表格、目录细节 | `build_generated.py` | `script_generator.py` / `content_parser.py` |
+| 内容识别、章节、图片抽取规则 | 不建议用户处理 | `content_parser.py` |
+| 模板格式、封面结构、页眉页脚抽取 | 不建议用户处理 | `format_extractor.py` |
+| Markdown 输入规则 | 不建议用户处理 | `md_parser.py` |
+| 输出目录、文件选择、双验证流程 | 不建议用户处理 | `run_pipeline.py` |
 
 ## 项目结构
 
@@ -291,7 +299,8 @@ Each run produces an independent directory `Outputs/{date}_{content_name}/`, nev
 ## Current Behavior
 
 - `Inputs/`, `Outputs/`, `Templates/*.docx`, and template assets are treated as local private data and ignored by Git. Do not commit paper content, templates, generated docx/PDF/PNG files, or QA renders.
-- `build_generated.py` is a generated intermediate script. Persistent formatting fixes belong in the core engine scripts under `Paper_Project/Program/pipeline/`, followed by a fresh pipeline run.
+- `build_generated.py` is the user-facing AI fine-tuning layer: regular users can ask AI to edit the generated script in the current output folder, then run it for the current document.
+- `Paper_Project/Program/pipeline/` is the developer maintenance layer: reusable features, bug fixes, and rule upgrades belong in the core engine scripts, followed by a fresh pipeline run.
 - Images from the content document are extracted into the current output directory's `figures/` folder, so `Inputs/` is not polluted and runs do not overwrite each other's images.
 - TOC output is static by default; when Windows Word COM is available, the pipeline reads heading page numbers from Word and writes them into the visible TOC.
 - Body images fit the full text width. Cover images use the template-extracted width and height, preventing logos and seals from being clipped by paragraph line height.
@@ -306,8 +315,8 @@ Core engines + one generated script + two knowledge bases:
 | content_parser.py         |       |   build_generated.py      |
 | script_generator.py       |params |                           |
 |                           |------>|   zero hardcoding         |---> final .docx
-| (core engines)            |       |                           |
-+---------------------------+       |   generated intermediate  |
+| (developer layer)         |       |                           |
++---------------------------+       |   user fine-tuning layer  |
                                     |   + 基础操作.md            |
                                     +---------------------------+
 
@@ -316,13 +325,13 @@ Core engines + one generated script + two knowledge bases:
  +-- 基础操作.md      <- AI toolbox (all OOXML code snippets)
 ```
 
-- **Core engines**: the persistent maintenance surface. Reusable fixes belong in `pipeline/` scripts and stay parameterized via template/content JSON
+- **Core engines**: the developer maintenance surface. Reusable fixes belong in `pipeline/` scripts and stay parameterized via template/content JSON
 - **md_parser.py**: Markdown parser — extracts both format specs and content from `.md` files
 - **latex_omath.py**: standalone LaTeX→OOXML formula converter — write formulas like `.tex`
 - **comment_utils.py**: Word comment system — `comment="advisor: ..."` adds native Word comments
-- **build_generated.py**: zero-hardcoding generated intermediate, useful for debugging
+- **build_generated.py**: generated user fine-tuning script. Users can ask AI to edit it for the current document; developers move reusable fixes back into the core engines
 - **基础操作.md**: continuously maintained code snippet library — the more it's tested, the more AI can do
-- **Missing template features** (e.g. cross-references) → engine won't generate → user requests → AI checks 基础操作.md → updates core engine → re-runs the pipeline
+- **Missing template features** (e.g. cross-references) → engine won't generate → user requests → AI checks 基础操作.md → edits the current `build_generated.py`; developers can later productize the pattern in the core engine
 
 ## Output Structure
 
@@ -337,7 +346,7 @@ Outputs/
 │   ├── content.json
 │   ├── figures/             ← images extracted for this run
 │   ├── assets/              ← template assets for this run
-│   ├── build_generated.py   ← generated intermediate script
+│   ├── build_generated.py   ← generated script, AI-tunable for this document
 │   └── final_paper.docx
 ├── 2026-05-06_my_paper_2/
 │   └── ...
@@ -368,19 +377,26 @@ Each stage has built-in dual verification: the extractor runs independently twic
 ## Fine-Tuning
 
 ```bash
-# Update the core engine and run the whole pipeline again
+# User-level: ask AI to edit the generated script, then re-run it
+python Outputs/<directory>/build_generated.py
+```
+
+`Outputs/<directory>/build_generated.py` is the user-facing fine-tuning entry point for the current document. A full pipeline run regenerates it.
+
+For reusable behavior, developers update the core engine and run the whole pipeline again:
+
+```bash
 python run_pipeline.py --template template.docx --content paper.docx
 ```
 
-`Outputs/<directory>/build_generated.py` is readable and useful for debugging, but it is not the persistent edit point; the next pipeline run regenerates it.
-
-| Intent | Persistent edit point |
-|--------|----------|
-| Body, heading, references, TOC, cover rendering | `script_generator.py` |
-| Content recognition, sections, image extraction | `content_parser.py` |
-| Template formatting, cover, headers/footers | `format_extractor.py` |
-| Markdown input rules | `md_parser.py` |
-| Output directories, file selection, verification | `run_pipeline.py` |
+| Intent | User-level tuning | Developer productization |
+|--------|-------------------|--------------------------|
+| Current document body, heading, reference styles | `build_generated.py` | `script_generator.py` |
+| Current document images, tables, TOC details | `build_generated.py` | `script_generator.py` / `content_parser.py` |
+| Content recognition, sections, image extraction rules | not expected from users | `content_parser.py` |
+| Template formatting, cover, headers/footers extraction | not expected from users | `format_extractor.py` |
+| Markdown input rules | not expected from users | `md_parser.py` |
+| Output folders, file selection, verification flow | not expected from users | `run_pipeline.py` |
 
 ## Project Structure
 
