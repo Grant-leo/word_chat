@@ -10,7 +10,7 @@ run_pipeline.py —— 一键工作流入口
              → 直接运行，无交互（Skill / 脚本调用）
 
   结果自动输出到 Outputs/{日期}_{内容名}/
-  生成脚本 build_generated.py 可对话微调排版。
+  build_generated.py 是流水线生成产物；可复用修复请修改核心引擎脚本后重跑。
 """
 
 import os, sys, json, subprocess, argparse
@@ -218,7 +218,11 @@ def run(template_file, content_file, md_file=None):
     if content.get('references'):
         md.append('## 参考文献\n')
         for r in content['references']:
-            md.append(f'- {r[:120]}')
+            if isinstance(r, dict):
+                t = r.get('text') or r.get('code') or '[结构化内容]'
+            else:
+                t = str(r)
+            md.append(f'- {t[:120]}')
     with open(cnt_md_path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(md))
 
@@ -261,9 +265,9 @@ def run(template_file, content_file, md_file=None):
     ├── build_generated.py   <- 生成脚本
     └── {output_docx}        <- 最终文件
 
-  微调:
-    打开 build_generated.py，可继续微调排版
-    改完运行: python Outputs/{folder_name}/build_generated.py
+  开发者工作流:
+    build_generated.py 是本次输出目录中的生成产物，不作为长期修复入口
+    可复用排版修复请修改 Paper_Project/Program/pipeline/ 下的核心脚本后重跑本流水线
     目录: 生成脚本会优先用 Word COM 解析正文标题页码；不可用时仍保留静态目录行
 ''')
     return out_dir

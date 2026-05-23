@@ -874,19 +874,24 @@ class _LaTeXParser:
         content.append(_make_run(f'({eq_num})', style='plain'))
         return self._list_to_element(content)
 
-    def _parse_align(self):
-        """Handle \\begin{align}...\\end{align} with alignment."""
+    def _parse_align(self, env_name='align', auto_number=True):
+        """Handle align-like environments.
+
+        align keeps the historical auto-number behavior. aligned/align* are
+        used by the thesis generator for multi-line native formulas where the
+        formula number is supplied explicitly with \\tag.
+        """
         rows = []; current_row = []
         while True:
             t = self.peek()
             if t['type'] == 'END':
                 end_type = t.get('value', '')
-                if end_type == 'align':
+                if end_type == env_name:
                     self.consume()
                     break
-                raise ValueError(f'\\begin{{align}} ended with \\end{{{end_type}}}')
+                raise ValueError(f'\\begin{{{env_name}}} ended with \\end{{{end_type}}}')
             if t['type'] == 'EOF':
-                raise ValueError('Missing \\end for \\begin{align}')
+                raise ValueError(f'Missing \\end for \\begin{{{env_name}}}')
             if t['type'] == 'NEWLINE':
                 self.consume()
                 if current_row:
@@ -903,10 +908,11 @@ class _LaTeXParser:
         for r in rows:
             while len(r) < cols:
                 r.append(None)
-            # Add auto-number
-            row_num = rows.index(r) + 1
-            r.append(_make_run(f'({row_num})', style='plain'))
-        return _make_matrix(rows, cols + 1, 'matrix')
+            if auto_number:
+                # Add auto-number
+                row_num = rows.index(r) + 1
+                r.append(_make_run(f'({row_num})', style='plain'))
+        return _make_matrix(rows, cols + (1 if auto_number else 0), 'matrix')
 
     def _parse_frac(self):
         num = self._parse_arg()
@@ -1012,37 +1018,52 @@ class _LaTeXParser:
         self.consume('LBRACE')
         # Collect content: flat text with inline sub/superscript support
         result = []
+        buffer = []
+
+        def flush_buffer():
+            if buffer:
+                result.append(_make_run(''.join(buffer), style=style))
+                buffer.clear()
+
         while self.peek()['type'] != 'RBRACE' and self.peek()['type'] != 'EOF':
             t = self.peek()
             if t['type'] == 'CHAR':
-                result.append(_make_run(self.consume()['value'], style=style))
+                buffer.append(self.consume()['value'])
             elif t['type'] == 'SPACE':
-                result.append(_make_run(' ', style=style)); self.consume()
+                buffer.append(' ')
+                self.consume()
             elif t['type'] == 'COMMAND':
                 cname = self.consume()['value'][1:]
                 if cname in _GREEK_LOWER:
+                    flush_buffer()
                     result.append(_make_run(_GREEK_LOWER[cname], style=style))
                 elif cname in _SYMBOLS:
+                    flush_buffer()
                     result.append(_make_run(_SYMBOLS[cname], style=style))
                 elif cname in _ARROWS:
+                    flush_buffer()
                     result.append(_make_run(_ARROWS[cname], style=style))
                 else:
-                    result.append(_make_run(cname, style=style))
+                    buffer.append(cname)
             elif t['type'] == 'SUB':
                 # Real subscript inside text style (e.g., \mathrm{CH_4})
+                flush_buffer()
                 sub_base = _make_run('', style=style)
                 self.consume('SUB')
                 sub_arg = self._ensure_single(self._parse_atom())
                 result.append(_make_sub(sub_base, sub_arg) if sub_arg is not None else sub_base)
             elif t['type'] == 'SUPER':
                 # Real superscript inside text style
+                flush_buffer()
                 sup_base = _make_run('', style=style)
                 self.consume('SUPER')
                 sup_arg = self._ensure_single(self._parse_atom())
                 result.append(_make_sup(sup_base, sup_arg) if sup_arg else sup_base)
             else:
+                flush_buffer()
                 self.consume()
         self.consume('RBRACE')
+        flush_buffer()
         if len(result) == 0:
             return _make_run('', style=style)
         if len(result) == 1:
@@ -1116,7 +1137,9 @@ class _LaTeXParser:
         if mtype == 'equation':
             return self._parse_equation()
         if mtype == 'align':
-            return self._parse_align()
+            return self._parse_align('align', auto_number=True)
+        if mtype in ('aligned', 'align*'):
+            return self._parse_align(mtype, auto_number=False)
 
         rows = []; current_row = []
         while True:

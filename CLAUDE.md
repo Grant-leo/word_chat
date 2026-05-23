@@ -81,6 +81,7 @@ For reusable fixes, product behavior, parser changes, or when the requester is t
 1. **Read the latest output** (`格式提取.md`, `内容提取.md`, and when useful `build_generated.py`) to locate the mismatch
 2. **Identify the owning core script**
    - `script_generator.py`: DOCX rendering, cover, TOC, styles, tables, images, references
+   - `latex_omath.py`: LaTeX/text formula to native OOXML Math conversion
    - `format_extractor.py`: template/cover/header/footer/style extraction
    - `content_parser.py`: content sections, figures, references, metadata extraction
    - `md_parser.py`: Markdown input parsing
@@ -126,6 +127,7 @@ Example: template has no cross-references → generated script has no `B_ref()`.
 - Each pipeline run = independent Outputs directory; same-day duplicate names get `_2`, `_3`, etc.
 - Office Viewer ≠ WPS/Word. Final verification MUST use WPS/Word.
 - Formulas: use `latex_to_omath(r"\frac{a}{b}")` — LaTeX math string → native Word OOXML equation. Write formulas in LaTeX syntax, they auto-convert. Covers fractions, roots, sums, integrals, matrices, cases, Greek letters, arrows, accents, limits, braces, boxed, and more. See `latex_omath.py` for full reference.
+- Plain-text formulas extracted from content docx must become formula items (`role="formula"`, `source="text"`) and render as native `m:oMathPara`; verify by checking the docx XML for `<m:oMathPara>` and by rendering in Word/WPS.
 - Matrix short-cut: `formula_build_matrix(cells, cols, brackets)` as alternative.
 - All legacy formula tools (`formula_text/remove/replace`) remain available.
 - OOXML math: every `m:r` needs `m:rPr` (even empty) for WPS compatibility.

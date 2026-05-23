@@ -477,6 +477,47 @@ def _normalize_caption_spacing(text):
     return re.sub(r'^(图|表)\s*(\d+(?:[.-]\d+)?)\s*', r'\1 \2 ', t).strip()
 
 
+def _clean_markdown_links(text):
+    def repl(m):
+        label = (m.group(1) or '').strip()
+        target = (m.group(2) or '').strip()
+        return label or target
+    return re.sub(r'\[([^\]]+)\]\(([^)]+)\)', repl, str(text or ''))
+
+
+def _clean_text_artifacts(text, preserve_newlines=False):
+    """Remove generic editor/clipboard artifacts without changing content semantics."""
+    t = _clean_markdown_links(text)
+    t = t.replace('\u00a0', ' ')
+    if preserve_newlines:
+        lines = []
+        for line in t.replace('\r\n', '\n').replace('\r', '\n').split('\n'):
+            s = re.sub(r'[ \t]+', ' ', line).strip()
+            if _is_noise_text(s):
+                continue
+            lines.append(s)
+        return '\n'.join(lines).strip()
+    t = re.sub(r'\s+', ' ', t).strip()
+    return '' if _is_noise_text(t) else t
+
+
+def _is_noise_text(text):
+    t = str(text or '').strip()
+    return t in {'复制', 'Copy', 'Plain Text', '纯文本'}
+
+
+def _clean_code_text(text):
+    return _clean_text_artifacts(text, preserve_newlines=True)
+
+
+def _clean_formula_text(text):
+    t = _clean_text_artifacts(text)
+    if t.count('|') >= 3:
+        t = t.replace('|', '')
+    t = re.sub(r'\s+', ' ', t).strip()
+    return t
+
+
 def _paragraph_plain_text_from_ooxml(p_elem):
     W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
     pieces = []
@@ -497,7 +538,7 @@ def _extract_table_rows_from_ooxml(tbl_elem):
         for tc in tr.findall(f'{{{W}}}tc'):
             paras = []
             for p in tc.findall(f'{{{W}}}p'):
-                txt = _paragraph_plain_text_from_ooxml(p).rstrip()
+                txt = _clean_text_artifacts(_paragraph_plain_text_from_ooxml(p), preserve_newlines=True).rstrip()
                 if txt:
                     paras.append(txt)
             cells.append('\n'.join(paras).strip())
@@ -550,30 +591,33 @@ def _code_text_from_table_rows(rows):
             lines.append(cells[0])
         else:
             lines.append('    '.join(cells).rstrip())
-    return '\n'.join(lines).rstrip()
+    return _clean_code_text('\n'.join(lines).rstrip())
 
 
 def _looks_like_formula_text(text):
     """Detect standalone calculation/formula paragraphs.
 
     The rule is intentionally structural: formulas are short standalone lines
-    with equality and mathematical operators/numbers, not normal prose.
+    with equality/calculation operators. Some thesis sources store formulas as
+    plain text, including definition lines without numbers and continuation
+    lines that start with "=".
     """
     t = str(text or '').strip()
     if not t or len(t) > 180:
         return False
-    if t.endswith(('。', '！', '？')):
-        return False
-    if not re.search(r'[=＝≈≤≥<>]', t):
-        return False
-    if not re.search(r'\d', t):
-        return False
-    op_hits = len(re.findall(r'[=＝+\-*/×÷%≈≤≥<>]', t))
-    if op_hits < 2:
+    if t.endswith(('。', '！', '？', '；', ';')):
         return False
     if re.search(r'^\[\d+\]', t) or re.search(r'\[\d+(?:[-,，、]\d+)*\]', t):
         return False
-    return True
+    has_equal = bool(re.search(r'[=＝≈≤≥<>]', t))
+    has_operator = bool(re.search(r'[+\-*/×÷%]', t))
+    has_digit = bool(re.search(r'\d', t))
+    starts_continuation = bool(re.match(r'^[=＝≈≤≥<>]', t)) and has_digit
+    if starts_continuation:
+        return True
+    if has_equal and has_operator:
+        return True
+    return False
 
 
 def _latex_escape_text(text):
@@ -586,14 +630,32 @@ def _latex_from_formula_text(text):
         return t[2:-2].strip()
     if t.startswith('$') and t.endswith('$'):
         return t[1:-1].strip()
-    # Keep engineering units/Chinese labels intact inside native Word math.
-    return r'\text{' + _latex_escape_text(t) + '}'
+    return ''
+
+
+def _formula_should_number(text):
+    t = str(text or '').strip()
+    if not re.search(r'\d', t):
+        return False
+    has_equal = bool(re.search(r'[=＝≈≤≥<>]', t))
+    has_operator = bool(re.search(r'[+*/×÷%]|\s-\s', t))
+    return bool(has_equal and has_operator)
+
+
+def _formula_item_from_text(text):
+    clean = _clean_formula_text(text)
+    item = {'role': 'formula', 'source': 'text', 'text': clean, 'numbered': _formula_should_number(clean)}
+    latex = _latex_from_formula_text(clean)
+    if latex:
+        item['source'] = 'latex'
+        item['latex'] = latex
+    return item
 
 def _append_text_or_code(section, text, in_appendix=False):
     """Append semantic blocks while preserving captions, code and inline citations."""
     if not text:
         return
-    text = str(text).strip()
+    text = _clean_text_artifacts(text)
     if not text:
         return
     if _is_figure_caption(text):
@@ -601,9 +663,9 @@ def _append_text_or_code(section, text, in_appendix=False):
     elif _is_table_caption(text):
         section['paragraphs'].append({'role': 'table_caption', 'text': _normalize_caption_spacing(text)})
     elif _looks_like_formula_text(text):
-        section['paragraphs'].append({'role': 'formula', 'text': text, 'latex': _latex_from_formula_text(text)})
+        section['paragraphs'].append(_formula_item_from_text(text))
     elif in_appendix and (_looks_like_code_line(text) or '\n' in text):
-        section['paragraphs'].append({'role': 'code', 'code': text})
+        section['paragraphs'].append({'role': 'code', 'code': _clean_code_text(text)})
     else:
         section['paragraphs'].append(text)
 
@@ -739,8 +801,9 @@ def extract(docx_path, output_dir='Inputs'):
                 if body_part:
                     _append_text_or_code(current_section, body_part, in_appendix=False)
             elif ref_section is not None:
-                if text:
-                    ref_section['entries'].append(text)
+                clean_ref_text = _clean_text_artifacts(text)
+                if clean_ref_text:
+                    ref_section['entries'].append(clean_ref_text)
             else:
                 # Preserve exact OOXML run order within the paragraph.  This is
                 # crucial when Word stores explanatory text, a drawing, and a
@@ -756,7 +819,7 @@ def extract(docx_path, output_dir='Inputs'):
                     elif _it.get('role') == 'text':
                         txt = _it.get('text') or ''
                         if math_list and txt == clean_text:
-                            current_section['paragraphs'].append({'text': clean_text, 'math': math_list})
+                            current_section['paragraphs'].append({'role': 'formula', 'source': 'omml', 'text': clean_text, 'math': math_list})
                         else:
                             _append_text_or_code(current_section, txt, in_appendix=bool(re.search(r'(附\s*录|配置|命令|代码)', current_section.get('heading',''))))
 
@@ -764,7 +827,12 @@ def extract(docx_path, output_dir='Inputs'):
             # Body table — preserve paragraph breaks inside each cell.
             _rows = _extract_table_rows_from_ooxml(_child)
             if _rows:
-                if _table_rows_look_like_code(_rows):
+                if ref_section is not None:
+                    if _table_rows_look_like_code(_rows):
+                        ref_section['entries'].append({'role': 'code', 'code': _code_text_from_table_rows(_rows), 'table_rows': _rows})
+                    else:
+                        ref_section['entries'].append({'role': 'table', 'table_rows': _rows})
+                elif _table_rows_look_like_code(_rows):
                     current_section['paragraphs'].append({'role': 'code', 'code': _code_text_from_table_rows(_rows), 'table_rows': _rows})
                 else:
                     current_section['paragraphs'].append({'role': 'table', 'table_rows': _rows})

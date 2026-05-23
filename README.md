@@ -57,6 +57,7 @@ python run_pipeline.py --md 论文.md
 - `build_generated.py` 是用户侧的对话微调层：普通用户只需要和 AI 对话修改当前输出目录里的生成脚本，再运行它得到本次最终稿。
 - `Paper_Project/Program/pipeline/` 是开发者维护层：通用能力、Bug 修复、格式规则升级应改核心引擎脚本，再重新运行流水线。
 - 内容文档中的图片会提取到本次输出目录的 `figures/`，避免污染 `Inputs/` 或覆盖其他任务的图片。
+- 内容文档中的普通文本公式会由 `content_parser.py` 识别为公式项，再由 `script_generator.py` 调用 `latex_omath.py` 生成原生 OOXML Math；最终 docx 中是 WPS/Word 可编辑的 `m:oMathPara`，不是图片或纯文本。
 - 目录默认生成静态目录行；在 Windows + Word COM 可用时，会自动读取正文标题页码并写入目录页码，不再依赖手动取消 TOC 注释。
 - 正文图片按正文文本宽度适配；封面图片按模板提取的宽高插入，避免校徽、Logo 被段落行高裁切。
 
@@ -132,7 +133,7 @@ page_width_cm: 21.0
 
 - **核心引擎**：开发者长期维护入口。所有可复用修复都应落在 `pipeline/` 脚本中，通过 template/content JSON 传参
 - **md_parser.py**：Markdown 解析器，从 `.md` 文件同时提取格式说明和论文内容
-- **latex_omath.py**：独立 LaTeX→OOXML 公式转换器，像写 `.tex` 一样写公式
+- **latex_omath.py**：独立 LaTeX→OOXML 公式转换器；既支持手写 LaTeX，也承接 `content_parser.py` 从文本公式归一化出的 LaTeX
 - **comment_utils.py**：Word 批注系统，`comment="导师: ..."` 即可添加批注
 - **build_generated.py**：每次运行生成的用户微调脚本。用户通过 AI 改它即可完成当前文档的排版调整；长期修复由开发者回写核心引擎
 - **基础操作.md**：持续维护的代码片段库——测试越多越完善，AI 能改的功能越多
@@ -221,7 +222,7 @@ python run_pipeline.py --template 模版.docx --content 论文.docx
         │   ├── content_parser.py     ← Phase 2: 内容 → 结构化 JSON
         │   ├── md_parser.py          ← MD 解析（格式 + 内容）
         │   ├── script_generator.py   ← Phase 3: JSON → 生成脚本
-        │   ├── latex_omath.py        ← LaTeX→OOXML 公式转换器
+        │   ├── latex_omath.py        ← LaTeX/文本公式→OOXML 公式转换器
         │   └── comment_utils.py      ← Word 批注系统
         ├── build_acta_manuscript.py  ← 参考：Acta Materialia 期刊格式
         ├── build_comprehensive_doc.py ← 参考：全功能演示
@@ -243,6 +244,8 @@ python run_pipeline.py --template 模版.docx --content 论文.docx
 - 图片居中 + Fig. 图注
 - **LaTeX 公式转换**：`latex_to_omath(r"\frac{a}{b}")` — 像写 .tex 一样直写 LaTeX → 原生 Word 方程
   支持分式/根式/求和/积分/矩阵/cases/希腊字母/符号/箭头/重音/函数/极限/定界符/括号/框（42+ 构造）
+- **文本公式重建**：内容 docx 中的普通文本工程公式会被识别、转换为 LaTeX，再以 `m:oMathPara` 插入，WPS/Word 中可继续编辑公式。
+- **WPS 原生公式兼容**：`latex_omath.py` 为每个 `m:r` 保留 `m:rPr`，并合并 `\text{}` / `\mathrm{}` 的连续文本 run，避免公式显示成 `M|b|p|s` 一类分隔伪影。
 - **公式编号**：`\tag{1.1}`, `\begin{equation}`, `\begin{align}` 自动编号
 - **双线体/手写体**：`\mathbb{R}`, `\mathcal{F}` 等数学字体
 - **Word 批注**：`body("text", comment="导师: 请确认")` → 生成原生 Word 批注
@@ -302,6 +305,7 @@ Each run produces an independent directory `Outputs/{date}_{content_name}/`, nev
 - `build_generated.py` is the user-facing AI fine-tuning layer: regular users can ask AI to edit the generated script in the current output folder, then run it for the current document.
 - `Paper_Project/Program/pipeline/` is the developer maintenance layer: reusable features, bug fixes, and rule upgrades belong in the core engine scripts, followed by a fresh pipeline run.
 - Images from the content document are extracted into the current output directory's `figures/` folder, so `Inputs/` is not polluted and runs do not overwrite each other's images.
+- Plain-text formulas in content documents are recognized by `content_parser.py`, normalized by `script_generator.py`, and rendered through `latex_omath.py` as native OOXML Math. The final docx contains editable WPS/Word `m:oMathPara`, not formula screenshots or plain text.
 - TOC output is static by default; when Windows Word COM is available, the pipeline reads heading page numbers from Word and writes them into the visible TOC.
 - Body images fit the full text width. Cover images use the template-extracted width and height, preventing logos and seals from being clipped by paragraph line height.
 
@@ -327,7 +331,7 @@ Core engines + one generated script + two knowledge bases:
 
 - **Core engines**: the developer maintenance surface. Reusable fixes belong in `pipeline/` scripts and stay parameterized via template/content JSON
 - **md_parser.py**: Markdown parser — extracts both format specs and content from `.md` files
-- **latex_omath.py**: standalone LaTeX→OOXML formula converter — write formulas like `.tex`
+- **latex_omath.py**: standalone LaTeX→OOXML formula converter; it supports handwritten LaTeX and LaTeX normalized from plain-text formulas extracted by `content_parser.py`
 - **comment_utils.py**: Word comment system — `comment="advisor: ..."` adds native Word comments
 - **build_generated.py**: generated user fine-tuning script. Users can ask AI to edit it for the current document; developers move reusable fixes back into the core engines
 - **基础操作.md**: continuously maintained code snippet library — the more it's tested, the more AI can do
@@ -416,7 +420,7 @@ python run_pipeline.py --template template.docx --content paper.docx
         │   ├── content_parser.py     ← Phase 2: content → structured JSON
         │   ├── md_parser.py          ← MD parser (format + content)
         │   ├── script_generator.py   ← Phase 3: JSON → build script
-        │   ├── latex_omath.py        ← LaTeX→OOXML formula converter
+        │   ├── latex_omath.py        ← LaTeX/plain-text formula → OOXML converter
         │   └── comment_utils.py      ← Word comment system
         ├── build_acta_manuscript.py  ← reference: Acta Materialia journal format
         ├── build_comprehensive_doc.py ← reference: full feature demo
@@ -438,6 +442,8 @@ python run_pipeline.py --template template.docx --content paper.docx
 - Image centering + Fig. captions
 - **LaTeX formula conversion**: `latex_to_omath(r"\frac{a}{b}")` — write LaTeX directly → native Word equations
   Supports fractions/radicals/sums/integrals/matrices/cases/Greek/symbols/arrows/accents/functions/limits/delimiters/brackets/boxes (42+ constructs)
+- **Plain-text formula reconstruction**: engineering formulas in source docx paragraphs are detected, normalized to LaTeX, and inserted as editable `m:oMathPara` equations.
+- **WPS-native equation compatibility**: `latex_omath.py` keeps `m:rPr` on every math run and merges contiguous `\text{}` / `\mathrm{}` text runs to avoid delimiter artifacts such as `M|b|p|s`.
 - **Formula numbering**: `\tag{1.1}`, `\begin{equation}`, `\begin{align}` auto-numbering
 - **Math fonts**: `\mathbb{R}`, `\mathcal{F}` etc.
 - **Word comments**: `body("text", comment="advisor: please confirm")` → native Word comments
