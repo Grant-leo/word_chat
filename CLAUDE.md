@@ -29,28 +29,41 @@ ls Templates/*.docx Inputs/*.docx Inputs/*.md 2>/dev/null
 ```
 If no .docx or .md files, tell the user to put them in Templates/ and Inputs/.
 
-### 3. Run Pipeline
+### 3. Select Workflow Mode
+
+Use the mode recorded in `Outputs/<latest>/workflow_mode.json` when it exists.
+
+- `user`: edit only `Outputs/<latest>/build_generated.py`
+- `developer`: edit only core scripts under `Paper_Project/Program/pipeline/`, then rerun the full pipeline
+
+If no mode is known and the user has not said they are the developer, use `user`.
+
+### 4. Run Pipeline
 ```bash
 # DOCX template + DOCX content
-python run_pipeline.py --template <模板文件名> --content <内容文件名>
+python run_pipeline.py --mode user --template <模板文件名> --content <内容文件名>
 
 # DOCX template + MD content
-python run_pipeline.py --template <模板文件名> --content <md文件名>
+python run_pipeline.py --mode user --template <模板文件名> --content <md文件名>
 
 # Pure MD mode (format + content in one .md)
-python run_pipeline.py --md <md文件名>
+python run_pipeline.py --mode user --md <md文件名>
+
+# Developer engine-fix run
+python run_pipeline.py --mode developer --template <模板文件名> --content <内容文件名>
 ```
 Or interactive: `python run_pipeline.py`
 
-### 4. Verify Outputs
+### 5. Verify Outputs
 - Read `Outputs/<latest>/格式提取.md` — check paragraph counts, fonts, sizes
 - Read `Outputs/<latest>/内容提取.md` — check all sections present
+- Read `Outputs/<latest>/qa_report.md` first; it names the active fix target for the current mode
 - Confirm `Outputs/<latest>/最终论文.docx` exists
 - Render/check with Word/WPS when layout matters; Office Viewer alone is not enough
 - For ordinary user fine-tuning, edit `Outputs/<latest>/build_generated.py` and run it.
 - For developer/maintainer requests or reusable bug fixes, update the core pipeline scripts and run the full pipeline.
 
-### 5. Report Then Offer Fine-Tuning
+### 6. Report Then Offer Fine-Tuning
 After reporting results, ask: "排版完成了，需要微调吗？"
 
 ---
@@ -68,17 +81,18 @@ Use it to inspect or tune:
 
 For ordinary users:
 
-1. Read the latest output (`格式提取.md`, `内容提取.md`, and `build_generated.py`) to locate the mismatch
+1. Read the latest output (`qa_report.md`, `格式提取.md`, `内容提取.md`, and `build_generated.py`) to locate the mismatch
 2. Edit `Outputs/<latest>/build_generated.py`
 3. Re-run `python Outputs/<latest>/build_generated.py`
-4. Verify the updated `最终论文.docx`
-5. Do not ask users to edit core engine scripts
+4. Re-run QA if needed: `python Paper_Project/Program/pipeline/qa_checker.py Outputs/<latest> --mode user`
+5. Verify the updated `最终论文.docx`
+6. Do not ask users to edit core engine scripts
 
 ### Developer-Level Engine Fixes
 
 For reusable fixes, product behavior, parser changes, or when the requester is the developer/maintainer:
 
-1. **Read the latest output** (`格式提取.md`, `内容提取.md`, and when useful `build_generated.py`) to locate the mismatch
+1. **Read the latest output** (`qa_report.md`, `格式提取.md`, `内容提取.md`, and when useful `build_generated.py`) to locate the mismatch
 2. **Identify the owning core script**
    - `script_generator.py`: DOCX rendering, cover, TOC, styles, tables, images, references
    - `latex_omath.py`: LaTeX/text formula to native OOXML Math conversion
@@ -88,7 +102,7 @@ For reusable fixes, product behavior, parser changes, or when the requester is t
    - `run_pipeline.py`: file selection, output directories, extraction orchestration
 3. **Consult `基础操作.md`** — find the correct OOXML implementation
 4. **Edit the core script** — keep the change generic and template-driven
-5. **Re-run the whole pipeline** — `python run_pipeline.py --template <模板文件名> --content <内容文件名>`
+5. **Re-run the whole pipeline** — `python run_pipeline.py --mode developer --template <模板文件名> --content <内容文件名>`
 6. **Verify the new output directory**
 
 ### Common Edits (look up details in 基础操作.md)
@@ -121,13 +135,17 @@ Example: template has no cross-references → generated script has no `B_ref()`.
 ## Key Technical Rules
 
 - All format values from `P{}` (template) or `D{}` (derived). Never hardcode.
-- Do not commit or upload private test data: `Inputs/`, `Outputs/`, `Templates/*.docx`, generated DOCX/PDF/PNG, and template assets are local-only.
+- Do not commit or upload private test data: real files under `Inputs/`, `Outputs/`, `Templates/`, generated DOCX/PDF/PNG, QA renders, and template assets are local-only.
+- Always honor the workflow mode: user mode changes only `build_generated.py`; developer mode changes only reusable core scripts and reruns the whole pipeline.
+- Generated QA reports are advisory and routing-focused. They do not replace WPS/Word visual verification for final delivery.
 - Chinese text needs `w:eastAsia` set (handled automatically by generator).
 - A4 pagination uses dual cpl: Latin and CJK separately.
 - Each pipeline run = independent Outputs directory; same-day duplicate names get `_2`, `_3`, etc.
 - Office Viewer ≠ WPS/Word. Final verification MUST use WPS/Word.
 - Formulas: use `latex_to_omath(r"\frac{a}{b}")` — LaTeX math string → native Word OOXML equation. Write formulas in LaTeX syntax, they auto-convert. Covers fractions, roots, sums, integrals, matrices, cases, Greek letters, arrows, accents, limits, braces, boxed, and more. See `latex_omath.py` for full reference.
 - Plain-text formulas extracted from content docx must become formula items (`role="formula"`, `source="text"`) and render as native `m:oMathPara`; verify by checking the docx XML for `<m:oMathPara>` and by rendering in Word/WPS.
+- Markdown `$...$` / `$$...$$` formulas in abstracts and body sections must also render as native OOXML Math; cleanup code must preserve math-only paragraphs.
+- Markdown image paths must resolve relative to the `.md` file first, then copy into the current output `figures/` folder.
 - Matrix short-cut: `formula_build_matrix(cells, cols, brackets)` as alternative.
 - All legacy formula tools (`formula_text/remove/replace`) remain available.
 - OOXML math: every `m:r` needs `m:rPr` (even empty) for WPS compatibility.
@@ -147,6 +165,7 @@ Paper_Project/Program/pipeline/
     md_parser.py              ← MD parser (format + content from .md)
     script_generator.py       ← Phase 3: JSON → build_generated.py
     latex_omath.py            ← LaTeX→OOXML formula converter
+    qa_checker.py             ← Generated-output QA report and fix-target routing
     comment_utils.py          ← Word comment injection system
 Paper_Project/基础操作.md     ← ★ YOUR TOOLBOX: all OOXML code snippets
 build_acta_manuscript.py      ← Reference: Acta journal paper

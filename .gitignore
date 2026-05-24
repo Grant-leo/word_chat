@@ -18,8 +18,9 @@ Inputs/**
 !Inputs/*.txt
 Inputs/*.docx
 Inputs/*/
-Templates/*.docx
-Templates/*_assets/
+Templates/**
+!Templates/
+!Templates/*.txt
 
 # Python
 __pycache__/

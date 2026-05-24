@@ -988,7 +988,7 @@ def _paragraph_is_empty_for_cleanup(p):
     if p.text.strip():
         return False
     xml = p._element.xml
-    if '<w:drawing' in xml or '<w:pict' in xml:
+    if '<w:drawing' in xml or '<w:pict' in xml or 'oMath' in xml:
         return False
     pPr = p._element.find(qn('w:pPr'))
     if pPr is not None and pPr.find(qn('w:sectPr')) is not None:
@@ -1633,6 +1633,35 @@ def section_text(sec):
     return '\n'.join(x for x in out if x)
 
 
+def add_rich_text_item(item, role='body', first_indent=True, chapter=None):
+    """Render a content item that may contain plain text plus extracted math.
+
+    Markdown inline math arrives as {"text": "...", "math": [...]}.  The
+    generator cannot recover exact inline positions after extraction, so it
+    keeps the readable text paragraph and renders each math object as native
+    OMML immediately after it.  This preserves editability instead of silently
+    dropping formulas or leaving them as plain text.
+    """
+    if isinstance(item, str):
+        return add_text(item, role=role, first_indent=first_indent)
+    if not isinstance(item, dict):
+        return None
+    text = str(item.get('text') or '').strip()
+    if text:
+        add_text(text, role=role, first_indent=first_indent)
+    if item.get('math') and not item.get('latex') and not item.get('xml'):
+        for m in item.get('math') or []:
+            render_formula({
+                'latex': m.get('latex'),
+                'xml': m.get('xml'),
+                'text': m.get('text') or '',
+                'numbered': False,
+            }, chapter)
+    elif item.get('role') == 'formula' or item.get('latex') or item.get('xml'):
+        render_formula(item, chapter)
+    return None
+
+
 def add_keywords(label, value, role):
     prof = profile(role)
     p = doc.add_paragraph()
@@ -1754,14 +1783,22 @@ def render_front_matter():
         add_text('摘 要', role='cn_abstract_heading', first_indent=False)
         cn_items = []
         for para in cn_abs.get('paragraphs', []) or []:
-            text = para if isinstance(para, str) else para.get('text', '')
-            if str(text).strip():
-                cn_items.append(str(text).strip())
+            if isinstance(para, dict) and (para.get('math') or para.get('role') == 'formula' or para.get('latex') or para.get('xml')):
+                cn_items.append(para)
+            else:
+                text = para if isinstance(para, str) else para.get('text', '')
+                if str(text).strip():
+                    cn_items.append(str(text).strip())
         if DATA.get('rules', {}).get('cn_abstract_single_paragraph') and cn_items:
-            add_text(''.join(cn_items), role='cn_abstract_body', first_indent=True)
+            plain_items = [x for x in cn_items if isinstance(x, str)]
+            rich_items = [x for x in cn_items if not isinstance(x, str)]
+            if plain_items:
+                add_text(''.join(plain_items), role='cn_abstract_body', first_indent=True)
+            for item in rich_items:
+                add_rich_text_item(item, role='cn_abstract_body', first_indent=True)
         else:
-            for text in cn_items:
-                add_text(text, role='cn_abstract_body', first_indent=True)
+            for item in cn_items:
+                add_rich_text_item(item, role='cn_abstract_body', first_indent=True)
     cn_kw = front.get('cn_kw')
     if cn_kw and cn_abs:
         add_blank_line('cn_abstract_body')
@@ -1781,9 +1818,7 @@ def render_front_matter():
     if en_abs:
         add_text('ABSTRACT', role='en_abstract_heading', first_indent=False)
         for para in en_abs.get('paragraphs', []) or []:
-            text = para if isinstance(para, str) else para.get('text', '')
-            if str(text).strip():
-                add_text(str(text).strip(), role='en_abstract_body', first_indent=True)
+            add_rich_text_item(para, role='en_abstract_body', first_indent=True)
     en_kw = front.get('en_kw')
     if en_kw:
         val = section_text(en_kw).replace('；', ';')
@@ -2437,8 +2472,16 @@ def collect_structural_backmatter():
 def render_paragraph_item(item, code_sensitive=False, chapter=None):
     if isinstance(item, dict) and (item.get('role') == 'formula' or item.get('math')):
         if item.get('math') and not item.get('latex') and not item.get('xml'):
+            text = str(item.get('text') or '').strip()
+            if text:
+                add_text(text, role='body', first_indent=True)
             for m in item.get('math') or []:
-                render_formula({'latex': m.get('latex'), 'xml': m.get('xml'), 'text': m.get('text') or item.get('text')}, chapter)
+                render_formula({
+                    'latex': m.get('latex'),
+                    'xml': m.get('xml'),
+                    'text': m.get('text') or '',
+                    'numbered': False,
+                }, chapter)
         else:
             render_formula(item, chapter)
         return

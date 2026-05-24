@@ -24,9 +24,6 @@ DEFAULT_FORMAT_TEXT = (
     "Key words：Times New Roman，小四号(12pt)，加粗，左对齐。"
 )
 
-_HEADER_TEXT = 'B. A. Thesis of English Major in Education (2022-2026)'
-
-
 def _parse_page_geometry(text):
     """Extract page dimensions from Chinese description like 'A4，上2.5cm，下2.4cm...'."""
     geo = {}
@@ -58,8 +55,13 @@ def _parse_yaml_frontmatter(raw):
             key, _, val = line.partition(':')
             key = key.strip()
             val = val.strip().strip('"').strip("'")
-            try: val = int(val) if '.' not in val else float(val)
-            except ValueError: pass
+            if val.lower() in ('true', 'yes', 'on'):
+                val = True
+            elif val.lower() in ('false', 'no', 'off'):
+                val = False
+            else:
+                try: val = int(val) if '.' not in val else float(val)
+                except ValueError: pass
             config[key] = val
     return config, end + 3
 
@@ -88,7 +90,7 @@ def _find_format_section(text, start_pos):
     return fmt_text, body_pos
 
 
-def _build_format_dict(md_path, fmt_text, page_override=None):
+def _build_format_dict(md_path, fmt_text, page_override=None, header_override=None):
     """Build a format.json-compatible dict from format description text."""
     geo = _parse_page_geometry(fmt_text)
     page = {**DEFAULT_PAGE, **geo}
@@ -111,16 +113,26 @@ def _build_format_dict(md_path, fmt_text, page_override=None):
             'align': 'JUSTIFY', 'ls': 1.5, 'indent': 0,
         })
 
+    header_override = header_override or {}
+    header_text = str(header_override.get('text') or '').strip()
+    header_font = header_override.get('font') or 'Times New Roman'
+    header_size = float(header_override.get('size') or 10.5)
+    header_bold = bool(header_override.get('bold', False))
+    header_align = header_override.get('align') or 'CENTER'
+    header = []
+    if header_text:
+        header = [{
+            'text': header_text,
+            'alignment': header_align,
+            'runs': [{'text': header_text, 'font': header_font,
+                      'size_pt': header_size, 'bold': header_bold, 'italic': False}],
+        }]
+
     section = {
         'index': 0,
         **page,
         'diff_first_page': False,
-        'header': [{
-            'text': _HEADER_TEXT,
-            'alignment': 'CENTER',
-            'runs': [{'text': _HEADER_TEXT, 'font': 'Times New Roman',
-                      'size_pt': 10.5, 'bold': True, 'italic': False}],
-        }],
+        'header': header,
         'footer': [],
     }
 
@@ -148,6 +160,7 @@ def extract_format(md_path):
     yaml_config, body_pos = _parse_yaml_frontmatter(raw)
     fmt_text = None
     page_override = {}
+    header_override = {}
 
     if yaml_config:
         # Build format description from YAML config (use Latin parens to avoid regex issues)
@@ -182,13 +195,21 @@ def extract_format(md_path):
                    'margin_bottom_cm', 'margin_left_cm', 'margin_right_cm']:
             if k in yaml_config:
                 page_override[k] = float(yaml_config[k])
+        if yaml_config.get('header_text'):
+            header_override = {
+                'text': yaml_config.get('header_text'),
+                'font': yaml_config.get('header_font', 'Times New Roman'),
+                'size': yaml_config.get('header_size', 10.5),
+                'bold': yaml_config.get('header_bold', False),
+                'align': yaml_config.get('header_align', 'CENTER'),
+            }
 
     if not fmt_text:
         fmt_text, body_pos = _find_format_section(raw, body_pos)
     if not fmt_text:
         fmt_text = DEFAULT_FORMAT_TEXT
 
-    fmt_dict = _build_format_dict(md_path, fmt_text, page_override)
+    fmt_dict = _build_format_dict(md_path, fmt_text, page_override, header_override)
     return fmt_dict, raw
 
 
@@ -273,14 +294,16 @@ def _process_inline_math(text):
     return parts
 
 
-def _extract_images_from_text(text, fig_dir, prefix):
+def _extract_images_from_text(text, fig_dir, prefix, base_dir=''):
     """Extract image references like ![...](path) from text.
     Copies images to fig_dir. Returns (clean_text, image_filenames)."""
     imgs = []
     clean = text
 
     for m in re.finditer(r'!\[.*?\]\((.+?)\)', text):
-        src = m.group(1)
+        src = m.group(1).strip().strip('"').strip("'")
+        if re.match(r'^[a-z]+://', src, re.I):
+            continue
         fname = os.path.basename(src)
         if not fname:
             continue
@@ -291,13 +314,15 @@ def _extract_images_from_text(text, fig_dir, prefix):
         existing = [f for f in os.listdir(fig_dir) if f.startswith(prefix)]
         seq = len(existing) + 1
         dest = os.path.join(fig_dir, f'{prefix}_{seq:03d}{ext}')
-        src_path = src
-        if not os.path.isabs(src_path):
-            # Relative to some base — try to find it
-            src_path = src  # keep as-is if not found
-        if os.path.exists(src_path):
+        candidates = [src]
+        if not os.path.isabs(src):
+            if base_dir:
+                candidates.insert(0, os.path.join(base_dir, src))
+            candidates.append(os.path.abspath(src))
+        src_path = next((p for p in candidates if os.path.exists(p)), None)
+        if src_path:
             shutil.copy2(src_path, dest)
-        imgs.append(os.path.basename(dest))
+            imgs.append(os.path.basename(dest))
 
     # Remove image syntax from text
     clean = re.sub(r'!\[.*?\]\(.+?\)', '', clean).strip()
@@ -321,11 +346,11 @@ def _latex_from_formula_text(text):
     return r'\text{' + _latex_escape_text(str(text or '').strip()) + '}'
 
 
-def _parse_paragraph(text, fig_dir, prefix):
+def _parse_paragraph(text, fig_dir, prefix, base_dir=''):
     """Parse a paragraph text into content.json paragraph entry.
     Detects inline $...$ math, images, and formatting marks."""
     # Extract images first
-    text, images = _extract_images_from_text(text, fig_dir, prefix)
+    text, images = _extract_images_from_text(text, fig_dir, prefix, base_dir=base_dir)
 
     # Check for standalone display math (entire paragraph is $$...$$)
     stripped = text.strip()
@@ -397,6 +422,7 @@ def extract_content(md_path, output_dir='Inputs'):
     lines = _skip_format_section(lines)
 
     base = os.path.splitext(os.path.basename(md_path))[0]
+    base_dir = os.path.dirname(os.path.abspath(md_path))
     content_dir = os.path.join(output_dir, base)
     fig_dir = os.path.join(content_dir, 'figures')
     os.makedirs(fig_dir, exist_ok=True)
@@ -436,7 +462,7 @@ def extract_content(md_path, output_dir='Inputs'):
                     block = block.strip()
                     if not block:
                         continue
-                    para, imgs = _parse_paragraph(block, fig_dir, f'{base}_img')
+                    para, imgs = _parse_paragraph(block, fig_dir, f'{base}_img', base_dir=base_dir)
                     current_section['images'].extend(imgs)
                     all_images.extend(imgs)
                     if para:
