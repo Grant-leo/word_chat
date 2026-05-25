@@ -107,6 +107,23 @@ def _line_spacing_from_text(text: str) -> Dict[str, Any]:
     return {}
 
 
+def _has_format_instruction(text: str) -> bool:
+    text = str(text or '')
+    if not text:
+        return False
+    compact = re.sub(r'\s+', '', text).lower()
+    if re.search(r'\d+(?:\.\d+)?\s*(?:pt|磅)', text, re.I):
+        return True
+    terms = (
+        '宋体', '黑体', '楷体', '楷体_GB2312', '仿宋', '微软雅黑', '华文宋体',
+        '华文中宋', '方正小标宋简体', 'Times New Roman',
+        '小二', '二号', '小三', '三号', '小四', '四号', '小五', '五号',
+        '加粗', '不加粗', '居中', '左对齐', '右对齐', '两端对齐',
+        '固定值', '行距', '倍行距', '单倍', '缩进', '首行', '段前', '段后',
+    )
+    return any(re.sub(r'\s+', '', term).lower() in compact for term in terms)
+
+
 def _spacing_before_after_from_text(text: str, line_pt: Optional[float] = None) -> Dict[str, Any]:
     text = str(text or '')
     out: Dict[str, Any] = {}
@@ -265,11 +282,20 @@ def _profile_from_para(p: Dict[str, Any], fallback: Optional[Dict[str, Any]] = N
 def _infer_style_profiles(fmt: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     existing = {k: _normalize_profile(v) for k, v in (fmt.get('style_profiles') or {}).items()}
     paras = fmt.get('paragraphs') or []
-    profiles: Dict[str, Dict[str, Any]] = {}
+    profiles: Dict[str, Dict[str, Any]] = dict(existing)
 
     def put(role: str, p: Dict[str, Any]) -> None:
         if p and role not in profiles:
             profiles[role] = _profile_from_para(p)
+
+    def style_sample_candidate(p: Dict[str, Any], txt: str) -> bool:
+        style = str(p.get('style') or '').lower()
+        if 'toc' in style or 'table of figures' in style:
+            return False
+        if len(txt) > 120:
+            return False
+        note_markers = ('本模板', '样式', '格式要求', '设置为', '目录采用', '正文中', '建议')
+        return not any(marker in txt for marker in note_markers)
 
     for p in paras:
         txt = (p.get('text') or '').strip()
@@ -295,13 +321,13 @@ def _infer_style_profiles(fmt: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             profiles.setdefault('en_keywords', _profile_from_para_first_text(p))
         if compact in ('目录', '目目录') or compact.startswith('目录'):
             put('toc_title', p)
-        if ('一级标题' in txt or re.match(r'^第[一二三四五六七八九十\d]+章\s+', txt)) and len(txt) < 100:
+        if ('一级标题' in txt or re.match(r'^第[一二三四五六七八九十\d]+章\s+', txt)) and len(txt) < 100 and style_sample_candidate(p, txt):
             put('h1', p)
-        if ('二级标题' in txt or re.match(r'^\d+\.\d+\s+', txt)) and len(txt) < 100:
+        if ('二级标题' in txt or re.match(r'^\d+\.\d+\s+', txt)) and len(txt) < 100 and style_sample_candidate(p, txt):
             put('h2', p)
-        if ('三级标题' in txt or re.match(r'^\d+\.\d+\.\d+\s+', txt)) and len(txt) < 100:
+        if ('三级标题' in txt or re.match(r'^\d+\.\d+\.\d+\s+', txt)) and len(txt) < 100 and style_sample_candidate(p, txt):
             put('h3', p)
-        if re.match(r'^(图|表)\s*\d+', txt) and len(txt) < 80:
+        if re.match(r'^(图|表)\s*\d+', txt) and len(txt) < 80 and style_sample_candidate(p, txt):
             put('figure_caption' if txt.startswith('图') else 'table_caption', p)
         if '参考文献' in txt and len(txt) < 40:
             put('reference_heading', p)
@@ -331,8 +357,13 @@ def _infer_style_profiles(fmt: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         ('h2', 2, r'^\d+\.\d+\s+'),
         ('h3', 3, r'^\d+\.\d+\.\d+\s+'),
     ]:
-        cands = [p for p in paras if re.match(pat, (p.get('text') or '').strip()) and len((p.get('text') or '').strip()) < 100]
-        if cands:
+        cands = [
+            p for p in paras
+            if re.match(pat, (p.get('text') or '').strip())
+            and len((p.get('text') or '').strip()) < 100
+            and style_sample_candidate(p, (p.get('text') or '').strip())
+        ]
+        if cands and role not in profiles:
             profiles[role] = _profile_from_para(max(cands, key=lambda x: heading_score(x, level)))
             profiles[role]['bold'] = True
             profiles[role]['first_indent_cm'] = 0
@@ -350,9 +381,6 @@ def _infer_style_profiles(fmt: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             body_cands.append(p)
     if body_cands:
         put('body', body_cands[0])
-
-    for role, prof in existing.items():
-        profiles.setdefault(role, prof)
 
     body = _normalize_profile(profiles.get('body') or {'font': '宋体', 'size': 12, 'align': 'JUSTIFY', 'line_spacing_fixed_pt': 28, 'first_indent_cm': 0.74})
     profiles['body'] = body
@@ -464,7 +492,7 @@ def _apply_template_text_rules(fmt: Dict[str, Any], profiles: Dict[str, Dict[str
         ('h3', _find_regex_instruction(texts, r'(1\.1\.1[^。；;\n]*三级标题[^。；;\n]*)') or _find_instruction(texts, '三级标题')),
     ]
     for h_role, h_rule in h_rules:
-        if h_rule:
+        if h_rule and _has_format_instruction(h_rule):
             defaults = {
                 'align': 'CENTER' if h_role == 'h1' else 'LEFT',
                 'first_indent_cm': 0.0 if h_role == 'h1' else _indent_from_text(h_rule, _size_from_text(h_rule, body.get('size')), body.get('first_indent_cm')),
@@ -474,11 +502,11 @@ def _apply_template_text_rules(fmt: Dict[str, Any], profiles: Dict[str, Dict[str
     fig_rule = _find_instruction(texts, '图标题') or _find_instruction(texts, '图题')
     tab_rule = _find_instruction(texts, '表标题') or _find_instruction(texts, '表题')
     table_detail_rule = _find_instruction(texts, '表内容') or _find_instruction(texts, '表格', '五号')
-    if fig_rule:
+    if fig_rule and _has_format_instruction(fig_rule):
         profiles['figure_caption'] = _profile_from_instruction(fig_rule, body, font='宋体', size=10.5, bold=False, align='CENTER', first_indent_cm=0.0)
-    if tab_rule:
+    if tab_rule and _has_format_instruction(tab_rule):
         profiles['table_caption'] = _profile_from_instruction(tab_rule, body, font='宋体', size=10.5, bold=False, align='CENTER', first_indent_cm=0.0)
-    if table_detail_rule:
+    if table_detail_rule and _has_format_instruction(table_detail_rule):
         table_body = _profile_from_instruction(table_detail_rule, body, font='宋体', size=10.5, align='CENTER', first_indent_cm=0.0)
         table_body['font'] = '宋体'
         if '单倍' in table_detail_rule:
@@ -1061,6 +1089,19 @@ def para_text_from_cover_el(el):
     return ''
 
 
+def is_template_placeholder_text(text):
+    compact = re.sub(r'\s+', ' ', str(text or '')).strip()
+    if not compact:
+        return False
+    placeholder_patterns = [
+        r'^\(Insert\b.*\)$',
+        r'^\(E\.g\.\s*X{2,}(?:\s+X{2,})*,?\s*PhD\)$',
+        r'\((?:Insert|student|date of|title of|name of)\b[^)]*\)',
+        r'X{3,}(?:\s+X{3,})+',
+    ]
+    return any(re.search(pat, compact, re.I) for pat in placeholder_patterns)
+
+
 def apply_cover_run(run, rd):
     font = rd.get('fn') or rd.get('fe') or '宋体'
     east = rd.get('fe') or font
@@ -1609,6 +1650,8 @@ def render_cover_and_declarations():
         # A paragraph whose only purpose is to carry a section break must not
         # be rendered as a blank page. Treat it as a structural marker.
         if idx in skip_indices:
+            continue
+        if not el.get('section_break_after') and is_template_placeholder_text(para_text_from_cover_el(el)):
             continue
         should_render = not cover_element_is_empty_section_marker(el)
         if should_render:

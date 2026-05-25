@@ -51,6 +51,14 @@ except ImportError as exc:
     OPTIONAL_IMPORT_ERRORS['qa_visual'] = exc
 
 try:
+    from qa_conformance import check_and_write as conformance_check_and_write
+    from qa_conformance import write_requirements as write_template_requirements
+except ImportError as exc:
+    conformance_check_and_write = None
+    write_template_requirements = None
+    OPTIONAL_IMPORT_ERRORS['qa_conformance'] = exc
+
+try:
     from template_profiler import write_profile as write_template_profile
 except ImportError as exc:
     write_template_profile = None
@@ -177,7 +185,17 @@ def double_verify(extractor_fn, path, label, **kw):
     return r1
 
 
-def run(template_file, content_file, md_file=None, mode='user', run_qa=True, qa_level='strict'):
+def run(
+    template_file,
+    content_file,
+    md_file=None,
+    mode='user',
+    run_qa=True,
+    qa_level='strict',
+    golden_dir=None,
+    update_golden=False,
+    require_wps=False,
+):
     """Core pipeline: takes filenames, runs all phases, returns output directory.
 
     If md_file is provided, uses MD file for BOTH format and content (single-file mode).
@@ -246,6 +264,9 @@ def run(template_file, content_file, md_file=None, mode='user', run_qa=True, qa_
             'developer_fix_target': 'Paper_Project/Program/pipeline/',
             'qa_enabled': bool(run_qa),
             'qa_level': qa_level,
+            'golden_dir': golden_dir,
+            'update_golden': bool(update_golden),
+            'require_wps': bool(require_wps),
         }, f, ensure_ascii=False, indent=2)
 
     # ── Phase 1: Format ──
@@ -312,6 +333,11 @@ def run(template_file, content_file, md_file=None, mode='user', run_qa=True, qa_
         f.write('\n'.join(md))
 
     print(f'  章节:{len(content["sections"])}  参考文献:{len(content["references"])}  图片:{content["_meta"]["images_extracted"]}')
+    if write_template_requirements is None:
+        print(f'  [WARN] qa_conformance.py 不可用，已跳过 template_requirements。{optional_import_detail("qa_conformance")}')
+    else:
+        write_template_requirements(fmt, content, out_dir)
+        print('  [OK] template_requirements.json / template_requirements.md')
 
     # ── Phase 3: Generate script ──
     step('Phase 4/6: 生成构建脚本')
@@ -360,12 +386,36 @@ def run(template_file, content_file, md_file=None, mode='user', run_qa=True, qa_
             print('  [OK] QA 报告 -> qa_report.json / qa_report.md')
             if not report.get('passed'):
                 qa_failed = True
+        if qa_level in ('strict', 'visual'):
+            if conformance_check_and_write is None:
+                print(f'  [ERROR] qa_conformance.py 不可用，无法执行 strict conformance QA。{optional_import_detail("qa_conformance")}')
+                return None
+            else:
+                conformance = conformance_check_and_write(out_dir, mode=mode, output_docx_name=output_docx, project_root=BASE)
+                c_issue_count = len(conformance.get('issues') or [])
+                c_error_count = sum(1 for i in conformance.get('issues') or [] if i.get('severity') == 'error')
+                c_status = '通过' if conformance.get('passed') else '未通过'
+                print(f'  [Conformance QA] {c_status}: {c_error_count} error(s), {c_issue_count} issue(s)')
+                for item in (conformance.get('issues') or [])[:8]:
+                    print(f'   - {item.get("severity")} {item.get("code")}: {item.get("message")}')
+                print('  [OK] strict conformance QA -> conformance_report.json / conformance_report.md')
+                if not conformance.get('passed'):
+                    qa_failed = True
         if qa_level == 'visual':
             if visual_check_and_write is None:
                 print(f'  [ERROR] qa_visual.py 不可用，无法执行 visual QA。{optional_import_detail("qa_visual")}')
                 return None
             else:
-                visual = visual_check_and_write(out_dir, output_docx_name=output_docx, project_root=BASE)
+                resolved_golden_dir = os.path.abspath(golden_dir) if golden_dir else None
+                visual = visual_check_and_write(
+                    out_dir,
+                    output_docx_name=output_docx,
+                    project_root=BASE,
+                    render_all_pages=True,
+                    require_wps=bool(require_wps),
+                    golden_dir=resolved_golden_dir,
+                    update_golden=bool(update_golden),
+                )
                 v_issue_count = len(visual.get('issues') or [])
                 v_error_count = sum(1 for i in visual.get('issues') or [] if i.get('severity') == 'error')
                 v_status = '通过' if visual.get('passed') else '未通过'
@@ -388,9 +438,11 @@ def run(template_file, content_file, md_file=None, mode='user', run_qa=True, qa_
     ├── format.json
     ├── content.json
     ├── template_profile.json <- 模板能力画像
+    ├── template_requirements.json <- 机器可核查模板要求
     ├── workflow_mode.json <- 用户/开发者模式
     ├── build_manifest.json <- 正文元素渲染数量
     ├── qa_report.md       <- 自动检测报告
+    ├── conformance_report.md <- strict DOCX/XML 合规报告
     ├── visual_report.md   <- PDF 渲染 QA（--qa-level visual 时生成）
     ├── build_generated.py   <- 生成脚本
     └── {output_docx}        <- 最终文件
@@ -412,7 +464,13 @@ def main():
     parser.add_argument('--mode', choices=['auto', 'user', 'developer'], default='auto',
                         help='工作模式：user 只改 build_generated.py；developer 只改核心引擎；auto 交互时询问，参数模式默认 user')
     parser.add_argument('--qa-level', choices=['basic', 'strict', 'visual'], default='strict',
-                        help='QA 级别：basic/strict 做结构检查；visual 额外导出 PDF 并抽样渲染')
+                        help='QA 级别：basic=结构检查；strict=结构+DOCX合规；visual=再加 PDF/全页PNG/黄金基线')
+    parser.add_argument('--golden-dir', default=os.path.join('TestData', 'GoldenBaselines'),
+                        help='visual QA 的黄金基线 JSON 目录，默认 TestData/GoldenBaselines')
+    parser.add_argument('--update-golden', action='store_true',
+                        help='visual QA 时创建或更新当前模板+内容的黄金基线')
+    parser.add_argument('--require-wps', action='store_true',
+                        help='visual QA 时如果 WPS 导出不可用则记为 error')
     parser.add_argument('--no-qa', action='store_true', help='跳过生成后的 QA 检测')
     args = parser.parse_args()
 
@@ -426,7 +484,17 @@ def main():
     # ── Determine files ──
     if args.md:
         # Pure MD mode: single file for both format and content
-        exit_from_result(run(None, None, md_file=args.md, mode=mode, run_qa=not args.no_qa, qa_level=args.qa_level))
+        exit_from_result(run(
+            None,
+            None,
+            md_file=args.md,
+            mode=mode,
+            run_qa=not args.no_qa,
+            qa_level=args.qa_level,
+            golden_dir=args.golden_dir,
+            update_golden=args.update_golden,
+            require_wps=args.require_wps,
+        ))
 
     if args.template and args.content:
         # Non-interactive mode (Skill / script)
@@ -454,7 +522,16 @@ def main():
         template_file = choose_file(templates, '选择模版')
         content_file  = choose_file(contents, '选择内容')
 
-    exit_from_result(run(template_file, content_file, mode=mode, run_qa=not args.no_qa, qa_level=args.qa_level))
+    exit_from_result(run(
+        template_file,
+        content_file,
+        mode=mode,
+        run_qa=not args.no_qa,
+        qa_level=args.qa_level,
+        golden_dir=args.golden_dir,
+        update_golden=args.update_golden,
+        require_wps=args.require_wps,
+    ))
 
 
 if __name__ == '__main__':
