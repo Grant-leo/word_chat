@@ -22,6 +22,11 @@ Templates/**
 !Templates/
 !Templates/*.txt
 
+# Local/generated test corpora, downloaded public templates, render baselines
+TestData/**
+!TestData/
+!TestData/*.txt
+
 # Python
 __pycache__/
 *.pyc

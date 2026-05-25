@@ -142,6 +142,25 @@ def step(msg):
     print(f'{"=" * 50}')
 
 
+def print_repair_hint(report, out_dir):
+    repair = (report or {}).get('repair_plan') or {}
+    if not repair:
+        return
+    print('  [NEXT] 已生成 QA 修复向导 -> qa_repair_plan.md / qa_repair_plan.json')
+    print('  [NEXT] 可直接发给 AI 的修复请求 -> qa_fix_prompt.txt')
+    steps = repair.get('steps') or []
+    for idx, item in enumerate(steps[:3], 1):
+        print(f'   {idx}. {item.get("code")}: {item.get("title")}')
+        action = str(item.get('user_action') or '')
+        if action:
+            print(f'      下一步: {action[:160]}')
+    commands = repair.get('commands') or {}
+    if commands.get('rerun_current_pipeline'):
+        print(f'  [NEXT] 修正输入文件后重跑: {commands.get("rerun_current_pipeline")}')
+    elif commands.get('rebuild_current_docx'):
+        print(f'  [NEXT] 修改 build_generated.py 后重建: {commands.get("rebuild_current_docx")}')
+
+
 def double_verify(extractor_fn, path, label, **kw):
     """Run extraction twice independently, cross-check structural integrity."""
     r1 = extractor_fn(path, **kw)
@@ -369,11 +388,13 @@ def run(
     if run_qa:
         step('Phase 6/6: QA 检测（发现 error 会阻断流水线）')
         qa_failed = False
+        qa_report = None
         if qa_check_and_write is None:
             print(f'  [ERROR] qa_checker.py 不可用，无法执行必备 QA。{optional_import_detail("qa_checker")}')
             return None
         else:
             report = qa_check_and_write(out_dir, mode=mode, output_docx_name=output_docx)
+            qa_report = report
             issue_count = len(report.get('issues') or [])
             error_count = sum(1 for i in report.get('issues') or [] if i.get('severity') == 'error')
             status = '通过' if report.get('passed') else '未通过'
@@ -426,7 +447,9 @@ def run(
                 if not visual.get('passed'):
                     qa_failed = True
         if qa_failed:
-            print('  [ERROR] QA 未通过。已保留输出目录，请按报告修复后重跑。')
+            if qa_report:
+                print_repair_hint(qa_report, out_dir)
+            print('  [ERROR] QA 未通过。已保留输出目录和最终论文初稿；请按 qa_repair_plan.md 修复后重跑。')
             return None
 
     # ── Done ──

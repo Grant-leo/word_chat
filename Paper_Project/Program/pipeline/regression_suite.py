@@ -38,7 +38,8 @@ if str(PIPELINE_DIR) not in sys.path:
 from content_parser import extract as extract_docx_content
 from latex_omath import latex_to_omath
 from md_parser import extract_content as extract_md_content
-from qa_checker import check_output
+from qa_conformance import check_conformance
+from qa_checker import check_output, write_reports
 from script_generator import generate
 from script_generator import _front_matter_sections
 from template_profiler import profile_format
@@ -342,6 +343,14 @@ def qa_manifest_detects_missing_image_render() -> None:
     report = check_output(str(result["work"]), mode="developer", output_docx_name="out.docx")
     codes = [item["code"] for item in report["issues"]]
     assert_true("IMAGE_COUNT_MISMATCH" in codes, "QA did not trust manifest for image mismatch")
+    repair = report.get("repair_plan") or {}
+    assert_true(repair.get("blocking_errors", 0) >= 1, "repair plan did not count blocking errors")
+    steps = repair.get("steps") or []
+    assert_true(steps and steps[0].get("severity") == "error", "repair plan did not prioritize errors")
+    assert_true(any(step.get("code") == "IMAGE_COUNT_MISMATCH" for step in steps), "repair plan omitted image repair guidance")
+    write_reports(report, str(result["work"]))
+    assert_true((result["work"] / "qa_repair_plan.md").exists(), "repair plan markdown was not written")
+    assert_true((result["work"] / "qa_fix_prompt.txt").exists(), "AI fix prompt was not written")
 
 
 @case
@@ -421,6 +430,72 @@ def content_parser_extracts_vml_pictures() -> None:
     content = extract_docx_content(str(vml_docx), output_dir=str(work))
     paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
     assert_true(any(isinstance(p, dict) and p.get("role") == "image" for p in paragraphs), "VML picture was not extracted")
+
+
+@case
+def content_parser_detects_latex_delimited_formula_paragraphs() -> None:
+    work = new_workdir("parser_latex_delimited")
+    docx = work / "latex_delimited.docx"
+    doc = Document()
+    doc.add_paragraph("1 Formula Cases")
+    doc.add_paragraph(r"$$L=\lim_{n\to\infty}\frac{1}{n}\sum_{i=1}^{n}x_i$$")
+    doc.add_paragraph(r"$$M=\begin{matrix}a&b\\c&d\end{matrix}$$")
+    doc.add_paragraph(r"$$I=\int_0^T f(t)\,dt$$")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    formulas = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "formula"]
+    assert_true(len(formulas) == 3, f"LaTeX-delimited paragraphs were not all formulas: {paragraphs}")
+    assert_true(all(f.get("source") == "latex" and f.get("latex") for f in formulas), "LaTeX delimiters were not stripped into latex fields")
+
+
+@case
+def content_parser_extracts_table_cell_images_and_flags_header_images() -> None:
+    work = new_workdir("parser_table_header_images")
+    img = work / "dot.png"
+    img.write_bytes(PNG_1X1)
+    docx = work / "table_header_images.docx"
+    doc = Document()
+    doc.sections[0].header.paragraphs[0].add_run().add_picture(str(img))
+    doc.add_paragraph("1 Images")
+    table = doc.add_table(rows=1, cols=2)
+    table.cell(0, 0).paragraphs[0].add_run().add_picture(str(img))
+    table.cell(0, 1).text = "image in table cell"
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    table_images = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "image" and p.get("location") == "table_cell"]
+    assert_true(table_images, "table-cell image was not promoted into the content image stream")
+    assert_true(content["_meta"]["images_extracted"] == 1, "header image should not be counted as a body image")
+    assert_true(content["_meta"].get("non_body_images"), "header image was not recorded as a non-body image")
+
+
+@case
+def content_parser_splits_chinese_enumerated_headings_after_keywords() -> None:
+    work = new_workdir("parser_cn_enum")
+    img = work / "dot.png"
+    img.write_bytes(PNG_1X1)
+    docx = work / "cn_enum.docx"
+    doc = Document()
+    doc.add_paragraph("摘要")
+    doc.add_paragraph("本文用于测试。")
+    doc.add_paragraph("关键词：")
+    doc.add_paragraph("绿电直连；优化运行")
+    doc.add_paragraph("一、问题重述")
+    doc.add_paragraph("正文段落。")
+    doc.add_paragraph().add_run().add_picture(str(img))
+    doc.add_paragraph("图 1-1 示例图片")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    headings = [sec.get("heading") for sec in content.get("sections") or []]
+    assert_true("一、问题重述" in headings, "Chinese enumerated heading was not split into a body section")
+    body_sec = next(sec for sec in content.get("sections") or [] if sec.get("heading") == "一、问题重述")
+    assert_true(body_sec.get("images"), "Image after Chinese enumerated heading was not assigned to body section")
+    kw_sec = next((sec for sec in content.get("sections") or [] if sec.get("role") == "cn_keywords"), {})
+    assert_true(not kw_sec.get("images"), "Image after body heading leaked into keyword front matter")
 
 
 @case
@@ -521,6 +596,47 @@ def qa_counts_mixed_inline_and_section_images() -> None:
 
 
 @case
+def qa_reports_non_body_images_and_raw_latex_text() -> None:
+    work = new_workdir("qa_non_body_latex")
+    docx = work / "out.docx"
+    doc = Document()
+    doc.add_paragraph(r"$$x^2+y^2=z^2$$")
+    doc.save(docx)
+    content = base_content(["Body text"])
+    content["_meta"]["non_body_images"] = [{"location": "section_1_header", "target": "media/image1.png"}]
+    write_json(work / "content.json", content)
+    write_json(work / "format.json", base_format())
+    write_json(work / "workflow_mode.json", {"mode": "developer"})
+    report = check_output(str(work), mode="developer", output_docx_name="out.docx")
+    codes = [item["code"] for item in report["issues"]]
+    assert_true("NON_BODY_IMAGE_UNSUPPORTED" in codes, "QA did not flag unsupported header/footer images")
+    assert_true("LATEX_DELIMITER_TEXT" in codes, "QA did not flag raw LaTeX delimiters left in final DOCX")
+    assert_true(report["passed"] is False, "non-body images and raw LaTeX text should fail QA")
+
+
+@case
+def conformance_style_check_ignores_static_toc_lines() -> None:
+    content = base_content(
+        [
+            "Body paragraph after heading.",
+        ]
+    )
+    content["sections"] = [
+        {
+            "heading": "2 Custom Chapter",
+            "level": 1,
+            "role": "body",
+            "paragraphs": ["Body paragraph after heading."],
+            "images": [],
+        }
+    ]
+    result = run_generated_case("conformance_toc", content)
+    conf = check_conformance(str(result["work"]), mode="developer", output_docx_name="out.docx")
+    codes = [item["code"] for item in conf["issues"]]
+    assert_true("STYLE_MISMATCH" not in codes, f"conformance matched TOC lines instead of body headings: {conf['issues']}")
+
+
+@case
 def md_rich_math_builds_inline_omml() -> None:
     content = base_content(
         [
@@ -551,6 +667,13 @@ def latex_omath_display_flag_is_honored() -> None:
     display_xml = latex_to_omath("x^2", display=True)
     assert_true("oMathPara" not in inline_xml, "inline latex_to_omath wrapped in oMathPara")
     assert_true("oMathPara" in display_xml, "display latex_to_omath did not wrap in oMathPara")
+
+
+@case
+def latex_omath_limit_accepts_multitoken_subscript() -> None:
+    xml = latex_to_omath(r"L=\lim_{n\to\infty}\frac{1}{n}\sum_{i=1}^{n}x_i", display=True)
+    assert_true("[LaTeX error" not in xml, "limit with n\\to\\infty subscript produced a LaTeX error")
+    assert_true("oMathPara" in xml and "lim" in xml, "limit formula did not render as display OMML")
 
 
 @case

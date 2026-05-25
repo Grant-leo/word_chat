@@ -340,6 +340,31 @@ def _find_para_by_text(paragraphs: List[ET.Element], text: str) -> Optional[ET.E
     return None
 
 
+def _find_body_start_index(paragraphs: List[ET.Element], expected: List[Dict[str, str]]) -> int:
+    """Skip cover/front matter/TOC paragraphs before style checks.
+
+    Heading text appears both in the generated static TOC and in the actual
+    body.  The earlier implementation used a hard-coded "1 Introduction"
+    marker, which made non-English or differently titled papers compare TOC
+    lines against body heading profiles.  Prefer the last occurrence of the
+    first expected heading, because the body occurrence follows the TOC.
+    """
+    heading_texts = [
+        str(item.get("text") or "").strip()
+        for item in expected
+        if str(item.get("role") or "").startswith("h") and str(item.get("text") or "").strip()
+    ]
+    for heading in heading_texts[:5]:
+        target = _compact(heading)
+        matches = [idx for idx, para in enumerate(paragraphs) if _compact(_text_of_para(para)) == target]
+        if matches:
+            return matches[-1]
+    for idx, para in enumerate(paragraphs):
+        if _compact(_text_of_para(para)) in {"目录", "contents"}:
+            return min(idx + 1, len(paragraphs))
+    return 0
+
+
 def _is_reference_heading(text: str) -> bool:
     return bool(re.match(r"(?i)^(references?|参考文献)$", str(text or "").strip()))
 
@@ -537,12 +562,6 @@ def check_conformance(out_dir: str, mode: str = "user", output_docx_name: str = 
         return _report(out_dir, mode, counts, issues, project_root)
 
     paragraphs = [p for p in root.iter(W + "p") if _text_of_para(p)]
-    body_start = 0
-    for idx, para in enumerate(paragraphs):
-        if _compact(_text_of_para(para)) == _compact("1 Introduction"):
-            body_start = idx
-            break
-    body_paragraphs = paragraphs[body_start:]
     tables_xml = list(root.iter(W + "tbl"))
     all_text = "\n".join(_text_of_para(p) for p in paragraphs)
     counts["paragraphs_with_text"] = len(paragraphs)
@@ -555,6 +574,8 @@ def check_conformance(out_dir: str, mode: str = "user", output_docx_name: str = 
 
     style_roles = req.get("style_roles") or {}
     expected = _expected_paragraphs(content)
+    body_start = _find_body_start_index(paragraphs, expected)
+    body_paragraphs = paragraphs[body_start:]
     counts["expected_content_paragraphs"] = len(expected)
     missing_samples = []
     style_mismatches = []

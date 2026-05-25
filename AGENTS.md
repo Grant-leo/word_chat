@@ -209,6 +209,6 @@ build_generated.py ──→ python run ──→ 最终论文.docx
                            ↓
                       qa_checker / qa_visual
                            ↓
-                   Claude + 基础操作.md
+                   Codex + 基础操作.md
                    (user fine-tuning; core fixes for maintainers)
 ```

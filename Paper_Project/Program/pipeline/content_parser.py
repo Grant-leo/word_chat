@@ -100,6 +100,12 @@ def detect_heading_level(para):
         return 1
     if re.match(r'^(?:Chapter\s*)?\d+\s+[\u4e00-\u9fffA-Za-z]', text) and not re.match(r'^\d+\.\d+', text):
         return 1
+    if len(text) <= 80 and re.match(r'^[\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341\u767e\u5343]+[\u3001\uff0e.]\s*\S+', text):
+        return 1
+    if len(text) <= 80 and re.match(r'^\d+[\u3001\uff0e]\s*\S+', text):
+        return 1
+    if len(text) <= 80 and re.match(r'^[\uff08(][\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341]+[\uff09)]\s*\S+', text):
+        return 2
     # Numbered: 1.1 = level 2, 1.1.1 = level 3
     if re.match(r'^\d+\.\d+\.\d+\s*', text):
         return 3
@@ -271,7 +277,7 @@ def _math_entry_from_ooxml(math_elem, math_type='inline'):
     return {'type': math_type, 'xml': raw, 'text': _math_text(math_elem)}
 
 
-def _images_from_run_ooxml(run_elem, para, registry, seen_rids):
+def _images_from_run_ooxml(run_elem, rels, registry, seen_rids, location='body'):
     """Extract images from one OOXML run in its exact paragraph position."""
     A_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main'
     R_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
@@ -282,10 +288,13 @@ def _images_from_run_ooxml(run_elem, para, registry, seen_rids):
         if not rid or rid in seen_rids:
             return
         seen_rids.add(rid)
-        if rid in para.part.rels:
-            fname = registry.save_relationship_image(para.part.rels[rid])
+        if rid in rels:
+            fname = registry.save_relationship_image(rels[rid])
             if fname:
-                out.append({'role': 'image', 'image': fname})
+                item = {'role': 'image', 'image': fname}
+                if location and location != 'body':
+                    item['location'] = location
+                out.append(item)
         else:
             registry.failures.append({'target': rid, 'error': 'relationship id not found'})
 
@@ -294,6 +303,52 @@ def _images_from_run_ooxml(run_elem, para, registry, seen_rids):
     for imagedata in run_elem.iter(f'{{{V_NS}}}imagedata'):
         add_rid(imagedata.get(f'{{{R_NS}}}id') or imagedata.get(f'{{{R_NS}}}embed'))
     return out
+
+
+def _image_items_from_ooxml(container_elem, rels, registry, location='body'):
+    """Extract all image runs from an arbitrary OOXML container.
+
+    Body paragraphs use `paragraph_stream_items()`, but images can also live
+    inside table cells.  Keeping this helper generic lets table-cell drawings
+    enter the same content image pipeline instead of disappearing silently.
+    """
+    W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    seen_rids = set()
+    out = []
+    for run_elem in container_elem.iter(f'{{{W_NS}}}r'):
+        out.extend(_images_from_run_ooxml(run_elem, rels, registry, seen_rids, location=location))
+    return out
+
+
+def _non_body_image_entries(doc):
+    """Return header/footer images that are outside the body content stream."""
+    entries = []
+    seen = set()
+    for sec_idx, section in enumerate(doc.sections):
+        for attr in (
+            'header', 'first_page_header', 'even_page_header',
+            'footer', 'first_page_footer', 'even_page_footer',
+        ):
+            try:
+                part = getattr(section, attr).part
+            except Exception:
+                continue
+            for rid, rel in getattr(part, 'rels', {}).items():
+                if 'image' not in getattr(rel, 'reltype', ''):
+                    continue
+                try:
+                    digest = hashlib.sha256(rel.target_part.blob).hexdigest()[:20]
+                except Exception:
+                    digest = f'{id(part)}:{rid}'
+                key = (attr, digest)
+                if key in seen:
+                    continue
+                seen.add(key)
+                entries.append({
+                    'location': f'section_{sec_idx + 1}_{attr}',
+                    'target': getattr(rel, 'target_ref', ''),
+                })
+    return entries
 
 
 def paragraph_stream_items(para, registry):
@@ -339,7 +394,7 @@ def paragraph_stream_items(para, registry):
             name = _local_name(part)
             if name in ('drawing', 'pict'):
                 flush_text()
-                items.extend(_images_from_run_ooxml(run_elem, para, registry, seen_rids))
+                items.extend(_images_from_run_ooxml(run_elem, para.part.rels, registry, seen_rids))
             elif name == 'oMath':
                 append_math(part, 'inline')
             elif name == 't':
@@ -688,6 +743,8 @@ def _looks_like_formula_text(text):
         return False
     if re.search(r'^\[\d+\]', t) or re.search(r'\[\d+(?:[-,，、]\d+)*\]', t):
         return False
+    if _latex_from_formula_text(t):
+        return True
     has_equal = bool(re.search(r'[=＝≈≤≥<>]', t))
     has_operator = bool(re.search(r'[+\-*/×÷%]', t))
     has_digit = bool(re.search(r'\d', t))
@@ -917,6 +974,7 @@ def extract(docx_path, output_dir='Inputs'):
         elif _tag == 'tbl' and _started:
             # Body table — preserve paragraph breaks inside each cell.
             _rows = _extract_table_rows_from_ooxml(_child)
+            _table_images = _image_items_from_ooxml(_child, doc.part.rels, image_registry, location='table_cell')
             if _rows:
                 if ref_section is not None:
                     if _table_rows_look_like_code(_rows):
@@ -927,6 +985,10 @@ def extract(docx_path, output_dir='Inputs'):
                     current_section['paragraphs'].append({'role': 'code', 'code': _code_text_from_table_rows(_rows), 'table_rows': _rows})
                 else:
                     current_section['paragraphs'].append({'role': 'table', 'table_rows': _rows})
+            if _table_images and ref_section is None:
+                for _img in _table_images:
+                    current_section['images'].append(_img.get('image'))
+                    current_section['paragraphs'].append(_img)
 
     if ref_section and ref_section['entries']:
         content['references'] = ref_section['entries']
@@ -967,6 +1029,7 @@ def extract(docx_path, output_dir='Inputs'):
     ])
     content['_meta']['images_dir'] = os.path.abspath(fig_dir)
     content['_meta']['image_extract_failures'] = image_registry.failures
+    content['_meta']['non_body_images'] = _non_body_image_entries(doc)
 
     return content
 

@@ -503,9 +503,6 @@ class _LaTeXParser:
     def _is_start_of_term(self, t):
         if t['type'] not in ('CHAR', 'COMMAND', 'LBRACE'):
             return False
-        # Exclude bracket-closing chars that should terminate expressions
-        if t['type'] == 'CHAR' and t.get('value') == ']':
-            return False
         # \right terminates left/right context
         if t['type'] == 'COMMAND' and t.get('value') == '\\right':
             return False
@@ -1100,7 +1097,7 @@ class _LaTeXParser:
         while self.peek()['type'] in ('SUB', 'SUPER'):
             t = self.peek()['type']
             self.consume()
-            arg = self._parse_atom()
+            arg = self._ensure_single(self._parse_atom())
             if arg is not None:
                 if t == 'SUB':
                     sub_el = arg
@@ -1108,7 +1105,7 @@ class _LaTeXParser:
                     sup_el = arg
         arg_el = None
         if self._is_start_of_term(self.peek()):
-            arg_el = self._parse_atom()
+            arg_el = self._ensure_single(self._parse_atom())
         if sub_el is not None and arg_el is not None:
             ll = _make_limlow(arg_el, sub_el)
             if sup_el is not None:
@@ -1126,7 +1123,7 @@ class _LaTeXParser:
         if self._is_start_of_term(self.peek()):
             arg_el = self._parse_atom()
         if arg_el is None:
-            return _make_run(name, plain=True)
+            return _make_run(name, style='plain')
         return _make_function(name, arg_el)
 
     def _parse_matrix(self):
