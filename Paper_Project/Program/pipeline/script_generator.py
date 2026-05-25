@@ -567,7 +567,12 @@ def _front_matter_sections(cnt: Dict[str, Any]) -> Dict[str, Any]:
             result['en_abs'] = sec; result['front_indices'].add(idx)
         elif role == 'en_keywords':
             result['en_kw'] = sec; result['front_indices'].add(idx)
-        elif sec.get('level') == 1 and _ascii_ratio(h) > 0.55 and not re.match(r'(?i)^chapter\s+\d+', h):
+        elif (
+            sec.get('level') == 1
+            and _ascii_ratio(h) > 0.55
+            and not re.match(r'(?i)^chapter\s+\d+', h)
+            and not re.match(r'^\d+(?:\.\d+)*\s+', h)
+        ):
             if not result['en_title']:
                 result['en_title'] = h; result['front_indices'].add(idx)
     return result
@@ -630,6 +635,7 @@ OUT = os.path.join(BASE, __OUT_DOCX__)
 doc = Document()
 TOC_PAGE_MAP = {}
 USE_NATIVE_TOC = False
+BUILD_STATS = {}
 
 ALIGN = {
     'LEFT': WD_ALIGN_PARAGRAPH.LEFT,
@@ -1633,32 +1639,100 @@ def section_text(sec):
     return '\n'.join(x for x in out if x)
 
 
+def _math_entries_from_item(item):
+    if not isinstance(item, dict):
+        return []
+    if item.get('math'):
+        return item.get('math') or []
+    if item.get('latex') or item.get('xml'):
+        return [item]
+    return []
+
+
+def append_inline_formula(p, item):
+    if isinstance(item, str):
+        item = {'text': item}
+    latex = str(item.get('latex') or '').strip()
+    text = clean_formula_text(item.get('text') or '')
+    xml = item.get('xml')
+    if not xml and not latex:
+        latex, _existing_label = text_formula_to_latex(text)
+    if not xml and not latex:
+        r = p.add_run(text)
+        apply_run_profile(r, profile('body'), text)
+        return False
+    try:
+        xml_str = xml or latex_to_omath(latex, display=False)
+        elem = etree.fromstring(xml_str.encode('utf-8') if isinstance(xml_str, str) else xml_str)
+        if elem.tag.endswith('}oMathPara') or elem.tag.endswith('oMathPara'):
+            for child in list(elem):
+                p._element.append(child)
+        else:
+            p._element.append(elem)
+        BUILD_STATS['content_formulas_rendered'] = BUILD_STATS.get('content_formulas_rendered', 0) + 1
+        BUILD_STATS['inline_formulas_rendered'] = BUILD_STATS.get('inline_formulas_rendered', 0) + 1
+        return True
+    except Exception:
+        r = p.add_run(text or latex)
+        apply_run_profile(r, profile('body'), text or latex)
+        return False
+
+
+def add_rich_text_runs(item, role='body', first_indent=True):
+    prof = profile(role)
+    runs = item.get('runs') or []
+    if not runs:
+        text = str(item.get('text') or '').strip()
+        if text:
+            runs = [{'type': 'text', 'text': text}]
+        for m in _math_entries_from_item(item):
+            runs.append({'type': 'math', 'text': m.get('text') or '', 'math': [m]})
+    if not runs:
+        return None
+    p = doc.add_paragraph()
+    apply_paragraph_profile(p, prof, first_indent_override=(prof.get('first_indent_cm') if first_indent else 0))
+    superscript = role == 'body'
+    wrote = False
+    for run in runs:
+        kind = run.get('type') or ('math' if run.get('math') else 'text')
+        if kind == 'math':
+            for m in run.get('math') or []:
+                wrote = append_inline_formula(p, m) or wrote
+        else:
+            text = str(run.get('text') or '')
+            if text:
+                add_text_runs(p, text, prof, superscript)
+                wrote = True
+    if not wrote:
+        try:
+            p._element.getparent().remove(p._element)
+        except Exception:
+            pass
+        return None
+    return p
+
+
 def add_rich_text_item(item, role='body', first_indent=True, chapter=None):
     """Render a content item that may contain plain text plus extracted math.
 
-    Markdown inline math arrives as {"text": "...", "math": [...]}.  The
-    generator cannot recover exact inline positions after extraction, so it
-    keeps the readable text paragraph and renders each math object as native
-    OMML immediately after it.  This preserves editability instead of silently
-    dropping formulas or leaving them as plain text.
+    `rich_text` items carry an ordered token stream, so inline formulas remain
+    inside the current paragraph. Older content JSON files may only carry
+    {"text": "...", "math": [...]}; those are still rendered as editable inline
+    formulas after the text rather than being dropped.
     """
     if isinstance(item, str):
         return add_text(item, role=role, first_indent=first_indent)
     if not isinstance(item, dict):
         return None
+    if item.get('role') == 'rich_text':
+        return add_rich_text_runs(item, role=role, first_indent=first_indent)
     text = str(item.get('text') or '').strip()
+    if item.get('role') == 'formula' or item.get('latex') or item.get('xml'):
+        return render_formula(item, chapter)
+    if item.get('math') and not item.get('latex') and not item.get('xml'):
+        return add_rich_text_runs(item, role=role, first_indent=first_indent)
     if text:
         add_text(text, role=role, first_indent=first_indent)
-    if item.get('math') and not item.get('latex') and not item.get('xml'):
-        for m in item.get('math') or []:
-            render_formula({
-                'latex': m.get('latex'),
-                'xml': m.get('xml'),
-                'text': m.get('text') or '',
-                'numbered': False,
-            }, chapter)
-    elif item.get('role') == 'formula' or item.get('latex') or item.get('xml'):
-        render_formula(item, chapter)
     return None
 
 
@@ -1925,6 +1999,23 @@ FORMULA_COUNTERS = {}
 TABLE_COUNTERS = {}
 
 
+def reset_build_stats():
+    global BUILD_STATS
+    BUILD_STATS = {
+        'content_images_rendered': 0,
+        'content_tables_rendered': 0,
+        'content_formulas_rendered': 0,
+        'inline_formulas_rendered': 0,
+        'display_formulas_rendered': 0,
+    }
+
+
+def write_build_manifest():
+    path = os.path.join(BASE, 'build_manifest.json')
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump({'schema_version': 1, 'counts': BUILD_STATS}, f, ensure_ascii=False, indent=2)
+
+
 def chapter_number_from_heading(text):
     t = str(text or '').strip()
     m = re.match(r'^第(\d+)章', t)
@@ -2092,6 +2183,12 @@ def render_formula(item, chapter=None):
     latex = str(item.get('latex') or '').strip()
     text = clean_formula_text(item.get('text') or '')
     xml = item.get('xml')
+    math_entries = item.get('math') or []
+    if math_entries and not latex and not xml:
+        first_math = math_entries[0] or {}
+        latex = str(first_math.get('latex') or '').strip()
+        xml = first_math.get('xml')
+        text = clean_formula_text(text or first_math.get('text') or '')
     existing_label = ''
     if not latex and not xml:
         latex, existing_label = text_formula_to_latex(text)
@@ -2111,6 +2208,8 @@ def render_formula(item, chapter=None):
     try:
         xml_str = xml or latex_to_omath(latex, display=True)
         p._element.append(etree.fromstring(xml_str.encode('utf-8') if isinstance(xml_str, str) else xml_str))
+        BUILD_STATS['content_formulas_rendered'] = BUILD_STATS.get('content_formulas_rendered', 0) + 1
+        BUILD_STATS['display_formulas_rendered'] = BUILD_STATS.get('display_formulas_rendered', 0) + 1
     except Exception:
         r = p.add_run(text or latex)
         apply_run_profile(r, profile('formula'), text or latex)
@@ -2289,6 +2388,7 @@ def render_table(rows):
         return
     ncols = max(len(r) for r in rows)
     table = doc.add_table(rows=len(rows), cols=ncols)
+    BUILD_STATS['content_tables_rendered'] = BUILD_STATS.get('content_tables_rendered', 0) + 1
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     for ri, row in enumerate(rows):
         if ri == 0:
@@ -2348,6 +2448,7 @@ def render_image(filename, caption=''):
         r.add_picture(path, width=width, height=height)
     except Exception:
         return None
+    BUILD_STATS['content_images_rendered'] = BUILD_STATS.get('content_images_rendered', 0) + 1
     if caption:
         cap = add_caption(caption, 'figure_caption')
         cap.paragraph_format.keep_together = True
@@ -2470,20 +2571,19 @@ def collect_structural_backmatter():
 
 
 def render_paragraph_item(item, code_sensitive=False, chapter=None):
-    if isinstance(item, dict) and (item.get('role') == 'formula' or item.get('math')):
-        if item.get('math') and not item.get('latex') and not item.get('xml'):
-            text = str(item.get('text') or '').strip()
-            if text:
-                add_text(text, role='body', first_indent=True)
-            for m in item.get('math') or []:
-                render_formula({
-                    'latex': m.get('latex'),
-                    'xml': m.get('xml'),
-                    'text': m.get('text') or '',
-                    'numbered': False,
-                }, chapter)
-        else:
+    if isinstance(item, dict) and item.get('role') == 'rich_text':
+        add_rich_text_runs(item, role='body', first_indent=True)
+        return
+    if isinstance(item, dict) and (item.get('role') == 'formula' or item.get('latex') or item.get('xml')):
+        render_formula(item, chapter)
+        return
+    if isinstance(item, dict) and item.get('math'):
+        math_items = item.get('math') or []
+        text = str(item.get('text') or '').strip()
+        if any((m.get('type') == 'display') for m in math_items) and not text:
             render_formula(item, chapter)
+        else:
+            add_rich_text_runs(item, role='body', first_indent=True)
         return
     if isinstance(item, dict) and item.get('role') == 'figure':
         render_image(item.get('image') or item.get('filename') or item.get('asset') or '', item.get('caption') or '')
@@ -2835,6 +2935,7 @@ def build_document(toc_page_map=None, native_toc=True):
     USE_NATIVE_TOC = bool(native_toc)
     FORMULA_COUNTERS = {}
     TABLE_COUNTERS = {}
+    reset_build_stats()
     doc = Document()
     configure_global_styles()
     setup_section(doc.sections[0])
@@ -2852,6 +2953,7 @@ def main():
     page_map = _infer_heading_pages_from_word_com()
     if page_map:
         build_document(page_map, native_toc=False)
+    write_build_manifest()
     suffix = 'static TOC pages resolved by Word COM' if page_map else 'static TOC generated without resolved page numbers'
     print(f'Saved: {OUT}  ({suffix})')
 

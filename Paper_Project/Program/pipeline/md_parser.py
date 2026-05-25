@@ -294,18 +294,32 @@ def _process_inline_math(text):
     return parts
 
 
-def _extract_images_from_text(text, fig_dir, prefix, base_dir=''):
-    """Extract image references like ![...](path) from text.
-    Copies images to fig_dir. Returns (clean_text, image_filenames)."""
-    imgs = []
-    clean = text
+def _split_image_tokens_from_text(text, fig_dir, prefix, base_dir=''):
+    """Split Markdown image references into ordered text/image tokens.
 
-    for m in re.finditer(r'!\[.*?\]\((.+?)\)', text):
-        src = m.group(1).strip().strip('"').strip("'")
+    Copies local images to fig_dir. Missing/remote images are kept as metadata
+    so QA can report content loss instead of silently dropping the reference.
+    """
+    imgs = []
+    missing = []
+    tokens = []
+    pos = 0
+
+    for m in re.finditer(r'!\[([^\]]*)\]\((.+?)\)', text):
+        if m.start() > pos:
+            tokens.append({'type': 'text', 'text': text[pos:m.start()]})
+        alt = m.group(1).strip()
+        src = m.group(2).strip().strip('"').strip("'")
         if re.match(r'^[a-z]+://', src, re.I):
+            missing.append({'source': src, 'alt': alt, 'reason': 'remote'})
+            tokens.append({'type': 'missing_image', 'source': src, 'alt': alt, 'reason': 'remote'})
+            pos = m.end()
             continue
         fname = os.path.basename(src)
         if not fname:
+            missing.append({'source': src, 'alt': alt, 'reason': 'empty_filename'})
+            tokens.append({'type': 'missing_image', 'source': src, 'alt': alt, 'reason': 'empty_filename'})
+            pos = m.end()
             continue
         name, ext = os.path.splitext(fname)
         if not ext:
@@ -322,11 +336,19 @@ def _extract_images_from_text(text, fig_dir, prefix, base_dir=''):
         src_path = next((p for p in candidates if os.path.exists(p)), None)
         if src_path:
             shutil.copy2(src_path, dest)
-            imgs.append(os.path.basename(dest))
+            copied = os.path.basename(dest)
+            imgs.append(copied)
+            tokens.append({'type': 'image', 'image': copied})
+        else:
+            missing.append({'source': src, 'alt': alt, 'reason': 'not_found'})
+            tokens.append({'type': 'missing_image', 'source': src, 'alt': alt, 'reason': 'not_found'})
+        pos = m.end()
 
-    # Remove image syntax from text
-    clean = re.sub(r'!\[.*?\]\(.+?\)', '', clean).strip()
-    return clean, imgs
+    if pos < len(text):
+        tokens.append({'type': 'text', 'text': text[pos:]})
+    if not tokens:
+        tokens.append({'type': 'text', 'text': text})
+    return tokens, imgs, missing
 
 
 def _looks_like_formula_text(text):
@@ -346,50 +368,77 @@ def _latex_from_formula_text(text):
     return r'\text{' + _latex_escape_text(str(text or '').strip()) + '}'
 
 
-def _parse_paragraph(text, fig_dir, prefix, base_dir=''):
-    """Parse a paragraph text into content.json paragraph entry.
-    Detects inline $...$ math, images, and formatting marks."""
-    # Extract images first
-    text, images = _extract_images_from_text(text, fig_dir, prefix, base_dir=base_dir)
-
+def _parse_text_paragraph(text):
+    """Parse a paragraph text fragment into a content.json paragraph entry."""
     # Check for standalone display math (entire paragraph is $$...$$)
     stripped = text.strip()
     if stripped.startswith('$$') and stripped.endswith('$$'):
         latex = stripped[2:-2].strip()
-        return {'role': 'formula', 'text': '', 'latex': latex, 'math': [{'type': 'display', 'latex': latex}]}, images
+        return {'role': 'formula', 'text': '', 'latex': latex, 'math': [{'type': 'display', 'latex': latex}]}
 
     # Check for inline math
     if '$' not in text:
         # Strip markdown formatting
         clean = _strip_md_formatting(text)
         if _looks_like_formula_text(clean):
-            return {'role': 'formula', 'text': clean, 'latex': _latex_from_formula_text(clean)}, images
-        return (clean if clean else None), images
+            return {'role': 'formula', 'text': clean, 'latex': _latex_from_formula_text(clean)}
+        return clean if clean else None
 
     # Process inline math spans
     parts = _process_inline_math(text)
     plain_parts = []
     math_items = []
+    runs = []
     for content, is_math in parts:
         if is_math:
-            math_items.append({'type': 'inline', 'latex': content.strip()})
+            latex = content.strip()
+            item = {'type': 'inline', 'latex': latex, 'text': latex}
+            math_items.append(item)
+            runs.append({'type': 'math', 'text': latex, 'math': [item]})
         else:
-            clean = _strip_md_formatting(content)
-            if clean:
+            clean = _strip_md_formatting(content, preserve_edges=True)
+            if clean.strip():
                 plain_parts.append(clean)
+                runs.append({'type': 'text', 'text': clean})
 
     plain_text = ' '.join(plain_parts).strip()
     if not plain_text:
         plain_text = ''
 
     if math_items:
-        return {'text': plain_text, 'math': math_items}, images
+        display_text = ''.join(str(r.get('text') or '') for r in runs).strip()
+        return {'role': 'rich_text', 'text': display_text or plain_text, 'runs': runs, 'math': math_items}
     else:
-        return (plain_text if plain_text else None), images
+        return plain_text if plain_text else None
 
 
-def _strip_md_formatting(text):
+def _parse_paragraph_items(text, fig_dir, prefix, base_dir=''):
+    """Parse a Markdown paragraph into ordered content items and image names."""
+    tokens, images, missing = _split_image_tokens_from_text(text, fig_dir, prefix, base_dir=base_dir)
+    items = []
+    for tok in tokens:
+        if tok.get('type') == 'image':
+            items.append({'role': 'image', 'image': tok.get('image')})
+            continue
+        if tok.get('type') == 'missing_image':
+            label = tok.get('alt') or tok.get('source') or 'missing image'
+            items.append({'role': 'missing_image', 'text': label, 'source': tok.get('source'), 'reason': tok.get('reason')})
+            continue
+        fragment = tok.get('text') or ''
+        if not fragment.strip():
+            continue
+        para = _parse_text_paragraph(fragment)
+        if para:
+            items.append(para)
+    return items, images, missing
+
+
+def _strip_md_formatting(text, preserve_edges=False):
     """Strip markdown formatting: **bold**, *italic*, `code`, [links](url), > quote, etc."""
+    raw = str(text or '')
+    has_leading = bool(re.match(r'^\s+', raw))
+    has_trailing = bool(re.search(r'\s+$', raw))
+    text = raw
     # Remove images
     text = re.sub(r'!\[.*?\]\(.+?\)', '', text)
     # Remove links (keep text)
@@ -407,8 +456,62 @@ def _strip_md_formatting(text):
     text = re.sub(r'^[\s]*[-*+]\s+', '', text, flags=re.MULTILINE)
     text = re.sub(r'^[\s]*\d+[.)]\s+', '', text, flags=re.MULTILINE)
     # Collapse whitespace
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
+    text = re.sub(r'\s+', ' ', text)
+    if preserve_edges:
+        core = text.strip()
+        if not core:
+            return ''
+        return (' ' if has_leading else '') + core + (' ' if has_trailing else '')
+    return text.strip()
+
+
+def _is_markdown_table_separator(line):
+    """Return True for a Markdown table separator row such as | --- | :---: |."""
+    text = str(line or '').strip()
+    if '|' not in text:
+        return False
+    text = text.strip('|').strip()
+    if not text:
+        return False
+    cells = [c.strip() for c in text.split('|')]
+    return bool(cells) and all(re.fullmatch(r':?-{3,}:?', c or '') for c in cells)
+
+
+def _split_markdown_table_row(line):
+    text = str(line or '').strip()
+    if '|' not in text:
+        return []
+    text = text.strip()
+    if text.startswith('|'):
+        text = text[1:]
+    if text.endswith('|'):
+        text = text[:-1]
+    return [_strip_md_formatting(c.strip()) for c in text.split('|')]
+
+
+def _parse_markdown_table(lines, start):
+    """Parse a GitHub-style Markdown table. Returns (rows, next_index)."""
+    if start + 1 >= len(lines):
+        return [], start
+    header = _split_markdown_table_row(lines[start])
+    if not header or not _is_markdown_table_separator(lines[start + 1]):
+        return [], start
+
+    rows = [header]
+    i = start + 2
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if not stripped or stripped.startswith('#') or '|' not in stripped:
+            break
+        row = _split_markdown_table_row(lines[i])
+        if row:
+            if len(row) < len(header):
+                row += [''] * (len(header) - len(row))
+            elif len(row) > len(header):
+                row = row[:len(header) - 1] + [' | '.join(row[len(header) - 1:])]
+            rows.append(row)
+        i += 1
+    return rows if len(rows) > 1 else [], i
 
 
 def extract_content(md_path, output_dir='Inputs'):
@@ -447,9 +550,11 @@ def extract_content(md_path, output_dir='Inputs'):
     ref_section = None
     para_lines = []
     all_images = []
+    missing_images = []
     total_paras = 0
+    total_tables = 0
 
-    def _flush_section():
+    def _flush_paragraphs():
         nonlocal total_paras
         if current_section is None:
             return
@@ -462,15 +567,32 @@ def extract_content(md_path, output_dir='Inputs'):
                     block = block.strip()
                     if not block:
                         continue
-                    para, imgs = _parse_paragraph(block, fig_dir, f'{base}_img', base_dir=base_dir)
+                    items, imgs, missing = _parse_paragraph_items(block, fig_dir, f'{base}_img', base_dir=base_dir)
                     current_section['images'].extend(imgs)
                     all_images.extend(imgs)
-                    if para:
+                    missing_images.extend(missing)
+                    for para in items:
+                        if not para:
+                            continue
                         current_section['paragraphs'].append(para)
                         total_paras += 1
             para_lines.clear()
+
+    def _flush_section():
+        _flush_paragraphs()
+        if current_section is None:
+            return
         if current_section['paragraphs'] or current_section['images']:
             sections.append(current_section)
+
+    if title:
+        current_section = {
+            'heading': '正文',
+            'level': 1,
+            'role': 'body',
+            'paragraphs': [],
+            'images': [],
+        }
 
     # Parse line by line
     i = title_idx + 1 if title else 0
@@ -507,6 +629,35 @@ def extract_content(md_path, output_dir='Inputs'):
 
         # Content
         if current_section is not None:
+            fence = re.match(r'^\s*(```|~~~)\s*([\w.+-]*)\s*$', line)
+            if fence:
+                _flush_paragraphs()
+                marker = fence.group(1)
+                language = fence.group(2).strip()
+                code_lines = []
+                i += 1
+                while i < len(lines) and not lines[i].strip().startswith(marker):
+                    code_lines.append(lines[i])
+                    i += 1
+                if i < len(lines):
+                    i += 1
+                current_section['paragraphs'].append({
+                    'role': 'code',
+                    'language': language,
+                    'code': '\n'.join(code_lines).rstrip('\n'),
+                })
+                total_paras += 1
+                continue
+
+            table_rows, next_i = _parse_markdown_table(lines, i)
+            if table_rows:
+                _flush_paragraphs()
+                current_section['paragraphs'].append({'role': 'table', 'table_rows': table_rows})
+                total_paras += 1
+                total_tables += 1
+                i = next_i
+                continue
+
             para_lines.append(line)
         i += 1
 
@@ -514,8 +665,10 @@ def extract_content(md_path, output_dir='Inputs'):
 
     content['sections'] = sections
     content['_meta']['paragraphs'] = total_paras
+    content['_meta']['tables_count'] = total_tables
     content['_meta']['images_extracted'] = len(all_images)
     content['_meta']['images_dir'] = fig_dir
+    content['_meta']['missing_images'] = missing_images
 
     if ref_section and ref_section['entries']:
         content['references'] = ref_section['entries']

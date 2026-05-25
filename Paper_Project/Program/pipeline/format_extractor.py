@@ -249,11 +249,12 @@ class StyleResolver:
         for style in doc.styles:
             sid = style.style_id
             entry = {}
-            f = style.font
-            if f.name: entry['font'] = f.name
-            if f.size:  entry['size'] = f.size.pt
-            if f.bold is not None: entry['bold'] = f.bold
-            if f.italic is not None: entry['italic'] = f.italic
+            f = getattr(style, 'font', None)
+            if f is not None:
+                if f.name: entry['font'] = f.name
+                if f.size:  entry['size'] = f.size.pt
+                if f.bold is not None: entry['bold'] = f.bold
+                if f.italic is not None: entry['italic'] = f.italic
             # Paragraph styles have paragraph_format; character styles don't
             try:
                 pf = style.paragraph_format

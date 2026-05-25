@@ -51,13 +51,18 @@ python run_pipeline.py --mode user --md <md文件名>
 
 # Developer engine-fix run
 python run_pipeline.py --mode developer --template <模板文件名> --content <内容文件名>
+
+# Product-grade verification: structure QA + PDF/render QA
+python run_pipeline.py --mode developer --qa-level visual --template <模板文件名> --content <内容文件名>
 ```
 Or interactive: `python run_pipeline.py`
 
 ### 5. Verify Outputs
 - Read `Outputs/<latest>/格式提取.md` — check paragraph counts, fonts, sizes
 - Read `Outputs/<latest>/内容提取.md` — check all sections present
+- Read `Outputs/<latest>/template_profile.md` — check template capabilities and risk flags
 - Read `Outputs/<latest>/qa_report.md` first; it names the active fix target for the current mode
+- If `--qa-level visual` was used, read `Outputs/<latest>/visual_report.md` and inspect sample PNGs under `visual_qa/samples/`
 - Confirm `Outputs/<latest>/最终论文.docx` exists
 - Render/check with Word/WPS when layout matters; Office Viewer alone is not enough
 - For ordinary user fine-tuning, edit `Outputs/<latest>/build_generated.py` and run it.
@@ -99,6 +104,10 @@ For reusable fixes, product behavior, parser changes, or when the requester is t
    - `format_extractor.py`: template/cover/header/footer/style extraction
    - `content_parser.py`: content sections, figures, references, metadata extraction
    - `md_parser.py`: Markdown input parsing
+   - `template_profiler.py`: template capability/risk profile generation
+   - `qa_visual.py`: optional PDF export/render QA
+   - `privacy.py`: report path sanitization helpers
+   - `regression_suite.py`: synthetic engine regression suite
    - `run_pipeline.py`: file selection, output directories, extraction orchestration
 3. **Consult `基础操作.md`** — find the correct OOXML implementation
 4. **Edit the core script** — keep the change generic and template-driven
@@ -137,7 +146,10 @@ Example: template has no cross-references → generated script has no `B_ref()`.
 - All format values from `P{}` (template) or `D{}` (derived). Never hardcode.
 - Do not commit or upload private test data: real files under `Inputs/`, `Outputs/`, `Templates/`, generated DOCX/PDF/PNG, QA renders, and template assets are local-only.
 - Always honor the workflow mode: user mode changes only `build_generated.py`; developer mode changes only reusable core scripts and reruns the whole pipeline.
-- Generated QA reports are advisory and routing-focused. They do not replace WPS/Word visual verification for final delivery.
+- Generated QA reports are routing-focused and block the pipeline on `error`; they still do not replace WPS/Word visual verification for final delivery.
+- `template_profile.json/md` is the reusable template decision layer. Do not add school-name logic when a profile capability/risk flag can describe the same need.
+- `--qa-level visual` is the preferred delivery gate for developer/product checks. It requires Word COM for PDF export and Poppler tools (`pdfinfo`, `pdftotext`, `pdftoppm`) for page/text/sample checks; missing required render tools fail visual QA and make the pipeline exit nonzero.
+- Missing or remote Markdown images, and DOCX image extraction failures, must surface as QA errors rather than disappearing from `content.json`.
 - Chinese text needs `w:eastAsia` set (handled automatically by generator).
 - A4 pagination uses dual cpl: Latin and CJK separately.
 - Each pipeline run = independent Outputs directory; same-day duplicate names get `_2`, `_3`, etc.
@@ -163,9 +175,13 @@ Paper_Project/Program/pipeline/
     format_extractor.py       ← Phase 1: template → format JSON
     content_parser.py         ← Phase 2: content → structured JSON
     md_parser.py              ← MD parser (format + content from .md)
+    template_profiler.py      ← template capability profile
     script_generator.py       ← Phase 3: JSON → build_generated.py
     latex_omath.py            ← LaTeX→OOXML formula converter
     qa_checker.py             ← Generated-output QA report and fix-target routing
+    qa_visual.py              ← optional PDF/render QA
+    privacy.py                ← path sanitization helpers
+    regression_suite.py       ← synthetic regression tests
     comment_utils.py          ← Word comment injection system
 Paper_Project/基础操作.md     ← ★ YOUR TOOLBOX: all OOXML code snippets
 build_acta_manuscript.py      ← Reference: Acta journal paper
@@ -178,6 +194,8 @@ build_comprehensive_doc.py    ← Reference: all features demo
 Templates/模版.docx ──→ format_extractor ──→ Outputs/format.json
     or .md (# 格式说明)     or md_parser         Outputs/格式提取.md
 
+format.json ─────────→ template_profiler ─→ Outputs/template_profile.json
+
 Inputs/内容.docx/.md ──→ content_parser ──→ Outputs/content.json
                         or md_parser          Outputs/内容提取.md
 
@@ -185,6 +203,8 @@ format.json ──┬──→ script_generator ──→ build_generated.py
 content.json ─┘
 
 build_generated.py ──→ python run ──→ 最终论文.docx
+                           ↓
+                      qa_checker / qa_visual
                            ↓
                    Claude + 基础操作.md
                    (user fine-tuning; core fixes for maintainers)

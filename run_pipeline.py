@@ -36,17 +36,33 @@ from format_extractor import extract as extract_format
 from content_parser import extract as extract_content
 from script_generator import generate as generate_script
 
+OPTIONAL_IMPORT_ERRORS = {}
+
 try:
     from qa_checker import check_and_write as qa_check_and_write
-except Exception:
+except ImportError as exc:
     qa_check_and_write = None
+    OPTIONAL_IMPORT_ERRORS['qa_checker'] = exc
+
+try:
+    from qa_visual import check_and_write as visual_check_and_write
+except ImportError as exc:
+    visual_check_and_write = None
+    OPTIONAL_IMPORT_ERRORS['qa_visual'] = exc
+
+try:
+    from template_profiler import write_profile as write_template_profile
+except ImportError as exc:
+    write_template_profile = None
+    OPTIONAL_IMPORT_ERRORS['template_profiler'] = exc
 
 try:
     from md_parser import extract_format as extract_md_format
     from md_parser import extract_content as extract_md_content
-except Exception:
+except ImportError as exc:
     extract_md_format = None
     extract_md_content = None
+    OPTIONAL_IMPORT_ERRORS['md_parser'] = exc
 
 
 def scan_inputs(folder, exts=('.docx', '.md')):
@@ -103,6 +119,15 @@ def choose_mode(default='user'):
     return 'user'
 
 
+def optional_import_detail(name):
+    exc = OPTIONAL_IMPORT_ERRORS.get(name)
+    return f' ({exc})' if exc else ''
+
+
+def exit_from_result(result):
+    raise SystemExit(0 if result else 1)
+
+
 def step(msg):
     print(f'\n{"=" * 50}')
     print(f'  {msg}')
@@ -152,13 +177,16 @@ def double_verify(extractor_fn, path, label, **kw):
     return r1
 
 
-def run(template_file, content_file, md_file=None, mode='user', run_qa=True):
+def run(template_file, content_file, md_file=None, mode='user', run_qa=True, qa_level='strict'):
     """Core pipeline: takes filenames, runs all phases, returns output directory.
 
     If md_file is provided, uses MD file for BOTH format and content (single-file mode).
     Otherwise routes by file extension: .docx uses existing extractors, .md uses md_parser.
     """
     mode = normalize_mode(mode)
+    qa_level = (qa_level or 'strict').strip().lower()
+    if qa_level not in ('basic', 'strict', 'visual'):
+        qa_level = 'strict'
 
     if md_file:
         # Single-MD mode: same file for format + content
@@ -175,7 +203,7 @@ def run(template_file, content_file, md_file=None, mode='user', run_qa=True):
         use_md_format = True
         use_md_content = True
         if extract_md_format is None or extract_md_content is None:
-            print('[ERROR] 当前脚本包未包含 md_parser.py，不能处理 Markdown 单文件模式。')
+            print(f'[ERROR] md_parser.py 不可用，不能处理 Markdown 单文件模式。{optional_import_detail("md_parser")}')
             return None
     else:
         template_path = os.path.join(TEMPLATE_DIR, template_file)
@@ -190,7 +218,7 @@ def run(template_file, content_file, md_file=None, mode='user', run_qa=True):
         use_md_format = template_file.endswith('.md')
         use_md_content = content_file.endswith('.md')
         if (use_md_format or use_md_content) and (extract_md_format is None or extract_md_content is None):
-            print('[ERROR] 当前脚本包未包含 md_parser.py，不能处理 Markdown 输入。请使用 .docx 模版和 .docx 内容。')
+            print(f'[ERROR] md_parser.py 不可用，不能处理 Markdown 输入。{optional_import_detail("md_parser")}')
             return None
 
     base_folder_name = f'{date.today().isoformat()}_{content_name}'
@@ -217,10 +245,11 @@ def run(template_file, content_file, md_file=None, mode='user', run_qa=True):
             'user_fix_target': 'build_generated.py',
             'developer_fix_target': 'Paper_Project/Program/pipeline/',
             'qa_enabled': bool(run_qa),
+            'qa_level': qa_level,
         }, f, ensure_ascii=False, indent=2)
 
     # ── Phase 1: Format ──
-    step('Phase 1/4: 提取模版格式')
+    step('Phase 1/6: 提取模版格式')
     fmt_extractor = extract_md_format if use_md_format else extract_format
     fmt, md_text = double_verify(fmt_extractor, template_path, 'Format')
 
@@ -232,8 +261,22 @@ def run(template_file, content_file, md_file=None, mode='user', run_qa=True):
         f.write(md_text)
     print(f'  段落:{len(fmt["paragraphs"])}  表格:{len(fmt["tables"])}  节:{len(fmt["sections"])}')
 
+    # ── Phase 2: Template profile ──
+    step('Phase 2/6: 生成模板画像')
+    if write_template_profile is None:
+        print('  [WARN] template_profiler.py 不可用，已跳过模板画像')
+    else:
+        profile = write_template_profile(fmt, out_dir, project_root=BASE)
+        caps = profile.get('capabilities') or {}
+        risks = profile.get('risk_flags') or {}
+        active_risks = [k for k, v in risks.items() if v]
+        print(f'  [OK] template_profile.json / template_profile.md')
+        print(f'  能力: cover={caps.get("has_cover")} headings={caps.get("has_heading_styles")} captions={caps.get("has_caption_styles")}')
+        if active_risks:
+            print(f'  风险标记: {", ".join(active_risks[:6])}')
+
     # ── Phase 2: Content ──
-    step('Phase 2/4: 提取文本内容')
+    step('Phase 3/6: 提取文本内容')
     cnt_extractor = extract_md_content if use_md_content else extract_content
     content = double_verify(cnt_extractor, content_path, 'Content', output_dir=out_dir)
 
@@ -271,7 +314,7 @@ def run(template_file, content_file, md_file=None, mode='user', run_qa=True):
     print(f'  章节:{len(content["sections"])}  参考文献:{len(content["references"])}  图片:{content["_meta"]["images_extracted"]}')
 
     # ── Phase 3: Generate script ──
-    step('Phase 3/4: 生成构建脚本')
+    step('Phase 4/6: 生成构建脚本')
 
     output_docx = '最终论文.docx'
     gen_size = generate_script(fmt_json_path, cnt_json_path, out_dir, output_docx)
@@ -279,7 +322,7 @@ def run(template_file, content_file, md_file=None, mode='user', run_qa=True):
     print(f'  生成脚本: build_generated.py ({gen_size} chars)')
 
     # ── Phase 4: Build docx ──
-    step('Phase 4/4: 构建最终 docx（生成静态目录；可用 Word COM 时写入页码）')
+    step('Phase 5/6: 构建最终 docx（生成静态目录；可用 Word COM 时写入页码）')
 
     result = subprocess.run(
         [sys.executable, gen_py_path],
@@ -298,9 +341,11 @@ def run(template_file, content_file, md_file=None, mode='user', run_qa=True):
 
     # ── Phase 5: QA ──
     if run_qa:
-        step('Phase 5/5: QA 检测（只报告，不自动改代码）')
+        step('Phase 6/6: QA 检测（发现 error 会阻断流水线）')
+        qa_failed = False
         if qa_check_and_write is None:
-            print('  [WARN] qa_checker.py 不可用，已跳过 QA 检测')
+            print(f'  [ERROR] qa_checker.py 不可用，无法执行必备 QA。{optional_import_detail("qa_checker")}')
+            return None
         else:
             report = qa_check_and_write(out_dir, mode=mode, output_docx_name=output_docx)
             issue_count = len(report.get('issues') or [])
@@ -313,6 +358,26 @@ def run(template_file, content_file, md_file=None, mode='user', run_qa=True):
             if issue_count > 8:
                 print(f'   ... 还有 {issue_count - 8} 项，见 qa_report.md')
             print('  [OK] QA 报告 -> qa_report.json / qa_report.md')
+            if not report.get('passed'):
+                qa_failed = True
+        if qa_level == 'visual':
+            if visual_check_and_write is None:
+                print(f'  [ERROR] qa_visual.py 不可用，无法执行 visual QA。{optional_import_detail("qa_visual")}')
+                return None
+            else:
+                visual = visual_check_and_write(out_dir, output_docx_name=output_docx, project_root=BASE)
+                v_issue_count = len(visual.get('issues') or [])
+                v_error_count = sum(1 for i in visual.get('issues') or [] if i.get('severity') == 'error')
+                v_status = '通过' if visual.get('passed') else '未通过'
+                print(f'  [Visual QA] {v_status}: {v_error_count} error(s), {v_issue_count} issue(s)')
+                for item in (visual.get('issues') or [])[:8]:
+                    print(f'   - {item.get("severity")} {item.get("code")}: {item.get("message")}')
+                print('  [OK] PDF 渲染 QA -> visual_report.json / visual_report.md')
+                if not visual.get('passed'):
+                    qa_failed = True
+        if qa_failed:
+            print('  [ERROR] QA 未通过。已保留输出目录，请按报告修复后重跑。')
+            return None
 
     # ── Done ──
     step('完成')
@@ -322,8 +387,11 @@ def run(template_file, content_file, md_file=None, mode='user', run_qa=True):
     ├── 内容提取.md          <- 核对文本内容
     ├── format.json
     ├── content.json
+    ├── template_profile.json <- 模板能力画像
     ├── workflow_mode.json <- 用户/开发者模式
+    ├── build_manifest.json <- 正文元素渲染数量
     ├── qa_report.md       <- 自动检测报告
+    ├── visual_report.md   <- PDF 渲染 QA（--qa-level visual 时生成）
     ├── build_generated.py   <- 生成脚本
     └── {output_docx}        <- 最终文件
 
@@ -343,6 +411,8 @@ def main():
     parser.add_argument('--md', help='单个 MD 文件（含格式+内容，纯 MD 模式）')
     parser.add_argument('--mode', choices=['auto', 'user', 'developer'], default='auto',
                         help='工作模式：user 只改 build_generated.py；developer 只改核心引擎；auto 交互时询问，参数模式默认 user')
+    parser.add_argument('--qa-level', choices=['basic', 'strict', 'visual'], default='strict',
+                        help='QA 级别：basic/strict 做结构检查；visual 额外导出 PDF 并抽样渲染')
     parser.add_argument('--no-qa', action='store_true', help='跳过生成后的 QA 检测')
     args = parser.parse_args()
 
@@ -356,8 +426,7 @@ def main():
     # ── Determine files ──
     if args.md:
         # Pure MD mode: single file for both format and content
-        run(None, None, md_file=args.md, mode=mode, run_qa=not args.no_qa)
-        return
+        exit_from_result(run(None, None, md_file=args.md, mode=mode, run_qa=not args.no_qa, qa_level=args.qa_level))
 
     if args.template and args.content:
         # Non-interactive mode (Skill / script)
@@ -377,15 +446,15 @@ def main():
                 print(f'\n  Inputs/ 下找到 .md 文件，可直接纯 MD 模式:')
                 for f in md_files:
                     print(f'    python run_pipeline.py --md {f}')
-            return
+            raise SystemExit(1)
         if not contents:
             print('\n[ERROR] Inputs/ 下没有 .docx 或 .md 文件，请放入内容文件后重试。')
-            return
+            raise SystemExit(1)
 
         template_file = choose_file(templates, '选择模版')
         content_file  = choose_file(contents, '选择内容')
 
-    run(template_file, content_file, mode=mode, run_qa=not args.no_qa)
+    exit_from_result(run(template_file, content_file, mode=mode, run_qa=not args.no_qa, qa_level=args.qa_level))
 
 
 if __name__ == '__main__':

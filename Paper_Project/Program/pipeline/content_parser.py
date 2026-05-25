@@ -65,7 +65,7 @@ def extract_math(para):
             # Other elements (like w:r with math only) — skip
             pass
 
-    text = ''.join(text_parts).strip() if text_parts else para.text.strip()
+    text = ''.join(text_parts).strip()
     return text, math_list
 
 
@@ -133,7 +133,9 @@ def detect_heading_level(para):
                     except:
                         pass
                 if tag == 'b':
-                    is_bold = True
+                    val = child.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val')
+                    if str(val).lower() not in ('0', 'false', 'off'):
+                        is_bold = True
 
     if not is_bold or max_size < 12:
         return 0
@@ -185,6 +187,7 @@ class ImageRegistry:
         self.prefix = prefix
         self.counter = 0
         self.by_hash = {}
+        self.failures = []
 
     def save_relationship_image(self, rel):
         if 'image' not in getattr(rel, 'reltype', ''):
@@ -205,7 +208,11 @@ class ImageRegistry:
                 f.write(blob)
             self.by_hash[digest] = fname
             return fname
-        except Exception:
+        except Exception as exc:
+            self.failures.append({
+                'target': getattr(rel, 'target_ref', ''),
+                'error': str(exc)[:200],
+            })
             return None
 
 
@@ -234,6 +241,8 @@ def extract_images_from_para(para, fig_dir, prefix='img', registry=None):
                 fname = registry.save_relationship_image(para.part.rels[embed])
                 if fname:
                     saved.append(fname)
+            else:
+                registry.failures.append({'target': embed, 'error': 'relationship id not found'})
     return saved
 
 
@@ -245,7 +254,6 @@ def _local_name(el):
 
 def _run_text_preserve_breaks(r_elem):
     """Return visible text carried by a run, preserving explicit breaks."""
-    W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
     parts = []
     for child in r_elem:
         name = _local_name(child)
@@ -258,71 +266,132 @@ def _run_text_preserve_breaks(r_elem):
     return ''.join(parts)
 
 
+def _math_entry_from_ooxml(math_elem, math_type='inline'):
+    raw = etree.tounicode(math_elem, with_tail=False)
+    return {'type': math_type, 'xml': raw, 'text': _math_text(math_elem)}
+
+
 def _images_from_run_ooxml(run_elem, para, registry, seen_rids):
     """Extract images from one OOXML run in its exact paragraph position."""
     A_NS = 'http://schemas.openxmlformats.org/drawingml/2006/main'
     R_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+    V_NS = 'urn:schemas-microsoft-com:vml'
     out = []
-    for blip in run_elem.iter(f'{{{A_NS}}}blip'):
-        embed = blip.get(f'{{{R_NS}}}embed')
-        if not embed or embed in seen_rids:
-            continue
-        seen_rids.add(embed)
-        if embed in para.part.rels:
-            fname = registry.save_relationship_image(para.part.rels[embed])
+
+    def add_rid(rid):
+        if not rid or rid in seen_rids:
+            return
+        seen_rids.add(rid)
+        if rid in para.part.rels:
+            fname = registry.save_relationship_image(para.part.rels[rid])
             if fname:
                 out.append({'role': 'image', 'image': fname})
+        else:
+            registry.failures.append({'target': rid, 'error': 'relationship id not found'})
+
+    for blip in run_elem.iter(f'{{{A_NS}}}blip'):
+        add_rid(blip.get(f'{{{R_NS}}}embed') or blip.get(f'{{{R_NS}}}link'))
+    for imagedata in run_elem.iter(f'{{{V_NS}}}imagedata'):
+        add_rid(imagedata.get(f'{{{R_NS}}}id') or imagedata.get(f'{{{R_NS}}}embed'))
     return out
 
 
 def paragraph_stream_items(para, registry):
-    """Yield paragraph text/image items in true OOXML run order.
+    """Yield paragraph text/image/math items in true OOXML run order.
 
     The previous extractor saved all images first and appended paragraph text
     afterwards, which could create: image -> body text -> caption.  This routine
-    flushes text before every drawing run, then emits the image token at the
-    exact location where Word stores the drawing.  It is structural and does not
-    depend on a school name, figure number, or fixed paragraph index.
+    flushes text before every drawing or math run, then emits the token at the
+    exact location where Word stores it.  It is structural and does not depend
+    on a school name, figure number, or fixed paragraph index.
     """
     items = []
     buf = []
     seen_rids = set()
 
     def flush_text():
-        text = ''.join(buf).strip()
+        text = ''.join(buf)
         buf.clear()
-        if text:
+        if text.strip():
             items.append({'role': 'text', 'text': text})
+
+    def append_math(math_elem, math_type='inline'):
+        entry = _math_entry_from_ooxml(math_elem, math_type)
+        flush_text()
+        if math_type == 'display':
+            items.append({
+                'role': 'formula',
+                'source': 'omml',
+                'text': entry.get('text') or '',
+                'math': [entry],
+                'numbered': _formula_should_number(entry.get('text') or ''),
+            })
+        else:
+            items.append({
+                'role': 'math_inline',
+                'source': 'omml',
+                'text': entry.get('text') or '',
+                'math': [entry],
+            })
+
+    def consume_run(run_elem):
+        for part in run_elem:
+            name = _local_name(part)
+            if name in ('drawing', 'pict'):
+                flush_text()
+                items.extend(_images_from_run_ooxml(run_elem, para, registry, seen_rids))
+            elif name == 'oMath':
+                append_math(part, 'inline')
+            elif name == 't':
+                if part.text:
+                    buf.append(part.text)
+            elif name in ('tab',):
+                buf.append('\t')
+            elif name in ('br', 'cr'):
+                buf.append('\n')
 
     for child in para._element:
         name = _local_name(child)
         if name == 'r':
-            has_drawing = '<w:drawing' in child.xml or '<w:pict' in child.xml
-            if has_drawing:
-                flush_text()
-                items.extend(_images_from_run_ooxml(child, para, registry, seen_rids))
-            txt = _run_text_preserve_breaks(child)
-            if txt:
-                buf.append(txt)
+            consume_run(child)
         elif name in ('hyperlink',):
             for r in child:
                 if _local_name(r) != 'r':
                     continue
-                has_drawing = '<w:drawing' in r.xml or '<w:pict' in r.xml
-                if has_drawing:
-                    flush_text()
-                    items.extend(_images_from_run_ooxml(r, para, registry, seen_rids))
-                txt = _run_text_preserve_breaks(r)
-                if txt:
-                    buf.append(txt)
+                consume_run(r)
         elif name in ('oMath', 'oMathPara'):
-            # Math text is handled by extract_math below.  Keep the token as
-            # text so formulas do not force surrounding images/captions to move.
-            mt = _math_text(child)
-            if mt:
-                buf.append(mt)
+            append_math(child, 'display' if name == 'oMathPara' else 'inline')
     flush_text()
     return items
+
+
+def _append_stream_run_group(section, runs, in_appendix=False):
+    if not runs:
+        return
+    text = ''.join(str(r.get('text') or '') for r in runs).strip()
+    math_items = []
+    for run in runs:
+        if run.get('type') == 'math':
+            math_items.extend(run.get('math') or [])
+    if not math_items:
+        _append_text_or_code(section, text, in_appendix=in_appendix)
+        return
+    non_math_text = ''.join(str(r.get('text') or '') for r in runs if r.get('type') != 'math').strip()
+    if non_math_text:
+        section['paragraphs'].append({
+            'role': 'rich_text',
+            'text': text,
+            'runs': runs,
+            'math': math_items,
+        })
+    else:
+        section['paragraphs'].append({
+            'role': 'formula',
+            'source': 'omml',
+            'text': text,
+            'math': math_items,
+            'numbered': _formula_should_number(text),
+        })
 
 
 def _caption_kind(item):
@@ -465,15 +534,25 @@ def _normalize_heading_spacing(text):
 
 
 def _is_figure_caption(text):
-    return bool(re.match(r'^图\s*\d+(?:[.-]\d+)?\s*[^\d\s]', str(text or '').strip()))
+    t = str(text or '').strip()
+    return bool(
+        re.match(r'^图\s*\d+(?:[.-]\d+)?\s*[^\d\s]', t)
+        or re.match(r'(?i)^(?:fig\.?|figure)\s*\d+(?:[.-]\d+)?\s+[^\d\s]', t)
+    )
 
 
 def _is_table_caption(text):
-    return bool(re.match(r'^表\s*\d+(?:[.-]\d+)?\s*[^\d\s]', str(text or '').strip()))
+    t = str(text or '').strip()
+    return bool(
+        re.match(r'^表\s*\d+(?:[.-]\d+)?\s*[^\d\s]', t)
+        or re.match(r'(?i)^table\s*\d+(?:[.-]\d+)?\s+[^\d\s]', t)
+    )
 
 
 def _normalize_caption_spacing(text):
     t = str(text or '').strip()
+    t = re.sub(r'(?i)^(fig\.?|figure)\s*(\d+(?:[.-]\d+)?)\s*', r'Fig. \2 ', t)
+    t = re.sub(r'(?i)^table\s*(\d+(?:[.-]\d+)?)\s*', r'Table \1 ', t)
     return re.sub(r'^(图|表)\s*(\d+(?:[.-]\d+)?)\s*', r'\1 \2 ', t).strip()
 
 
@@ -780,7 +859,11 @@ def extract(docx_path, output_dir='Inputs'):
                 ref_section = None
                 continue
 
-            if level > 0:
+            if ref_section is not None:
+                clean_ref_text = _clean_text_artifacts(text)
+                if clean_ref_text:
+                    ref_section['entries'].append(clean_ref_text)
+            elif level > 0:
                 clean_heading = text.split('（')[0].strip()
                 if not clean_heading:
                     continue
@@ -800,28 +883,36 @@ def extract(docx_path, output_dir='Inputs'):
                 sections.append(current_section)
                 if body_part:
                     _append_text_or_code(current_section, body_part, in_appendix=False)
-            elif ref_section is not None:
-                clean_ref_text = _clean_text_artifacts(text)
-                if clean_ref_text:
-                    ref_section['entries'].append(clean_ref_text)
             else:
                 # Preserve exact OOXML run order within the paragraph.  This is
                 # crucial when Word stores explanatory text, a drawing, and a
                 # caption in nearby runs/paragraphs.
                 stream_items = paragraph_stream_items(p, image_registry)
-                clean_text, math_list = extract_math(p)
-                if not stream_items and clean_text:
-                    stream_items = [{'role': 'text', 'text': clean_text}]
+                if not stream_items and text:
+                    stream_items = [{'role': 'text', 'text': text}]
+                rich_runs = []
+                in_appendix = bool(re.search(r'(附\s*录|配置|命令|代码)', current_section.get('heading','')))
+
+                def _flush_rich_runs():
+                    nonlocal rich_runs
+                    _append_stream_run_group(current_section, rich_runs, in_appendix=in_appendix)
+                    rich_runs = []
+
                 for _it in stream_items:
                     if _it.get('role') == 'image':
+                        _flush_rich_runs()
                         current_section['images'].append(_it.get('image'))
+                        current_section['paragraphs'].append(_it)
+                    elif _it.get('role') == 'math_inline':
+                        rich_runs.append({'type': 'math', 'text': _it.get('text') or '', 'math': _it.get('math') or []})
+                    elif _it.get('role') == 'formula':
+                        _flush_rich_runs()
                         current_section['paragraphs'].append(_it)
                     elif _it.get('role') == 'text':
                         txt = _it.get('text') or ''
-                        if math_list and txt == clean_text:
-                            current_section['paragraphs'].append({'role': 'formula', 'source': 'omml', 'text': clean_text, 'math': math_list})
-                        else:
-                            _append_text_or_code(current_section, txt, in_appendix=bool(re.search(r'(附\s*录|配置|命令|代码)', current_section.get('heading',''))))
+                        if txt:
+                            rich_runs.append({'type': 'text', 'text': txt})
+                _flush_rich_runs()
 
         elif _tag == 'tbl' and _started:
             # Body table — preserve paragraph breaks inside each cell.
@@ -875,6 +966,7 @@ def extract(docx_path, output_dir='Inputs'):
         if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tif', '.tiff'))
     ])
     content['_meta']['images_dir'] = os.path.abspath(fig_dir)
+    content['_meta']['image_extract_failures'] = image_registry.failures
 
     return content
 
