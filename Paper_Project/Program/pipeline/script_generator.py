@@ -214,6 +214,9 @@ def _profile_from_para_first_text(p: Dict[str, Any], fallback: Optional[Dict[str
         'space_before_pt': p.get('space_before_pt') if p.get('space_before_pt') is not None else (fallback or {}).get('space_before_pt', 0),
         'space_after_pt': p.get('space_after_pt') if p.get('space_after_pt') is not None else (fallback or {}).get('space_after_pt', 0),
         'first_indent_cm': p.get('first_indent_cm') if p.get('first_indent_cm') is not None else p.get('indent', (fallback or {}).get('first_indent_cm', 0)),
+        'left_indent_cm': p.get('left_indent_cm', (fallback or {}).get('left_indent_cm')),
+        'right_indent_cm': p.get('right_indent_cm', (fallback or {}).get('right_indent_cm')),
+        'hanging_indent_cm': p.get('hanging_indent_cm', (fallback or {}).get('hanging_indent_cm')),
     }
     return _normalize_profile(prof, fallback)
 
@@ -246,6 +249,12 @@ def _normalize_profile(prof: Optional[Dict[str, Any]], fallback: Optional[Dict[s
             p[k] = float(p.get(k) or 0)
         except Exception:
             p[k] = 0.0
+    for k in ('left_indent_cm', 'right_indent_cm', 'hanging_indent_cm'):
+        if k in p and p.get(k) is not None:
+            try:
+                p[k] = float(p.get(k) or 0)
+            except Exception:
+                p.pop(k, None)
     try:
         if p.get('line_spacing_fixed_pt') is not None:
             p['line_spacing_fixed_pt'] = float(p.get('line_spacing_fixed_pt'))
@@ -275,6 +284,9 @@ def _profile_from_para(p: Dict[str, Any], fallback: Optional[Dict[str, Any]] = N
         'space_before_pt': p.get('space_before_pt') if p.get('space_before_pt') is not None else (fallback or {}).get('space_before_pt', 0),
         'space_after_pt': p.get('space_after_pt') if p.get('space_after_pt') is not None else (fallback or {}).get('space_after_pt', 0),
         'first_indent_cm': p.get('first_indent_cm') if p.get('first_indent_cm') is not None else p.get('indent', (fallback or {}).get('first_indent_cm', 0)),
+        'left_indent_cm': p.get('left_indent_cm', (fallback or {}).get('left_indent_cm')),
+        'right_indent_cm': p.get('right_indent_cm', (fallback or {}).get('right_indent_cm')),
+        'hanging_indent_cm': p.get('hanging_indent_cm', (fallback or {}).get('hanging_indent_cm')),
     }
     return _normalize_profile(prof, fallback)
 
@@ -574,16 +586,28 @@ def _section_role(sec: Dict[str, Any]) -> str:
         return 'en_keywords'
     if h.startswith('参考文献') or re.match(r'(?i)^references?$', h):
         return 'references'
+    if re.match(r'(?i)^acknowledg(?:e)?ments?\b|^acknowledgment\b', h):
+        return 'acknowledgement'
     if re.search(r'致\s*谢', h):
         return 'acknowledgement'
+    if re.match(r'(?i)^append(?:ix|ices)\b', h):
+        return 'appendix'
     if re.search(r'附\s*录', h):
         return 'appendix'
     return 'body'
 
 
 def _front_matter_sections(cnt: Dict[str, Any]) -> Dict[str, Any]:
-    result: Dict[str, Any] = {'cn_abs': None, 'cn_kw': None, 'en_title': '', 'en_abs': None, 'en_kw': None, 'front_indices': set()}
+    result: Dict[str, Any] = {
+        'cn_abs': None,
+        'cn_kw': None,
+        'en_title': str((cnt.get('title_info') or {}).get('title_en') or '').strip(),
+        'en_abs': None,
+        'en_kw': None,
+        'front_indices': set(),
+    }
     sections = cnt.get('sections') or []
+    body_started = False
     for idx, sec in enumerate(sections):
         role = _section_role(sec)
         h = (sec.get('heading') or '').strip()
@@ -596,13 +620,18 @@ def _front_matter_sections(cnt: Dict[str, Any]) -> Dict[str, Any]:
         elif role == 'en_keywords':
             result['en_kw'] = sec; result['front_indices'].add(idx)
         elif (
+            not body_started
+            and
             sec.get('level') == 1
             and _ascii_ratio(h) > 0.55
             and not re.match(r'(?i)^chapter\s+\d+', h)
             and not re.match(r'^\d+(?:\.\d+)*\s+', h)
+            and role not in ('references', 'acknowledgement', 'appendix')
         ):
             if not result['en_title']:
                 result['en_title'] = h; result['front_indices'].add(idx)
+        elif role not in ('cn_abstract', 'cn_keywords', 'en_abstract', 'en_keywords'):
+            body_started = True
     return result
 
 
@@ -781,11 +810,19 @@ def apply_paragraph_profile(p, prof, outline_level=None, first_indent_override=N
         pf.space_before = Pt(float(prof.get('space_before_pt') or 0))
     if prof.get('space_after_pt') is not None:
         pf.space_after = Pt(float(prof.get('space_after_pt') or 0))
-    indent = first_indent_override if first_indent_override is not None else prof.get('first_indent_cm')
-    if indent:
-        pf.first_line_indent = Cm(float(indent))
+    if prof.get('left_indent_cm') is not None:
+        pf.left_indent = Cm(float(prof.get('left_indent_cm') or 0))
+    if prof.get('right_indent_cm') is not None:
+        pf.right_indent = Cm(float(prof.get('right_indent_cm') or 0))
+    hanging = prof.get('hanging_indent_cm')
+    if hanging:
+        pf.first_line_indent = Cm(-float(hanging))
     else:
-        pf.first_line_indent = Cm(0)
+        indent = first_indent_override if first_indent_override is not None else prof.get('first_indent_cm')
+        if indent:
+            pf.first_line_indent = Cm(float(indent))
+        else:
+            pf.first_line_indent = Cm(0)
     if outline_level is not None:
         pPr = p._element.get_or_add_pPr()
         # Give WPS/Word two independent signals for TOC generation:
@@ -942,6 +979,13 @@ def fit_picture_dimensions(path, has_caption=True):
     max_height = Inches(max(1.0, text_height_inches() - caption_inches))
     try:
         image = DocxImage.from_file(path)
+        px_width = int(getattr(image, 'px_width', 0) or 0)
+        px_height = int(getattr(image, 'px_height', 0) or 0)
+        # Very small raster images in DOCX sources are usually chart labels,
+        # equation glyph fragments, or pasted object shards.  Upscaling them to
+        # the full text width creates huge blurry "text pictures" across pages.
+        if px_width and px_height and (px_width < 240 or px_height < 80):
+            return image.scaled_dimensions()
         width, height = image.scaled_dimensions(width=max_width)
         if height > max_height:
             width, height = image.scaled_dimensions(height=max_height)
@@ -1097,6 +1141,9 @@ def is_template_placeholder_text(text):
         r'^\(Insert\b.*\)$',
         r'^\(E\.g\.\s*X{2,}(?:\s+X{2,})*,?\s*PhD\)$',
         r'\((?:Insert|student|date of|title of|name of)\b[^)]*\)',
+        r'^\s*(?:报名序号|论文编号|学号|学生姓名|姓名|学院|专业|班级|指导教师|指导老师|日期)\s*[:：]\s*\[[^\]]+\]\s*$',
+        r'\[[^\]\n]*(?:报名|序号|姓名|学号|学院|专业|班级|题目|指导|教师|日期|编码|待填|请输入|XX|XXX)[^\]\n]*\]',
+        r'(?:待填写|待补全|请输入)',
         r'X{3,}(?:\s+X{3,})+',
     ]
     return any(re.search(pat, compact, re.I) for pat in placeholder_patterns)
@@ -1692,6 +1739,19 @@ def _math_entries_from_item(item):
     return []
 
 
+def ensure_omml_wps_compat(xml_str):
+    """Ensure imported/source OMML has m:rPr for WPS compatibility."""
+    try:
+        root = etree.fromstring(xml_str.encode('utf-8') if isinstance(xml_str, str) else xml_str)
+        m_ns = 'http://schemas.openxmlformats.org/officeDocument/2006/math'
+        for mr in root.iter('{%s}r' % m_ns):
+            if mr.find('{%s}rPr' % m_ns) is None:
+                mr.insert(0, etree.Element('{%s}rPr' % m_ns))
+        return etree.tostring(root, encoding='unicode')
+    except Exception:
+        return xml_str
+
+
 def append_inline_formula(p, item):
     if isinstance(item, str):
         item = {'text': item}
@@ -1705,7 +1765,7 @@ def append_inline_formula(p, item):
         apply_run_profile(r, profile('body'), text)
         return False
     try:
-        xml_str = xml or latex_to_omath(latex, display=False)
+        xml_str = ensure_omml_wps_compat(xml or latex_to_omath(latex, display=False))
         elem = etree.fromstring(xml_str.encode('utf-8') if isinstance(xml_str, str) else xml_str)
         if elem.tag.endswith('}oMathPara') or elem.tag.endswith('oMathPara'):
             for child in list(elem):
@@ -1955,11 +2015,13 @@ def is_reference_heading(h):
 
 
 def is_ack_heading(h):
-    return bool(re.search(r'致\s*谢', str(h or '')))
+    text = str(h or '').strip()
+    return bool(re.search(r'致\s*谢', text) or re.match(r'(?i)^acknowledg(?:e)?ments?\b|^acknowledgment\b', text))
 
 
 def is_appendix_heading(h):
-    return bool(re.search(r'附\s*录', str(h or '')))
+    text = str(h or '').strip()
+    return bool(re.search(r'附\s*录', text) or re.match(r'(?i)^append(?:ix|ices)\b', text))
 
 
 def is_backmatter_heading(h):
@@ -2116,11 +2178,19 @@ def latex_text_arg(text):
 
 def split_formula_number(text):
     t = str(text or '').strip()
-    m = re.search(r'[（(]\s*(\d+\s*[-.]\s*\d+)\s*[）)]\s*$', t)
+    m = re.search(r'((?:\s*[\(\uff08]\s*(\d+(?:\s*[-.]\s*\d+)?)\s*[\)\uff09])+\s*)$', t)
     if not m:
         return t, ''
-    label = re.sub(r'\s+', '', m.group(1)).replace('.', '-')
-    return t[:m.start()].strip(), label
+    labels = re.findall(r'[\(\uff08]\s*(\d+(?:\s*[-.]\s*\d+)?)\s*[\)\uff09]', m.group(1))
+    body = t[:m.start()].strip()
+    if not body or not labels:
+        return t, ''
+    if len(labels) == 1 and re.search(r'[A-Za-z\u0370-\u03ff]$', body):
+        return t, ''
+    if len(labels) == 1 and not (re.search(r'[=＝≈≤≥<>]', body) and re.search(r'\d|[+*/×÷%·]', body)):
+        return t, ''
+    label = re.sub(r'\s+', '', labels[-1]).replace('.', '-') if labels else ''
+    return body, label
 
 
 def formula_token_to_latex(token):
@@ -2195,7 +2265,8 @@ def formula_latex_from_text(text):
 
 
 def formula_has_number(text):
-    return bool(re.search(r'[（(]\s*\d+\s*[-.]\s*\d+\s*[）)]\s*$', str(text or '').strip()))
+    _body, label = split_formula_number(text)
+    return bool(label)
 
 
 def next_formula_label(chapter):
@@ -2227,6 +2298,14 @@ def render_formula(item, chapter=None):
     text = clean_formula_text(item.get('text') or '')
     xml = item.get('xml')
     math_entries = item.get('math') or []
+    if len(math_entries) > 1 and not latex and not xml:
+        last = None
+        for m in math_entries:
+            sub = dict(item)
+            sub['math'] = [m]
+            sub['text'] = clean_formula_text(m.get('text') or text)
+            last = render_formula(sub, chapter)
+        return last
     if math_entries and not latex and not xml:
         first_math = math_entries[0] or {}
         latex = str(first_math.get('latex') or '').strip()
@@ -2249,7 +2328,7 @@ def render_formula(item, chapter=None):
     apply_paragraph_profile(p, profile('formula'), first_indent_override=0)
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     try:
-        xml_str = xml or latex_to_omath(latex, display=True)
+        xml_str = ensure_omml_wps_compat(xml or latex_to_omath(latex, display=True))
         p._element.append(etree.fromstring(xml_str.encode('utf-8') if isinstance(xml_str, str) else xml_str))
         BUILD_STATS['content_formulas_rendered'] = BUILD_STATS.get('content_formulas_rendered', 0) + 1
         BUILD_STATS['display_formulas_rendered'] = BUILD_STATS.get('display_formulas_rendered', 0) + 1
@@ -2546,6 +2625,25 @@ def add_reference_mixed_runs(p, text, prof):
             apply_run_profile(r, p_latin, seg, force_latin='Times New Roman')
 
 
+def apply_reference_indent(p, prof, rule_hanging_cm=None):
+    left = prof.get('left_indent_cm')
+    hanging = prof.get('hanging_indent_cm')
+    if hanging is None:
+        hanging = rule_hanging_cm
+    try:
+        if left is not None:
+            p.paragraph_format.left_indent = Cm(float(left or 0))
+        elif hanging:
+            p.paragraph_format.left_indent = Cm(float(hanging))
+    except Exception:
+        pass
+    try:
+        if hanging:
+            p.paragraph_format.first_line_indent = Cm(-float(hanging))
+    except Exception:
+        pass
+
+
 def render_reference_entries(refs):
     if not refs:
         return
@@ -2554,9 +2652,9 @@ def render_reference_entries(refs):
     base_prof = profile('reference')
     hang_chars = (DATA.get('rules') or {}).get('reference_hanging_chars')
     try:
-        hang_cm = float(hang_chars) * float(base_prof.get('size') or 12) * 0.0352778 if hang_chars else 0.74
+        hang_cm = float(hang_chars) * float(base_prof.get('size') or 12) * 0.0352778 if hang_chars else 0.0
     except Exception:
-        hang_cm = 0.74
+        hang_cm = 0.0
     for idx, raw in enumerate(refs, 1):
         if isinstance(raw, dict):
             continue
@@ -2565,9 +2663,8 @@ def render_reference_entries(refs):
             continue
         prof = profile('reference_english') if (DATA.get('rules') or {}).get('reference_english_left') and ascii_ratio(text[:120]) > 0.55 else base_prof
         p = doc.add_paragraph()
-        apply_paragraph_profile(p, prof, first_indent_override=0)
-        p.paragraph_format.left_indent = Cm(hang_cm)
-        p.paragraph_format.first_line_indent = Cm(-hang_cm)
+        apply_paragraph_profile(p, prof)
+        apply_reference_indent(p, prof, hang_cm)
         p.paragraph_format.keep_together = True
         add_reference_mixed_runs(p, '[' + str(idx) + '] ' + text, prof)
 
@@ -2616,6 +2713,9 @@ def collect_structural_backmatter():
 def render_paragraph_item(item, code_sensitive=False, chapter=None):
     if isinstance(item, dict) and item.get('role') == 'rich_text':
         add_rich_text_runs(item, role='body', first_indent=True)
+        return
+    if isinstance(item, dict) and item.get('role') == 'formula_problem':
+        add_text(item.get('text') or '', role='body', first_indent=True)
         return
     if isinstance(item, dict) and (item.get('role') == 'formula' or item.get('latex') or item.get('xml')):
         render_formula(item, chapter)

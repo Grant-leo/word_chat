@@ -219,6 +219,7 @@ def extract_format(md_path):
 
 # Patterns for detecting reference sections
 _RE_REF_HEADING = re.compile(r'(?i)^references?\b|^参考文献|^引用文献')
+_RE_BACKMATTER_HEADING = re.compile(r'(?i)^append(?:ix|ices)\b|^acknowledg(?:e)?ments?\b|^acknowledgment\b|^附\s*录|^致\s*谢')
 
 
 def _is_format_section_heading(line):
@@ -548,6 +549,7 @@ def extract_content(md_path, output_dir='Inputs'):
     sections = []
     current_section = None
     ref_section = None
+    collected_references = []
     para_lines = []
     all_images = []
     missing_images = []
@@ -609,6 +611,10 @@ def extract_content(md_path, output_dir='Inputs'):
                 current_section = None
                 i += 1
                 continue
+            if ref_section is not None and _RE_BACKMATTER_HEADING.match(heading):
+                if ref_section.get('entries'):
+                    collected_references.extend(ref_section['entries'])
+                ref_section = None
 
             current_section = {
                 'heading': heading,
@@ -671,7 +677,9 @@ def extract_content(md_path, output_dir='Inputs'):
     content['_meta']['missing_images'] = missing_images
 
     if ref_section and ref_section['entries']:
-        content['references'] = ref_section['entries']
+        collected_references.extend(ref_section['entries'])
+    if collected_references:
+        content['references'] = collected_references
 
     return content
 

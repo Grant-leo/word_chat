@@ -70,7 +70,8 @@ python run_pipeline.py --mode developer --qa-level visual --template 模版.docx
 - 流水线会生成 `template_profile.json` / `template_profile.md`，把模板能力归纳为封面、目录、标题、图表题、参考文献、公式、页眉页脚和风险标记，不依赖学校名或私有文件名。
 - `--qa-level visual` 会在结构 QA 后运行 `qa_visual.py`：调用 Word COM 导出 PDF，使用 Poppler 工具抽取页数/纸张/文本并渲染抽样 PNG，输出 `visual_report.json` / `visual_report.md`；缺少必要渲染工具时 visual QA 会判定未通过并阻断流水线。
 - 内容文档中的段落图片和表格单元格图片会提取到本次输出目录的 `figures/`，避免污染 `Inputs/` 或覆盖其他任务的图片；Markdown 图片路径按 `.md` 文件所在目录解析，支持相对路径。缺失、远程 Markdown 图片、DOCX 图片抽取失败都会进入 QA 错误报告，不会静默丢失。内容源里的页眉/页脚图片不会被当作正文迁移，会以 `NON_BODY_IMAGE_UNSUPPORTED` 明确提示用户移动到正文或删除装饰图。
-- 内容文档中的普通文本公式会由 `content_parser.py` 识别为公式项，Markdown 的 inline/display math 会由 `md_parser.py` 提取为公式项，再由 `script_generator.py` 调用 `latex_omath.py` 生成原生 OOXML Math；行内公式保留在当前段落，显示公式使用 WPS/Word 可编辑的 `m:oMathPara`，不是图片或纯文本。最终 DOCX 若残留原始 `$...$` / `$$...$$` 分隔符，会由 QA 作为 `LATEX_DELIMITER_TEXT` 报错。
+- 内容文档中的普通文本公式会由 `content_parser.py` 识别为公式项，Markdown 的 inline/display math 会由 `md_parser.py` 提取为公式项，再由 `script_generator.py` 调用 `latex_omath.py` 生成原生 OOXML Math；行内公式保留在当前段落，显示公式使用 WPS/Word 可编辑的 `m:oMathPara`，不是图片或纯文本。单美元 `$...$` 只有在内容确实像公式时才会切分，`$100$` 这类金额/纯数字不会误转，`$$...$$` 会按显示公式处理。对源 DOCX 中被拆行的求和、分式求和、max/min 目标函数会做保守重组；最终 DOCX 若残留原始 `$...$` / `$$...$$` 分隔符，会由 QA 作为 `LATEX_DELIMITER_TEXT` 报错。
+- 对已经排版过的源 DOCX，`content_parser.py` 会前瞻识别并跳过源文档静态目录，包括无页码目录项和混入重复公式/页码碎片的目录块；真实使用 Heading/标题样式的“目录”章节会保留，即使它后面跟着分页。未填写的 `[报名序号]` 等占位符、重复公式编号 `(1)(1)`、公式碎片段落（如 `E` / `rgreen` / `RE`）、疑似低分辨率文字/公式图片碎片会由 `qa_checker.py` 报为 `CONTENT_TOC_POLLUTION`、`UNFILLED_PLACEHOLDER_TEXT`、`FORMULA_NUMBER_CONFLICT`、`FORMULA_TEXT_FRAGMENTED` 或 `LOW_RES_IMAGE_FRAGMENT`，避免把坏输入静默当成可交付结果。
 - 目录默认生成静态目录行；在 Windows + Word COM 可用时，会自动读取正文标题页码并写入目录页码，不再依赖手动取消 TOC 注释。
 - 正文图片按正文文本宽度适配；封面图片按模板提取的宽高插入，避免校徽、Logo 被段落行高裁切。
 
@@ -148,11 +149,12 @@ page_width_cm: 21.0
 - **md_parser.py**：Markdown 解析器，从 `.md` 文件同时提取格式说明和论文内容
 - **template_profiler.py**：模板画像器，把低层 `format.json` 归纳为可决策的模板能力和风险标记
 - **latex_omath.py**：独立 LaTeX→OOXML 公式转换器；既支持手写 LaTeX，也承接 `content_parser.py` 从文本公式归一化出的 LaTeX
+- **formula_semantics.py**：公式语义判别层，区分正文数量/单位、行内公式、显示公式和公式碎片问题，避免把正常中文段落整段转成公式
 - **comment_utils.py**：Word 批注系统，`comment="导师: ..."` 即可添加批注
 - **qa_visual.py**：可选 PDF 渲染 QA，检查页数、纸张、目录文本并抽样渲染页面 PNG
 - **public_template_suite.py**：公共模板兼容性套件，下载公开模板到本地忽略目录，用合成内容跑结构/视觉 QA；只提交套件代码，不提交下载模板和运行输出
 - **privacy.py**：报告脱敏辅助，避免对外报告暴露绝对路径
-- **regression_suite.py**：开发者合成回归测试，覆盖行内/显示公式、混合段落、MD 表格/代码、manifest 计数、表格单元格图片、页眉页脚图片告警、原始 LaTeX 分隔符残留和 QA 失败路径
+- **regression_suite.py**：开发者合成回归测试，覆盖公式语义、行内/显示公式、混合段落、MD 表格/代码、manifest 计数、表格单元格图片、页眉页脚图片告警、原始 LaTeX 分隔符残留和 QA 失败路径
 - **build_generated.py**：每次运行生成的用户微调脚本。用户通过 AI 改它即可完成当前文档的排版调整；长期修复由开发者回写核心引擎
 - **基础操作.md**：持续维护的代码片段库——测试越多越完善，AI 能改的功能越多
 - **模板缺的功能**（如交叉引用）→ 引擎不会生成 → 用户提出 → AI 查基础操作.md → 先改当前 `build_generated.py` 完成本次文档；需要产品化时再由开发者沉淀到核心引擎
@@ -360,7 +362,8 @@ Each run produces an independent directory `Outputs/{date}_{content_name}/`, nev
 - Each run writes `template_profile.json` / `template_profile.md`, a template capability profile covering cover, TOC, headings, captions, references, formulas, headers/footers, and risk flags without school-name or private-filename rules.
 - `--qa-level visual` runs `qa_visual.py` after structural QA: it exports PDF through Word COM, uses Poppler tools to inspect page count/size/text, renders sample PNG pages, and writes `visual_report.json` / `visual_report.md`; missing required render tools fail visual QA and block the pipeline.
 - Paragraph images and table-cell images from the content document are extracted into the current output directory's `figures/` folder, so `Inputs/` is not polluted and runs do not overwrite each other's images. Markdown image paths are resolved relative to the `.md` file, so colocated `media/` folders work; missing or remote Markdown images and DOCX image extraction failures are reported as QA errors instead of disappearing silently. Header/footer images in the content source are not migrated as body content; QA reports `NON_BODY_IMAGE_UNSUPPORTED` so users can move real content images into the body or remove decorative source images.
-- Plain-text formulas in content documents are recognized by `content_parser.py`; Markdown inline/display math is extracted by `md_parser.py`; both paths are normalized by `script_generator.py` and rendered through `latex_omath.py` as native OOXML Math. Inline formulas stay in the paragraph, and display formulas use editable WPS/Word `m:oMathPara`, not screenshots or plain text. If raw `$...$` / `$$...$$` delimiters remain in the final DOCX, QA reports `LATEX_DELIMITER_TEXT`.
+- Plain-text formulas in content documents are recognized by `content_parser.py`; Markdown inline/display math is extracted by `md_parser.py`; both paths are normalized by `script_generator.py` and rendered through `latex_omath.py` as native OOXML Math. Inline formulas stay in the paragraph, and display formulas use editable WPS/Word `m:oMathPara`, not screenshots or plain text. Single-dollar `$...$` spans are accepted only when the content is semantically math-like, so `$100$` is not misclassified, and `$$...$$` remains display math. Split source-DOCX sum, fraction-plus-sum, and max/min objective layouts are conservatively repaired. If raw `$...$` / `$$...$$` delimiters remain in the final DOCX, QA reports `LATEX_DELIMITER_TEXT`.
+- For already-typeset source DOCX files, `content_parser.py` looks ahead to skip static source TOC blocks, including unpaged TOC entries and TOC blocks polluted by repeated formula/page fragments, while preserving real "Contents" sections that use explicit Heading styles even when followed by a page break. Unfilled placeholders such as `[报名序号]`, duplicate formula labels like `(1)(1)`, formula-fragment paragraphs such as `E` / `rgreen` / `RE`, and likely low-resolution text/formula image shards are surfaced by `qa_checker.py` as `CONTENT_TOC_POLLUTION`, `UNFILLED_PLACEHOLDER_TEXT`, `FORMULA_NUMBER_CONFLICT`, `FORMULA_TEXT_FRAGMENTED`, or `LOW_RES_IMAGE_FRAGMENT` instead of being silently treated as deliverable output.
 - TOC output is static by default; when Windows Word COM is available, the pipeline reads heading page numbers from Word and writes them into the visible TOC.
 - Body images fit the full text width. Cover images use the template-extracted width and height, preventing logos and seals from being clipped by paragraph line height.
 
@@ -388,11 +391,12 @@ Core engines + one generated script + two knowledge bases:
 - **md_parser.py**: Markdown parser — extracts both format specs and content from `.md` files
 - **template_profiler.py**: template profiler — derives reusable capabilities and risk flags from `format.json`
 - **latex_omath.py**: standalone LaTeX→OOXML formula converter; it supports handwritten LaTeX and LaTeX normalized from plain-text formulas extracted by `content_parser.py`
+- **formula_semantics.py**: deterministic formula semantics layer for quantities/units, inline math, display math, and fragmented formula problems
 - **comment_utils.py**: Word comment system — `comment="advisor: ..."` adds native Word comments
 - **qa_visual.py**: optional PDF/render QA for page count, paper size, TOC text, and sample PNG rendering
 - **public_template_suite.py**: public-template compatibility suite; downloads public templates into ignored local folders and runs synthetic structure/visual QA without committing templates or outputs
 - **privacy.py**: report-sanitization helper to avoid leaking absolute machine paths
-- **regression_suite.py**: developer synthetic regression suite covering inline/display formulas, mixed paragraphs, MD tables/code, manifest counts, table-cell images, non-body image warnings, raw LaTeX delimiter leftovers, and QA failure paths
+- **regression_suite.py**: developer synthetic regression suite covering formula semantics, inline/display formulas, mixed paragraphs, MD tables/code, manifest counts, table-cell images, non-body image warnings, raw LaTeX delimiter leftovers, and QA failure paths
 - **build_generated.py**: generated user fine-tuning script. Users can ask AI to edit it for the current document; developers move reusable fixes back into the core engines
 - **基础操作.md**: continuously maintained code snippet library — the more it's tested, the more AI can do
 - **Missing template features** (e.g. cross-references) → engine won't generate → user requests → AI checks 基础操作.md → edits the current `build_generated.py`; developers can later productize the pattern in the core engine

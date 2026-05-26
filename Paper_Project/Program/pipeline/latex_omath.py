@@ -299,10 +299,9 @@ def _make_radical(deg_el, e_el):
 def _make_delimiter(left_chr, right_chr, content_el, grow=True):
     d = etree.Element(f'{{{M}}}d')
     dPr = etree.SubElement(d, f'{{{M}}}dPr')
-    if left_chr:
-        beg = etree.SubElement(dPr, f'{{{M}}}begChr'); beg.set(f'{{{M}}}val', left_chr)
-    if right_chr:
-        end = etree.SubElement(dPr, f'{{{M}}}endChr'); end.set(f'{{{M}}}val', right_chr)
+    beg = etree.SubElement(dPr, f'{{{M}}}begChr'); beg.set(f'{{{M}}}val', left_chr or '')
+    sep = etree.SubElement(dPr, f'{{{M}}}sepChr'); sep.set(f'{{{M}}}val', '')
+    end = etree.SubElement(dPr, f'{{{M}}}endChr'); end.set(f'{{{M}}}val', right_chr or '')
     if grow:
         gr = etree.SubElement(dPr, f'{{{M}}}grow'); gr.set(f'{{{M}}}val', '1')
     items = content_el if isinstance(content_el, list) else [content_el]
@@ -1188,9 +1187,40 @@ class _LaTeXParser:
             return _make_run('')
         if len(lst) == 1:
             return lst[0]
+        run_parts = []
+        all_mergeable_runs = True
+        for item in lst:
+            if item.tag != f'{{{M}}}r':
+                all_mergeable_runs = False
+                break
+            texts = item.findall(f'{{{M}}}t')
+            non_text_children = [
+                child for child in item
+                if child.tag not in (f'{{{M}}}rPr', f'{{{M}}}t')
+            ]
+            if len(texts) != 1 or non_text_children:
+                all_mergeable_runs = False
+                break
+            rpr = item.find(f'{{{M}}}rPr')
+            rpr_key = etree.tostring(rpr, encoding='unicode') if rpr is not None else ''
+            run_parts.append((texts[0].text or '', rpr, rpr_key))
+        if all_mergeable_runs and len({part[2] for part in run_parts}) == 1:
+            merged = etree.Element(f'{{{M}}}r')
+            first_rpr = run_parts[0][1] if run_parts else None
+            if first_rpr is not None:
+                merged.append(etree.fromstring(etree.tostring(first_rpr)))
+            else:
+                etree.SubElement(merged, f'{{{M}}}rPr')
+            t = etree.SubElement(merged, f'{{{M}}}t')
+            t.set(XML_SPACE, 'preserve')
+            t.text = ''.join(part[0] for part in run_parts)
+            return merged
         # Wrap multiple siblings in invisible delimiter (m:d without brackets)
         wrapped = etree.Element(f'{{{M}}}d')
-        etree.SubElement(wrapped, f'{{{M}}}dPr')
+        dPr = etree.SubElement(wrapped, f'{{{M}}}dPr')
+        beg = etree.SubElement(dPr, f'{{{M}}}begChr'); beg.set(f'{{{M}}}val', '')
+        sep = etree.SubElement(dPr, f'{{{M}}}sepChr'); sep.set(f'{{{M}}}val', '')
+        end = etree.SubElement(dPr, f'{{{M}}}endChr'); end.set(f'{{{M}}}val', '')
         for item in lst:
             e = etree.SubElement(wrapped, f'{{{M}}}e'); e.append(item)
         return wrapped

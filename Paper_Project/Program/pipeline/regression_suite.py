@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List
 
 from docx import Document
+from docx.enum.section import WD_SECTION
 from docx.shared import Pt
 from lxml import etree
 
@@ -36,6 +37,17 @@ if str(PIPELINE_DIR) not in sys.path:
     sys.path.insert(0, str(PIPELINE_DIR))
 
 from content_parser import extract as extract_docx_content
+from content_parser import _strip_trailing_formula_labels_from_xml
+from formula_semantics import (
+    CATEGORY_CONTAMINATED,
+    CATEGORY_DISPLAY_MATH,
+    CATEGORY_QUANTITY_TEXT,
+    classify_formula_text,
+    is_formula_problem_text,
+    looks_like_formula_text as semantic_looks_like_formula_text,
+    split_inline_math_spans,
+)
+from format_extractor import extract as extract_docx_format
 from latex_omath import latex_to_omath
 from md_parser import extract_content as extract_md_content
 from qa_conformance import check_conformance
@@ -77,6 +89,16 @@ def new_workdir(name: str) -> Path:
 
 def write_json(path: Path, value: Dict[str, Any]) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def write_sample_png(path: Path, width: int = 480, height: int = 270) -> None:
+    from PIL import Image, ImageDraw
+
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((8, 8, width - 8, height - 8), outline=(30, 80, 160), width=3)
+    draw.line((24, height - 40, width - 24, 40), fill=(180, 50, 50), width=4)
+    image.save(path)
 
 
 def base_format(source: str = "synthetic.md") -> Dict[str, Any]:
@@ -265,6 +287,36 @@ def display_formula_remains_display() -> None:
 
 
 @case
+def source_formula_label_cleanup_preserves_arguments() -> None:
+    for expr in ["f(1)", "x^{(1)}", "P=f(1)"]:
+        _xml, text, had_label = _strip_trailing_formula_labels_from_xml(latex_to_omath(expr, display=True))
+        assert_true(not had_label, f"formula argument was mistaken for an equation label: {expr} -> {text}")
+    _xml, text, had_label = _strip_trailing_formula_labels_from_xml(latex_to_omath("E=mc^2(1.1)", display=True))
+    assert_true(had_label and "(1.1)" not in text, f"equation label was not stripped: {text}")
+
+
+@case
+def multiple_display_omml_entries_render_all() -> None:
+    content = base_content([
+        {
+            "role": "formula",
+            "source": "omml",
+            "text": "",
+            "math": [
+                {"type": "display", "xml": latex_to_omath("x=1", display=True), "text": "x=1"},
+                {"type": "display", "xml": latex_to_omath("y=2", display=True), "text": "y=2"},
+            ],
+            "numbered": False,
+        }
+    ])
+    result = run_generated_case("multi_display_omml", content)
+    counts = result["manifest"]["counts"]
+    assert_true(counts["display_formulas_rendered"] == 2, f"multiple OMML formulas were not all rendered: {counts}")
+    assert_true(omath_para_count(result["xml"]) == 2, "expected two display OMML paragraphs")
+    assert_true(not result["report"]["issues"], f"unexpected QA issues: {result['report']['issues']}")
+
+
+@case
 def table_manifest_matches_structured_body_tables() -> None:
     content = base_content(
         [
@@ -312,7 +364,7 @@ def code_table_is_not_body_table() -> None:
 @case
 def image_manifest_matches_rendered_body_images() -> None:
     img_src = new_workdir("image_src")
-    (img_src / "dot.png").write_bytes(PNG_1X1)
+    write_sample_png(img_src / "dot.png")
     content = base_content([
         {"role": "figure", "image": "dot.png", "caption": "Figure 1 sample"}
     ])
@@ -326,9 +378,43 @@ def image_manifest_matches_rendered_body_images() -> None:
 
 
 @case
+def low_res_image_fragment_is_reported_and_not_upscaled() -> None:
+    img_src = new_workdir("tiny_image_src")
+    write_sample_png(img_src / "tiny.png", width=76, height=18)
+    content = base_content([
+        {"role": "figure", "image": "tiny.png", "caption": "Figure 1 broken label shard"}
+    ])
+    content["_meta"]["images_dir"] = str(img_src)
+    content["_meta"]["images_extracted"] = 1
+    content["sections"][0]["images"] = ["tiny.png"]
+    result = run_generated_case("tiny_image_fragment", content)
+    codes = [item["code"] for item in result["report"]["issues"]]
+    assert_true("LOW_RES_IMAGE_FRAGMENT" in codes, "QA did not report a low-resolution image fragment")
+    m = re.search(r"<wp:extent[^>]+cx=\"(\d+)\"[^>]+cy=\"(\d+)\"", result["xml"])
+    assert_true(bool(m), "generated DOCX did not contain an image extent")
+    width_inches = int(m.group(1)) / 914400
+    assert_true(width_inches < 2.0, f"tiny image was upscaled to page width: {width_inches:.2f}in")
+
+
+@case
+def small_square_icon_is_not_reported_as_low_res_fragment() -> None:
+    img_src = new_workdir("small_icon_src")
+    write_sample_png(img_src / "icon.png", width=64, height=64)
+    content = base_content([
+        {"role": "figure", "image": "icon.png", "caption": "QR code icon"}
+    ])
+    content["_meta"]["images_dir"] = str(img_src)
+    content["_meta"]["images_extracted"] = 1
+    content["sections"][0]["images"] = ["icon.png"]
+    result = run_generated_case("small_square_icon", content)
+    codes = [item["code"] for item in result["report"]["issues"]]
+    assert_true("LOW_RES_IMAGE_FRAGMENT" not in codes, f"legitimate small square image was reported as fragment: {result['report']['issues']}")
+
+
+@case
 def qa_manifest_detects_missing_image_render() -> None:
     img_src = new_workdir("image_missing_src")
-    (img_src / "dot.png").write_bytes(PNG_1X1)
+    write_sample_png(img_src / "dot.png")
     content = base_content([
         {"role": "figure", "image": "dot.png", "caption": "Figure 1 sample"}
     ])
@@ -451,6 +537,223 @@ def content_parser_detects_latex_delimited_formula_paragraphs() -> None:
 
 
 @case
+def formula_semantics_classifies_quantities_and_contamination() -> None:
+    quantity = "全年发电量为 172.04 MWh"
+    equation = "P_total(t)=P_AK+P_PM+P_NH3+P_L(t)=20.75+6*p_L(t)"
+    contaminated = "当PRE(t)-PL(t)<0.1*41.5=4.15MW时,该时段无法开机;产量约束为="
+
+    quantity_result = classify_formula_text(quantity)
+    equation_result = classify_formula_text(equation)
+    contaminated_result = classify_formula_text(contaminated)
+
+    assert_true(quantity_result.category == CATEGORY_QUANTITY_TEXT, f"quantity became {quantity_result}")
+    assert_true(not semantic_looks_like_formula_text(quantity), "quantity/unit text was mistaken for a formula")
+    assert_true(equation_result.category == CATEGORY_DISPLAY_MATH, f"equation became {equation_result}")
+    assert_true(semantic_looks_like_formula_text(equation), "standalone equation was not recognized")
+    assert_true(contaminated_result.category == CATEGORY_CONTAMINATED, f"contaminated formula became {contaminated_result}")
+    assert_true(not semantic_looks_like_formula_text(contaminated), "contaminated narrative was accepted as a formula")
+
+
+@case
+def content_parser_marks_formula_semantic_problems() -> None:
+    work = new_workdir("parser_formula_semantics")
+    docx = work / "formula_semantics.docx"
+    quantity = "全年发电量为 172.04 MWh"
+    equation = "P_total(t)=P_AK+P_PM+P_NH3+P_L(t)=20.75+6*p_L(t)"
+    contaminated = "当PRE(t)-PL(t)<0.1*41.5=4.15MW时,该时段无法开机;产量约束为="
+    doc = Document()
+    doc.add_paragraph("1 Formula Semantics")
+    doc.add_paragraph(quantity)
+    doc.add_paragraph(equation)
+    doc.add_paragraph(contaminated)
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    formulas = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "formula"]
+    problems = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "formula_problem"]
+
+    assert_true(quantity in paragraphs, "quantity text should remain ordinary text")
+    assert_true(any(p.get("text") == equation for p in formulas), "standalone equation was not extracted as formula")
+    assert_true(any(p.get("text") == contaminated for p in problems), "contaminated formula text was not marked")
+
+
+@case
+def formula_semantics_splits_inline_math_without_units() -> None:
+    text = "模型中 P_total(t)=20.75+6*p_L(t)，全年电量为 172.04 MWh。"
+    spans = split_inline_math_spans(text)
+    assert_true(len(spans) == 1, f"expected one inline formula span, got {spans}")
+    assert_true(spans[0]["text"] == "P_total(t)=20.75+6*p_L(t)", f"wrong inline span: {spans}")
+    assert_true("172.04" not in spans[0]["text"], "quantity text was absorbed into inline formula")
+    assert_true(not split_inline_math_spans("$100$ cost"), "plain dollar amount was mistaken for inline math")
+    assert_true(not split_inline_math_spans("$$x=1$$"), "display math delimiter was mistaken for inline math")
+    dollar_spans = split_inline_math_spans("变量 $x_i$ 表示第 i 个样本。")
+    assert_true(dollar_spans and dollar_spans[0]["text"] == "x_i", f"valid dollar inline math was lost: {dollar_spans}")
+    mixed = "由于约束仅为 u(t) = n 且 u(t) ∈ {0, 1}，这是标准选择问题。"
+    mixed_spans = split_inline_math_spans(mixed)
+    assert_true(not any("且" in str(s.get("text")) or "{" in str(s.get("text")) for s in mixed_spans), f"unsafe inline span accepted: {mixed_spans}")
+
+
+@case
+def prose_with_inline_formula_is_not_formula_problem() -> None:
+    text = "假设三：每小时为一个调度时段。题目明确园区运行分析时段为 1 小时，即 ∆t = 1。"
+    spans = split_inline_math_spans(text)
+    assert_true(any(s.get("text") == "t = 1" for s in spans), f"inline formula was not found: {spans}")
+    assert_true(not is_formula_problem_text(text), "ordinary prose with inline math should not block as formula_problem")
+
+
+@case
+def content_parser_builds_rich_text_for_plain_inline_formula() -> None:
+    work = new_workdir("parser_plain_inline_formula")
+    docx = work / "plain_inline_formula.docx"
+    paragraph = "模型中 P_total(t)=20.75+6*p_L(t)，全年电量为 172.04 MWh。"
+    doc = Document()
+    doc.add_paragraph("1 Inline Formula")
+    doc.add_paragraph(paragraph)
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    rich_items = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "rich_text"]
+    assert_true(rich_items, f"inline formula paragraph was not converted to rich_text: {paragraphs}")
+    runs = rich_items[0].get("runs") or []
+    assert_true([r.get("type") for r in runs] == ["text", "math", "text"], f"inline formula runs are wrong: {runs}")
+    result = run_generated_case("plain_inline_formula_render", content)
+    assert_true(result["manifest"]["counts"]["inline_formulas_rendered"] == 1, "plain inline formula did not render as native inline math")
+    assert_true(omath_count(result["xml"]) >= 1 and omath_para_count(result["xml"]) == 0, "plain inline formula rendered with wrong OMML shape")
+
+
+@case
+def content_parser_keeps_prose_inline_formula_as_rich_text() -> None:
+    work = new_workdir("parser_prose_inline_formula")
+    docx = work / "prose_inline_formula.docx"
+    doc = Document()
+    doc.add_paragraph("1 Formula Prose")
+    doc.add_paragraph("假设三：每小时为一个调度时段。题目明确园区运行分析时段为 1 小时，即 ∆t = 1。")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    assert_true(not any(isinstance(p, dict) and p.get("role") == "formula_problem" for p in paragraphs), f"prose inline formula became formula_problem: {paragraphs}")
+    rich = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "rich_text"]
+    assert_true(rich and any(run.get("type") == "math" for run in rich[0].get("runs") or []), f"prose inline formula was not rich_text math: {paragraphs}")
+
+
+@case
+def numeric_formula_denominator_is_not_heading() -> None:
+    work = new_workdir("parser_numeric_fragment_heading")
+    docx = work / "numeric_fragment_heading.docx"
+    doc = Document()
+    doc.add_paragraph("论文题目: Numeric Fragment")
+    doc.add_paragraph("8 离网运行分析")
+    p = doc.add_paragraph("41 .5")
+    run = p.runs[0]
+    run.font.size = Pt(16)
+    run.bold = True
+    doc.add_paragraph("This text should stay under the previous heading.")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    headings = [sec.get("heading") for sec in content.get("sections") or []]
+    body_text = "\n".join(
+        p if isinstance(p, str) else str(p.get("text") or "")
+        for sec in content.get("sections") or []
+        for p in sec.get("paragraphs", [])
+    )
+    assert_true("41 .5" not in headings, f"numeric formula denominator became heading: {headings}")
+    assert_true("41 .5" in body_text and "previous heading" in body_text, f"numeric fragment/body text was lost: {body_text}")
+
+
+@case
+def content_parser_repairs_split_ratio_formula_layout() -> None:
+    work = new_workdir("parser_split_ratio_layout")
+    docx = work / "split_ratio_layout.docx"
+    doc = Document()
+    doc.add_paragraph("1 Split Formula Layout")
+    doc.add_paragraph("日总用电量和新能源发电量分别为：")
+    doc.add_paragraph("24 24")
+    doc.add_paragraph("Etotal = ∑ Ptotal(t) · ∆t, ERE = ∑ PRE(t) · ∆t")
+    doc.add_paragraph("t=1")
+    doc.add_paragraph("三项绿电直连指标定义为：")
+    doc.add_paragraph("t=1")
+    doc.add_paragraph("rself")
+    p1 = doc.add_paragraph()
+    p1._element.append(etree.fromstring(latex_to_omath(r"=Etotal-Esell-Ebuy\times100\%(6)(3)", display=True).encode("utf-8")))
+    doc.add_paragraph("E")
+    doc.add_paragraph("rgreen")
+    doc.add_paragraph("RE")
+    p2 = doc.add_paragraph()
+    p2._element.append(etree.fromstring(latex_to_omath(r"=ERE-Esell\times100\%(7)(4)", display=True).encode("utf-8")))
+    doc.add_paragraph("E")
+    doc.add_paragraph("rup")
+    doc.add_paragraph("total")
+    p3 = doc.add_paragraph()
+    p3._element.append(etree.fromstring(latex_to_omath(r"=Esell\times100\%(8)(5)", display=True).encode("utf-8")))
+    doc.add_paragraph("E")
+    doc.add_paragraph("RE")
+    doc.add_paragraph("吨氨成本模型")
+    doc.add_paragraph("吨氨成本由购电成本、风光度电成本和运维成本三部分构成，扣除售电收入：")
+    doc.add_paragraph("∑24")
+    doc.add_paragraph("[Pbuy(t) · λbuy(t) − Psell(t) · λsell] · 1000 + CRE + COM")
+    doc.add_paragraph("其中风光度电成本 CRE = ∑24")
+    doc.add_paragraph("[Pw(t) · 0.15 + Ppv(t) · 0.12] · 1000（元），运维成本")
+    doc.add_paragraph("COM = ∑24")
+    doc.add_paragraph("u(t)·(10×0.1+10×0.15+0.75×0.002)·1000(元),日产氨量QNH3=1.5×24=36")
+    doc.add_paragraph("24")
+    doc.add_paragraph("u(t)=n=Qtarget/3")
+    doc.add_paragraph("t=1")
+    doc.add_paragraph("Cton =")
+    doc.add_paragraph("1")
+    doc.add_paragraph("Qtarget")
+    doc.add_paragraph("24")
+    doc.add_paragraph("t=1")
+    doc.add_paragraph("∆c(t) · u(t) + Cfixed]")
+    doc.add_paragraph("(13)")
+    doc.add_paragraph("max")
+    doc.add_paragraph("α")
+    doc.add_paragraph("24")
+    doc.add_paragraph("QNH3 = 3 α(t) (20)")
+    doc.add_paragraph("t=1")
+    doc.add_paragraph("CRE=∑_{t=1}^{24} [Pw(t) · 0.15 + Ppv(t) · 0.12] · 1000")
+    doc.add_paragraph("COM=∑24 (10×0.1+10×0.15+0.75×0.002)·1000")
+    doc.add_paragraph("S = ∑10")
+    doc.add_paragraph("x_i")
+    doc.add_paragraph("K = ∑10")
+    doc.add_paragraph("42")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    repaired = [p for p in paragraphs if isinstance(p, dict) and str(p.get("source") or "").startswith("repaired_")]
+    repaired_text = "\n".join(p.get("text") or "" for p in repaired)
+    residue = [p for p in paragraphs if p in ("rself", "rgreen", "rup", "RE") or (isinstance(p, str) and p.strip() == "E")]
+    split_sum_problems = [p for p in paragraphs if isinstance(p, dict) and p.get("problem") == "split_sum_index_unknown"]
+
+    assert_true(any(p.get("source") == "repaired_sum_bounds" for p in repaired), f"split sum bounds were not repaired: {paragraphs}")
+    assert_true(sum(1 for p in repaired if p.get("source") == "repaired_ratio_cluster") == 3, f"ratio formulas were not repaired: {repaired}")
+    assert_true(any(p.get("source") == "repaired_sum_prefix" for p in repaired), f"split leading sum prefix was not repaired: {paragraphs}")
+    assert_true(sum(1 for p in repaired if p.get("source") == "repaired_labeled_sum_continuation") >= 2, f"labeled sum continuations were not repaired: {repaired}")
+    assert_true(any(p.get("source") == "repaired_missing_sum_symbol" for p in repaired), f"missing sum symbol layout was not repaired: {repaired}")
+    assert_true(any(p.get("source") == "repaired_fraction_sum_layout" for p in repaired), f"fraction plus sum layout was not repaired: {repaired}")
+    assert_true(any(p.get("source") == "repaired_max_sum_layout" for p in repaired), f"max/min sum layout was not repaired: {repaired}")
+    assert_true(any(p.get("source") == "repaired_inline_sum_missing_lower" for p in repaired), f"inline sum missing lower was not repaired from context: {repaired}")
+    assert_true("rself=" in repaired_text and "rgreen=" in repaired_text and "rup=" in repaired_text, f"ratio variables missing: {repaired_text}")
+    assert_true(all(r"\mathrm" in (p.get("latex") or "") for p in repaired if p.get("source") == "repaired_ratio_cluster"), "multi-letter repaired variables should use roman subscripts")
+    latex_blob = "\n".join(p.get("latex") or "" for p in repaired)
+    assert_true(r"\Deltat" not in latex_blob and r"\lambdabuy" not in latex_blob, f"greek-letter suffixes collapsed into invalid commands: {latex_blob}")
+    assert_true(r"\Delta t" in latex_blob and r"\lambda_{\mathrm{buy}}" in latex_blob, f"greek-letter suffixes were not preserved: {latex_blob}")
+    assert_true(r"\sum_{i=1}^{10}" in latex_blob, f"split sum index was not inferred from subscript variable: {latex_blob}")
+    assert_true(r"\sum_{t=1}^{24}" in latex_blob and r"\frac{1}{Q_{\mathrm{target}}}" in latex_blob, f"time-indexed sum/fraction layout was not rendered: {latex_blob}")
+    assert_true(r"\max_{\alpha}" in latex_blob, f"max sum layout did not preserve optimization variable: {latex_blob}")
+    assert_true(not any((p.get("text") or "").startswith("K=") for p in repaired), f"index-less split sum was repaired by guessing: {repaired}")
+    assert_true(split_sum_problems, "index-less split sum should be flagged instead of repaired by guessing")
+    assert_true("(5)" not in latex_blob, f"stale source equation label leaked into repaired latex: {latex_blob}")
+    assert_true(not residue, f"split ratio fragments leaked as body text: {residue}")
+    result = run_generated_case("split_ratio_layout_render", content)
+    assert_true(result["manifest"]["counts"]["display_formulas_rendered"] >= 7, "repaired split formulas did not render as display math")
+
+
+@case
 def content_parser_extracts_table_cell_images_and_flags_header_images() -> None:
     work = new_workdir("parser_table_header_images")
     img = work / "dot.png"
@@ -470,6 +773,46 @@ def content_parser_extracts_table_cell_images_and_flags_header_images() -> None:
     assert_true(table_images, "table-cell image was not promoted into the content image stream")
     assert_true(content["_meta"]["images_extracted"] == 1, "header image should not be counted as a body image")
     assert_true(content["_meta"].get("non_body_images"), "header image was not recorded as a non-body image")
+
+
+@case
+def content_parser_keeps_references_before_english_appendix() -> None:
+    work = new_workdir("parser_refs_appendix")
+    docx = work / "refs_appendix.docx"
+    doc = Document()
+    doc.add_paragraph("1 Introduction")
+    doc.add_paragraph("Body paragraph before references.")
+    doc.add_paragraph("References")
+    doc.add_paragraph("[1] Synthetic reference one.")
+    doc.add_paragraph("[2] Synthetic reference two.")
+    doc.add_paragraph("Appendix A Reproducible Commands")
+    doc.add_paragraph("python run_pipeline.py --mode developer")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    assert_true(len(content.get("references") or []) == 2, f"reference entries were not preserved: {content.get('references')}")
+    assert_true(all("python run_pipeline" not in str(ref) for ref in content.get("references") or []), "appendix command leaked into references")
+    appendix = [sec for sec in content.get("sections") or [] if sec.get("role") == "appendix"]
+    assert_true(appendix and any("python run_pipeline" in str(p) for p in appendix[0].get("paragraphs") or []), "English appendix section was not preserved")
+
+
+@case
+def content_parser_extracts_english_title_before_abstract() -> None:
+    work = new_workdir("parser_english_title")
+    docx = work / "english_title.docx"
+    doc = Document()
+    p = doc.add_paragraph("中文论文标题示例用于测试")
+    p.runs[0].font.size = Pt(16)
+    doc.add_paragraph("Research on Template Driven Document Quality Assessment")
+    doc.add_paragraph("Abstract: This is the abstract body.")
+    doc.add_paragraph("Key words: document automation")
+    doc.add_paragraph("1 Introduction")
+    doc.add_paragraph("Body text.")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    assert_true(content.get("title_info", {}).get("title_en") == "Research on Template Driven Document Quality Assessment", "English title before abstract was not extracted")
+    assert_true(not any((sec.get("heading") or "").startswith("Research on") for sec in content.get("sections") or []), "English title leaked into body sections")
 
 
 @case
@@ -582,6 +925,31 @@ def md_missing_images_are_reported_to_qa() -> None:
 
 
 @case
+def md_parser_keeps_references_before_english_appendix() -> None:
+    work = new_workdir("md_refs_appendix")
+    md = work / "refs_appendix.md"
+    md.write_text(
+        "\n".join([
+            "# Demo",
+            "",
+            "Body text.",
+            "",
+            "## References",
+            "[1] Synthetic Markdown reference one.",
+            "[2] Synthetic Markdown reference two.",
+            "",
+            "## Appendix A Commands",
+            "python run_pipeline.py --mode developer",
+        ]),
+        encoding="utf-8",
+    )
+    content = extract_md_content(str(md), output_dir=str(work))
+    assert_true(len(content.get("references") or []) == 2, f"Markdown references were not preserved: {content.get('references')}")
+    assert_true(all("python run_pipeline" not in str(ref) for ref in content.get("references") or []), "Markdown appendix command leaked into references")
+    assert_true(any((sec.get("heading") or "").startswith("Appendix") for sec in content.get("sections") or []), "Markdown appendix section was not preserved")
+
+
+@case
 def qa_counts_mixed_inline_and_section_images() -> None:
     work = new_workdir("mixed_image_count")
     content = base_content([
@@ -612,6 +980,246 @@ def qa_reports_non_body_images_and_raw_latex_text() -> None:
     assert_true("NON_BODY_IMAGE_UNSUPPORTED" in codes, "QA did not flag unsupported header/footer images")
     assert_true("LATEX_DELIMITER_TEXT" in codes, "QA did not flag raw LaTeX delimiters left in final DOCX")
     assert_true(report["passed"] is False, "non-body images and raw LaTeX text should fail QA")
+
+
+@case
+def qa_reports_duplicate_front_matter_headings() -> None:
+    work = new_workdir("qa_duplicate_front_heading")
+    docx = work / "out.docx"
+    doc = Document()
+    doc.add_paragraph("摘  要")
+    doc.add_paragraph("Synthetic title")
+    doc.add_paragraph("摘要")
+    doc.add_paragraph("Abstract body.")
+    doc.save(docx)
+    content = {
+        "_meta": {"source": "synthetic.docx", "paragraphs": 1, "tables_count": 0, "images_extracted": 0},
+        "title_info": {"title_cn": "Synthetic title"},
+        "sections": [
+            {"heading": "摘要", "level": 1, "role": "cn_abstract", "paragraphs": ["Abstract body."], "images": []}
+        ],
+        "references": ["[1] Synthetic reference."],
+    }
+    write_json(work / "content.json", content)
+    write_json(work / "format.json", base_format())
+    write_json(work / "workflow_mode.json", {"mode": "developer"})
+    (work / "build_generated.py").write_text("# synthetic\n", encoding="utf-8")
+    report = check_output(str(work), mode="developer", output_docx_name="out.docx")
+    codes = [item["code"] for item in report["issues"]]
+    assert_true("DUPLICATE_FRONT_MATTER_HEADING" in codes, "QA did not report duplicate front matter heading")
+    assert_true(report["passed"] is False, "duplicate front matter heading should fail QA")
+
+
+@case
+def content_parser_skips_source_toc_and_records_placeholders() -> None:
+    work = new_workdir("source_toc_placeholder")
+    docx = work / "source_toc.docx"
+    doc = Document()
+    doc.add_paragraph("报名序号: [报名序号]")
+    doc.add_paragraph("论文题目: Synthetic Energy Paper")
+    doc.add_paragraph("目 录")
+    doc.add_paragraph("一、 问题重述")
+    doc.add_paragraph("172.04 MWh should not become a heading")
+    doc.add_section(WD_SECTION.NEW_PAGE)
+    doc.add_paragraph("一、 问题重述")
+    doc.add_paragraph("This is the real body paragraph.")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    headings = [sec.get("heading") for sec in content.get("sections") or []]
+    assert_true(content.get("title_info", {}).get("title_cn") == "Synthetic Energy Paper", "labeled title was not extracted")
+    assert_true(content.get("_meta", {}).get("source_toc_skipped_paragraphs", 0) >= 3, "source TOC block was not skipped")
+    assert_true(content.get("_meta", {}).get("source_placeholders"), "source placeholders were not recorded")
+    assert_true("172.04 MWh should not become a heading" not in headings, "TOC/body sentence became a heading")
+    assert_true("一、 问题重述" in headings, "real body heading was lost after TOC skip")
+
+
+@case
+def content_parser_exits_source_toc_without_page_break() -> None:
+    work = new_workdir("source_toc_no_break")
+    docx = work / "source_toc_no_break.docx"
+    doc = Document()
+    doc.add_paragraph("论文题目: No Break TOC")
+    doc.add_paragraph("目录")
+    doc.add_paragraph("1 绪论 1")
+    doc.add_paragraph("1 正文第一章")
+    doc.add_paragraph("This paragraph must survive even though no page break follows the source TOC.")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    headings = [sec.get("heading") for sec in content.get("sections") or []]
+    body_text = "\n".join(
+        p if isinstance(p, str) else str(p.get("text") or "")
+        for sec in content.get("sections") or []
+        for p in sec.get("paragraphs", [])
+    )
+    assert_true(content.get("_meta", {}).get("source_toc_skipped_paragraphs", 0) >= 2, "source TOC entries were not skipped")
+    assert_true("1 正文第一章" in headings, f"real heading after source TOC was lost: {headings}")
+    assert_true("must survive" in body_text, f"body text after source TOC was lost: {body_text}")
+
+
+@case
+def content_parser_skips_unpaged_source_toc_without_boundary() -> None:
+    work = new_workdir("source_toc_unpaged_no_boundary")
+    docx = work / "source_toc_unpaged_no_boundary.docx"
+    doc = Document()
+    doc.add_paragraph("论文题目: Unpaged TOC")
+    doc.add_paragraph("目录")
+    doc.add_paragraph("一、 问题重述")
+    doc.add_paragraph("二、 问题分析")
+    doc.add_paragraph("三、 模型假设")
+    doc.add_paragraph("一、 问题重述")
+    doc.add_paragraph("This is the real body paragraph after the repeated first heading.")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    headings = [sec.get("heading") for sec in content.get("sections") or []]
+    body_text = "\n".join(
+        p if isinstance(p, str) else str(p.get("text") or "")
+        for sec in content.get("sections") or []
+        for p in sec.get("paragraphs", [])
+    )
+    assert_true(content.get("_meta", {}).get("source_toc_skipped_paragraphs", 0) >= 4, "unpaged source TOC block was not skipped")
+    assert_true("二、 问题分析" not in headings and "三、 模型假设" not in headings, f"unpaged TOC entries leaked as sections: {headings}")
+    assert_true("一、 问题重述" in headings, f"real repeated heading was lost: {headings}")
+    assert_true("real body paragraph" in body_text, f"body text after repeated heading was lost: {body_text}")
+
+
+@case
+def content_parser_skips_source_toc_with_duplicate_formula_fragments_before_boundary() -> None:
+    work = new_workdir("source_toc_duplicate_fragments")
+    docx = work / "source_toc_duplicate_fragments.docx"
+    doc = Document()
+    doc.add_paragraph("论文题目: Duplicate Fragment TOC")
+    doc.add_paragraph("目 录")
+    doc.add_paragraph("一、 问题重述")
+    doc.add_paragraph("二、 问题分析")
+    doc.add_paragraph("41 .5")
+    doc.add_paragraph("41 .5")
+    doc.add_paragraph("九、 问题五")
+    doc.add_paragraph("十、 灵敏度分析")
+    doc.add_section(WD_SECTION.NEW_PAGE)
+    doc.add_paragraph("一、 问题重述")
+    doc.add_paragraph("This is the real body paragraph.")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    headings = [sec.get("heading") for sec in content.get("sections") or []]
+    body_text = "\n".join(
+        p if isinstance(p, str) else str(p.get("text") or "")
+        for sec in content.get("sections") or []
+        for p in sec.get("paragraphs", [])
+    )
+    assert_true(content.get("_meta", {}).get("source_toc_skipped_paragraphs", 0) >= 8, "source TOC with duplicate fragments was not skipped to boundary")
+    assert_true("九、 问题五" not in headings and "十、 灵敏度分析" not in headings, f"late TOC entries leaked: {headings}")
+    assert_true("一、 问题重述" in headings and "real body paragraph" in body_text, f"real body after source TOC was lost: {headings} / {body_text}")
+
+
+@case
+def content_parser_preserves_real_directory_section_content() -> None:
+    work = new_workdir("real_directory_section")
+    docx = work / "real_directory_section.docx"
+    doc = Document()
+    doc.add_paragraph("论文题目: Directory Section")
+    directory_heading = doc.add_paragraph("目录")
+    directory_heading.style = doc.styles["Heading 1"]
+    doc.add_paragraph("本节介绍产品目录与数据字典，不是源文档自动目录。")
+    doc.add_paragraph("1 正文")
+    doc.add_paragraph("This paragraph must remain in the document.")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    body_text = "\n".join(
+        p if isinstance(p, str) else str(p.get("text") or "")
+        for sec in content.get("sections") or []
+        for p in sec.get("paragraphs", [])
+    )
+    assert_true(not content.get("_meta", {}).get("source_toc_skipped_paragraphs"), "real directory section was treated as a source TOC")
+    assert_true("产品目录与数据字典" in body_text, f"real directory section content was lost: {body_text}")
+    assert_true("must remain" in body_text, f"body text after real directory section was lost: {body_text}")
+
+
+@case
+def content_parser_preserves_real_directory_section_before_page_break() -> None:
+    work = new_workdir("real_directory_section_page_break")
+    docx = work / "real_directory_section_page_break.docx"
+    doc = Document()
+    doc.add_paragraph("论文题目: Directory Section With Page Break")
+    directory_heading = doc.add_paragraph("目录")
+    directory_heading.style = doc.styles["Heading 1"]
+    subheading = doc.add_paragraph("一、 产品目录")
+    subheading.style = doc.styles["Heading 2"]
+    doc.add_paragraph("本节介绍产品目录与数据字典，不是源文档自动目录。")
+    doc.add_section(WD_SECTION.NEW_PAGE)
+    doc.add_paragraph("1 正文")
+    doc.add_paragraph("This paragraph must remain after the page break.")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    body_text = "\n".join(
+        p if isinstance(p, str) else str(p.get("text") or "")
+        for sec in content.get("sections") or []
+        for p in sec.get("paragraphs", [])
+    )
+    headings = [sec.get("heading") for sec in content.get("sections") or []]
+    assert_true(not content.get("_meta", {}).get("source_toc_skipped_paragraphs"), "real directory section before a page break was treated as source TOC")
+    assert_true("目录" in headings and "一、 产品目录" in headings, f"real directory headings were lost: {headings}")
+    assert_true("产品目录与数据字典" in body_text and "must remain" in body_text, f"real directory/page-break content was lost: {body_text}")
+
+
+@case
+def qa_reports_toc_pollution_placeholders_and_formula_fragments() -> None:
+    work = new_workdir("qa_semantic_guards")
+    docx = work / "out.docx"
+    doc = Document()
+    doc.add_paragraph("报名序号: [报名序号]")
+    doc.add_paragraph("172.04 MWh should not be a heading")
+    doc.save(docx)
+    content = base_content(["E", "rgreen", "RE"])
+    content["_meta"]["source_placeholders"] = [{"paragraph": 1, "text": "报名序号: [报名序号]"}]
+    content["sections"][0]["heading"] = "172.04 MWh should not be a heading"
+    content["sections"][0]["paragraphs"] = [
+        {"role": "formula", "text": "x=1(1)(1)", "numbered": True},
+        {"role": "formula", "text": "吨/日对应的开机时段数n=Q/qrate∈24,21,18,15,12.产量约束为=", "numbered": True},
+        "E",
+        "rgreen",
+        "RE",
+    ]
+    write_json(work / "content.json", content)
+    write_json(work / "format.json", base_format())
+    write_json(work / "workflow_mode.json", {"mode": "developer"})
+    (work / "build_generated.py").write_text("# synthetic\n", encoding="utf-8")
+    report = check_output(str(work), mode="developer", output_docx_name="out.docx")
+    codes = [item["code"] for item in report["issues"]]
+    for code in ["CONTENT_TOC_POLLUTION", "UNFILLED_PLACEHOLDER_TEXT", "FORMULA_NUMBER_CONFLICT", "FORMULA_TEXT_FRAGMENTED", "PLACEHOLDER_TEXT_LEFT"]:
+        assert_true(code in codes, f"QA did not report {code}")
+    formula_issue = next(item for item in report["issues"] if item["code"] == "FORMULA_TEXT_FRAGMENTED")
+    assert_true("contaminated formula text" in formula_issue.get("detail", ""), "QA did not explain narrative text inside a formula")
+    assert_true(report["passed"] is False, "semantic guard issues should fail QA")
+
+
+@case
+def source_omml_is_made_wps_compatible() -> None:
+    xml = latex_to_omath("x=1", display=True)
+    root = etree.fromstring(xml.encode("utf-8"))
+    M = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+    for mr in root.iter(f"{{{M}}}r"):
+        for rpr in list(mr.findall(f"{{{M}}}rPr")):
+            mr.remove(rpr)
+    raw_without_rpr = etree.tostring(root, encoding="unicode")
+    content = base_content([
+        {
+            "role": "formula",
+            "source": "omml",
+            "text": "x=1",
+            "math": [{"type": "display", "xml": raw_without_rpr, "text": "x=1"}],
+            "numbered": True,
+        }
+    ])
+    result = run_generated_case("source_omml_wps", content)
+    conf = check_conformance(str(result["work"]), mode="developer", output_docx_name="out.docx")
+    codes = [item["code"] for item in conf["issues"]]
+    assert_true("OMML_WPS_COMPAT" not in codes, f"source OMML was not normalized for WPS: {conf['issues']}")
 
 
 @case
@@ -677,6 +1285,33 @@ def latex_omath_limit_accepts_multitoken_subscript() -> None:
 
 
 @case
+def latex_omath_invisible_delimiters_hide_separators() -> None:
+    xml = latex_to_omath(r"\frac{E_{\mathrm{total}}-E_{\mathrm{sell}}-E_{\mathrm{buy}}}{E_{\mathrm{RE}}}+\sum_{t=1}^{24}x_t", display=True)
+    root = etree.fromstring(xml.encode("utf-8"))
+    ns = {"m": "http://schemas.openxmlformats.org/officeDocument/2006/math"}
+    delimiters = root.findall(".//m:d", ns)
+    assert_true(delimiters, "complex formula did not create grouped delimiter elements")
+    for delim in delimiters:
+        entries = delim.findall("./m:e", ns)
+        if len(entries) <= 1:
+            continue
+        dpr = delim.find("./m:dPr", ns)
+        sep = dpr.find("./m:sepChr", ns) if dpr is not None else None
+        assert_true(sep is not None and sep.get(f"{{{ns['m']}}}val") == "", "invisible delimiter can render visible vertical separators")
+    texts = "".join(t.text or "" for t in root.findall(".//m:t", ns))
+    assert_true("t=1" in texts and "24" in texts, f"plain multi-character scripts were split incorrectly: {texts}")
+    styled_xml = latex_to_omath(r"\frac{\mathrm{abc}\mathrm{def}}{x}+\frac{\mathrm{abc}+\mathrm{def}}{x}", display=True)
+    styled_root = etree.fromstring(styled_xml.encode("utf-8"))
+    styled_runs = []
+    for run in styled_root.findall(".//m:r", ns):
+        text = "".join(t.text or "" for t in run.findall("./m:t", ns))
+        sty = run.find("./m:rPr/m:sty", ns)
+        styled_runs.append((text, sty.get(f"{{{ns['m']}}}val") if sty is not None else None))
+    assert_true(("abcdef", "p") in styled_runs, f"merged \\mathrm runs lost upright style: {styled_runs}")
+    assert_true(("abc", "p") in styled_runs and ("def", "p") in styled_runs, f"mixed-style grouped runs lost \\mathrm style: {styled_runs}")
+
+
+@case
 def template_profile_sanitizes_private_source() -> None:
     fmt = base_format(source="private_school_template.docx")
     fmt["_meta"]["assets_dir"] = r"E:\private\Templates\private_school_template_assets"
@@ -685,6 +1320,26 @@ def template_profile_sanitizes_private_source() -> None:
     assert_true("private_school_template" not in text, "template profile leaked source filename")
     assert_true(profile["source"]["source_ext"] == ".docx", "template profile lost source extension")
     assert_true(profile["source"]["has_assets_dir"] is True, "template profile lost assets flag")
+
+
+@case
+def format_extractor_stops_cover_before_spaced_abstract_heading() -> None:
+    work = new_workdir("format_cover_stop_abstract")
+    docx = work / "cover_stop.docx"
+    doc = Document()
+    doc.add_paragraph("Cover title")
+    doc.add_paragraph("摘  要")
+    doc.add_paragraph("Template abstract sample paragraph should not be replayed as cover.")
+    doc.save(docx)
+
+    fmt, _ = extract_docx_format(str(docx))
+    cover_text = "\n".join(
+        "".join(run.get("t", "") for run in el.get("r", []))
+        for el in fmt.get("cover") or []
+        if isinstance(el, dict)
+    )
+    assert_true("Cover title" in cover_text, "cover text before abstract was not extracted")
+    assert_true("摘" not in cover_text and "Template abstract sample" not in cover_text, "abstract page leaked into cover extraction")
 
 
 @case
@@ -703,6 +1358,19 @@ def numbered_english_heading_is_not_front_title() -> None:
     front = _front_matter_sections(cnt)
     assert_true(front.get("en_title") in ("", None), "numbered English body heading became English title")
     assert_true(0 not in front.get("front_indices", set()), "numbered English body heading was marked as front matter")
+
+
+@case
+def english_appendix_heading_is_not_front_title() -> None:
+    cnt = {
+        "sections": [
+            {"heading": "1 Introduction", "level": 1, "role": "body", "paragraphs": ["Body"], "images": []},
+            {"heading": "Appendix A Commands", "level": 1, "role": "appendix", "paragraphs": ["python run_pipeline.py"], "images": []},
+        ]
+    }
+    front = _front_matter_sections(cnt)
+    assert_true(front.get("en_title") in ("", None), "English appendix heading became English title")
+    assert_true(1 not in front.get("front_indices", set()), "English appendix was marked as front matter")
 
 
 @case

@@ -50,7 +50,8 @@ def _paragraph_metrics(p_elem):
     info = {
         'alignment': 'DEFAULT', 'line_spacing_val': None, 'line_spacing_rule': None,
         'line_spacing_fixed_pt': None, 'space_before_pt': None, 'space_after_pt': None,
-        'first_indent_cm': 0,
+        'first_indent_cm': None, 'left_indent_cm': None, 'right_indent_cm': None,
+        'hanging_indent_cm': None,
     }
     pPr = p_elem.find(qn('w:pPr'))
     if pPr is None:
@@ -78,8 +79,17 @@ def _paragraph_metrics(p_elem):
         info['space_after_pt'] = _twips_to_pt(spacing.get(qn('w:after')))
     ind = pPr.find(qn('w:ind'))
     if ind is not None:
+        left = ind.get(qn('w:left'))
+        if left is not None:
+            info['left_indent_cm'] = _twips_to_cm(left)
+        right = ind.get(qn('w:right'))
+        if right is not None:
+            info['right_indent_cm'] = _twips_to_cm(right)
+        hanging = ind.get(qn('w:hanging'))
+        if hanging is not None:
+            info['hanging_indent_cm'] = _twips_to_cm(hanging)
         fi = ind.get(qn('w:firstLine'))
-        if fi:
+        if fi is not None:
             info['first_indent_cm'] = _twips_to_cm(fi) or 0
     return info
 
@@ -105,6 +115,9 @@ def _profile_from_paragraph(p):
         'space_before_pt': p.get('space_before_pt'),
         'space_after_pt': p.get('space_after_pt'),
         'first_indent_cm': p.get('first_indent_cm') if p.get('first_indent_cm') is not None else p.get('indent', 0),
+        'left_indent_cm': p.get('left_indent_cm'),
+        'right_indent_cm': p.get('right_indent_cm'),
+        'hanging_indent_cm': p.get('hanging_indent_cm'),
     }
 
 
@@ -261,8 +274,24 @@ class StyleResolver:
                 if pf.line_spacing: entry['ls'] = pf.line_spacing
                 if pf.alignment is not None: entry['align'] = ALIGN_MAP.get(pf.alignment, 'DEFAULT')
                 if pf.first_line_indent: entry['indent'] = pf.first_line_indent.cm
+                if pf.left_indent: entry['left_indent_cm'] = pf.left_indent.cm
+                if pf.right_indent: entry['right_indent_cm'] = pf.right_indent.cm
             except AttributeError:
                 pass  # character style — no paragraph formatting
+            try:
+                pPr = style._element.find(qn('w:pPr'))
+                ind = pPr.find(qn('w:ind')) if pPr is not None else None
+                if ind is not None:
+                    left = ind.get(qn('w:left'))
+                    right = ind.get(qn('w:right'))
+                    first = ind.get(qn('w:firstLine'))
+                    hanging = ind.get(qn('w:hanging'))
+                    if left is not None: entry['left_indent_cm'] = _twips_to_cm(left)
+                    if right is not None: entry['right_indent_cm'] = _twips_to_cm(right)
+                    if first is not None: entry['indent'] = _twips_to_cm(first) or 0
+                    if hanging is not None: entry['hanging_indent_cm'] = _twips_to_cm(hanging)
+            except Exception:
+                pass
             try:
                 entry['base'] = style.base_style.style_id if style.base_style else None
             except (AttributeError, ValueError):
@@ -272,7 +301,9 @@ class StyleResolver:
     def resolve(self, p_elem, r_elem):
         """Return fully resolved formatting for a run."""
         result = {'font': None, 'size': None, 'bold': False, 'italic': False,
-                  'ls': None, 'align': 'DEFAULT', 'indent': 0}
+                  'ls': None, 'align': 'DEFAULT', 'indent': None,
+                  'left_indent_cm': None, 'right_indent_cm': None,
+                  'hanging_indent_cm': None}
 
         # 1. Direct formatting on the run (highest priority)
         rPr = r_elem.find(qn('w:rPr'))
@@ -308,6 +339,12 @@ class StyleResolver:
                 elif ct == 'ind':
                     fi = child.get(qn('w:firstLine'))
                     if fi: result['indent'] = round(int(fi) / 567.0, 1)  # twips -> cm
+                    left = child.get(qn('w:left'))
+                    right = child.get(qn('w:right'))
+                    hanging = child.get(qn('w:hanging'))
+                    if left is not None: result['left_indent_cm'] = _twips_to_cm(left)
+                    if right is not None: result['right_indent_cm'] = _twips_to_cm(right)
+                    if hanging is not None: result['hanging_indent_cm'] = _twips_to_cm(hanging)
 
         # 3. Resolve from style tree
         self._resolve_style(style_id, result)
@@ -324,11 +361,16 @@ class StyleResolver:
             if result['size'] is None: result['size'] = s.get('size')
             if result['align'] == 'DEFAULT': result['align'] = s.get('align', 'DEFAULT')
             if result['ls'] is None: result['ls'] = s.get('ls')
+            if result.get('indent') is None: result['indent'] = s.get('indent')
+            if result.get('left_indent_cm') is None: result['left_indent_cm'] = s.get('left_indent_cm')
+            if result.get('right_indent_cm') is None: result['right_indent_cm'] = s.get('right_indent_cm')
+            if result.get('hanging_indent_cm') is None: result['hanging_indent_cm'] = s.get('hanging_indent_cm')
             sid = s.get('base')
         # Final fallbacks
         if result['font'] is None: result['font'] = 'Times New Roman'
         if result['size'] is None: result['size'] = 12.0
         if result['ls'] is None: result['ls'] = 1.15
+        if result['indent'] is None: result['indent'] = 0
         if result['align'] == 'DEFAULT': result['align'] = 'LEFT'
 
 
@@ -417,6 +459,9 @@ def extract(docx_path):
                 pinfo['align'] = info['align']
                 pinfo['ls'] = info['ls']
                 pinfo['indent'] = info['indent']
+                pinfo['left_indent_cm'] = info.get('left_indent_cm')
+                pinfo['right_indent_cm'] = info.get('right_indent_cm')
+                pinfo['hanging_indent_cm'] = info.get('hanging_indent_cm')
 
         # Add paragraph-level aliases consumed by the generator.
         # Older output used only align/ls/indent; newer generator uses the
@@ -433,6 +478,9 @@ def extract(docx_path):
         pinfo['space_before_pt'] = m['space_before_pt']
         pinfo['space_after_pt'] = m['space_after_pt']
         pinfo['first_indent_cm'] = m['first_indent_cm'] if m['first_indent_cm'] is not None else pinfo.get('indent', 0)
+        pinfo['left_indent_cm'] = m['left_indent_cm'] if m['left_indent_cm'] is not None else pinfo.get('left_indent_cm')
+        pinfo['right_indent_cm'] = m['right_indent_cm'] if m['right_indent_cm'] is not None else pinfo.get('right_indent_cm')
+        pinfo['hanging_indent_cm'] = m['hanging_indent_cm'] if m['hanging_indent_cm'] is not None else pinfo.get('hanging_indent_cm')
 
         fmt['paragraphs'].append(pinfo)
 
@@ -688,6 +736,16 @@ def _extract_cover(doc, assets_dir=None):
     SKIP_KW = ['页边距要求', '碳素笔', '完成后删除', '封面要求', '1.论文题目', '毕业论文（设计）题目为',
                '按答辩时间', '提交论文', '禁止使用']
 
+    def _front_stop_match(text):
+        compact = re.sub(r'[\s\u3000:：]+', '', str(text or '')[:40]).upper()
+        if compact in {'摘要', '中文摘要', '目录', '目次', 'ABSTRACT', 'CONTENTS'}:
+            return True
+        return bool(
+            compact.startswith(('摘要', '中文摘要', '目录', '目次', 'ABSTRACT', 'CONTENTS'))
+            or re.match(r'^第[一二三四五六七八九十百千万\d]+章', compact)
+            or re.match(r'^\d+(?:\.\d+)+', compact)
+        )
+
     elements = []
     for child in doc.element.body:
         tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
@@ -809,7 +867,7 @@ def _extract_cover(doc, assets_dir=None):
                                                                '字号要求', '格式要求', '排版要求'])
 
         # Stop at abstract/TOC/body (real content, not format notes)
-        if full_text and any(kw in full_text[:20] for kw in STOP_KW):
+        if full_text and (any(kw in full_text[:20] for kw in STOP_KW) or _front_stop_match(full_text)):
             if not _is_fmt_note:
                 break
 

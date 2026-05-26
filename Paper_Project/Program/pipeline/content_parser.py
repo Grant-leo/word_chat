@@ -7,6 +7,27 @@ from docx.shared import Pt, Inches
 from lxml import etree
 import json, os, re, shutil, hashlib
 
+try:
+    from formula_semantics import (
+        CATEGORY_CONTAMINATED,
+        classify_formula_text,
+        formula_should_number as semantic_formula_should_number,
+        is_formula_label,
+        is_formula_problem_text,
+        looks_like_formula_text as semantic_looks_like_formula_text,
+        split_inline_math_spans,
+    )
+except ImportError:  # pragma: no cover - package-style imports
+    from .formula_semantics import (
+        CATEGORY_CONTAMINATED,
+        classify_formula_text,
+        formula_should_number as semantic_formula_should_number,
+        is_formula_label,
+        is_formula_problem_text,
+        looks_like_formula_text as semantic_looks_like_formula_text,
+        split_inline_math_spans,
+    )
+
 def emu_to_pt(emu):
     if emu is None: return None
     return round(emu / 12700, 1)
@@ -20,6 +41,66 @@ def _math_text(elem):
         if t.text:
             parts.append(t.text)
     return ''.join(parts)
+
+
+_FORMULA_TRAILING_LABEL_RE = re.compile(r'((?:\s*[\(\uff08]\s*\d+(?:\s*[-.]\s*\d+)?\s*[\)\uff09])+\s*)$')
+
+
+def _split_trailing_formula_labels(text):
+    t = str(text or '').strip()
+    m = _FORMULA_TRAILING_LABEL_RE.search(t)
+    if not m:
+        return t, []
+    labels = re.findall(r'[\(\uff08]\s*(\d+(?:\s*[-.]\s*\d+)?)\s*[\)\uff09]', m.group(1))
+    return t[:m.start()].strip(), labels
+
+
+def _should_strip_trailing_formula_labels(text):
+    body, labels = _split_trailing_formula_labels(text)
+    if not body or not labels:
+        return False
+    # A single trailing "(1)" can be a function argument or superscript marker
+    # after OOXML is flattened to text, e.g. f(1) or x^{(1)}. Treat it as an
+    # equation number only when the preceding body has equation-like structure.
+    if len(labels) == 1 and re.search(r'[A-Za-z\u0370-\u03ff]$', body):
+        return False
+    if len(labels) >= 2:
+        return True
+    return bool(re.search(r'[=＝≈≤≥<>]', body) and re.search(r'\d|[+*/×÷%·]', body))
+
+
+def _strip_trailing_formula_labels(text):
+    """Remove stale equation numbers copied from source documents."""
+    if not _should_strip_trailing_formula_labels(text):
+        return str(text or '').strip()
+    body, _labels = _split_trailing_formula_labels(text)
+    return body
+
+
+def _strip_trailing_formula_labels_from_xml(xml):
+    """Strip trailing formula labels from m:t nodes while preserving OMML."""
+    try:
+        root = etree.fromstring(str(xml or '').encode('utf-8'))
+    except Exception:
+        return xml, '', False
+    M = 'http://schemas.openxmlformats.org/officeDocument/2006/math'
+    nodes = [n for n in root.iter(f'{{{M}}}t') if n.text]
+    original = ''.join(n.text or '' for n in nodes)
+    stripped = _strip_trailing_formula_labels(original)
+    if not original or stripped == original:
+        return xml, original, False
+    remove_chars = len(original) - len(stripped)
+    for node in reversed(nodes):
+        if remove_chars <= 0:
+            break
+        txt = node.text or ''
+        if remove_chars >= len(txt):
+            node.text = ''
+            remove_chars -= len(txt)
+        else:
+            node.text = txt[:-remove_chars]
+            remove_chars = 0
+    return etree.tounicode(root, with_tail=False), stripped, True
 
 
 def extract_math(para):
@@ -79,6 +160,8 @@ def detect_heading_level(para):
     # Figure/table captions are captions, not outline headings or TOC entries.
     if re.match(r'^(图|表)\s*\d+(?:[.-]\d+)?\s*', text):
         return 0
+    if re.fullmatch(r'[\d\s.,，．。]+', text) or re.fullmatch(r'\d+\s*[.．]\s*\d+', text):
+        return 0
 
     # ── Label-style headings (Abstract:, Key words:, 摘要：, 关键词：) ──
     # These are detected by text pattern regardless of paragraph length or OOXML formatting,
@@ -98,6 +181,9 @@ def detect_heading_level(para):
     # Chapter: 第1章 / 第一章 / 1 绪论 / Chapter 1
     if re.match(r'^第[一二三四五六七八九十\d]+章', text):
         return 1
+    m_count_heading = re.match(r'^\d+\s+([\u4e00-\u9fff])', text)
+    if m_count_heading and m_count_heading.group(1) in set('种个天年月日吨项组类场'):
+        return 2 if _looks_like_heading_style(para) else 0
     if re.match(r'^(?:Chapter\s*)?\d+\s+[\u4e00-\u9fffA-Za-z]', text) and not re.match(r'^\d+\.\d+', text):
         return 1
     if len(text) <= 80 and re.match(r'^[\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341\u767e\u5343]+[\u3001\uff0e.]\s*\S+', text):
@@ -107,6 +193,8 @@ def detect_heading_level(para):
     if len(text) <= 80 and re.match(r'^[\uff08(][\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341]+[\uff09)]\s*\S+', text):
         return 2
     # Numbered: 1.1 = level 2, 1.1.1 = level 3
+    if re.match(r'^\d+\.\d+\s*(?:MWh|MW|kWh|kg|h|吨|元|%|[+\-−=,，）。])', text, re.I):
+        return 0
     if re.match(r'^\d+\.\d+\.\d+\s*', text):
         return 3
     if re.match(r'^\d+\.\d+\s*', text):
@@ -124,6 +212,12 @@ def detect_heading_level(para):
     # Skip formatting notes (Chinese parenthetical instructions or short bracketed text)
     if text.startswith('（') and (text.endswith('）') or len(text) < 60):
         return 0
+
+    style_level = _heading_level_from_style(para)
+    if style_level and len(text) <= 80 and not text.endswith('。'):
+        if re.search(r'[=×÷ΣΠ∫√∞≈±]', text) and len(text) < 100:
+            return 0
+        return style_level
 
     # Get size from OOXML directly (bypass python-docx API None issue)
     max_size = 0
@@ -258,6 +352,290 @@ def _local_name(el):
     return el.tag.split('}')[-1] if '}' in el.tag else el.tag
 
 
+_PLACEHOLDER_RE = re.compile(
+    r'(\[[^\]\n]*(?:\u62a5\u540d|\u5e8f\u53f7|\u59d3\u540d|\u5b66\u53f7|\u5b66\u9662|\u4e13\u4e1a|\u73ed\u7ea7|\u9898\u76ee|\u6307\u5bfc|\u6559\u5e08|\u65e5\u671f|\u7f16\u7801|\u5f85\u586b|\u8bf7\u8f93\u5165|XX|XXX)[^\]\n]*\])'
+    r'|(\{\{[^}]+\}\}|TODO|FIXME|\u5f85\u586b\u5199|\u5f85\u8865\u5168|XXXX)',
+    re.I,
+)
+
+
+def _is_unfilled_placeholder_text(text):
+    return bool(_PLACEHOLDER_RE.search(str(text or '')))
+
+
+def _placeholder_samples(paragraphs, limit=8):
+    out = []
+    for idx, para in enumerate(paragraphs, 1):
+        text = str(getattr(para, 'text', '') or '').strip()
+        if text and _is_unfilled_placeholder_text(text):
+            out.append({'paragraph': idx, 'text': text[:120]})
+            if len(out) >= limit:
+                break
+    return out
+
+
+def _extract_labeled_title(text):
+    t = str(text or '').strip()
+    m = re.match(r'^\s*(?:\u8bba\u6587\u9898\u76ee|\u9898\u76ee|\u6807\u9898)\s*[:\uff1a]\s*(.+?)\s*$', t)
+    if not m:
+        return ''
+    value = m.group(1).strip()
+    return '' if _is_unfilled_placeholder_text(value) else value
+
+
+def _compact_text(text):
+    return re.sub(r'[\s\u3000]+', '', str(text or '')).upper()
+
+
+def _is_source_toc_title(text):
+    compact = _compact_text(text)
+    return compact in {'\u76ee\u5f55', '\u76ee\u6b21', 'CONTENTS', 'TABLEOFCONTENTS'}
+
+
+def _is_source_toc_entry(text):
+    t = str(text or '').strip()
+    if not t:
+        return True
+    if len(t) > 160:
+        return False
+    if _is_source_toc_title(t):
+        return True
+    if re.search(r'(?:\.{2,}|…+|·{2,}|_{2,})\s*\d+\s*$', t):
+        return True
+    toc_prefix = r'(?:第[一二三四五六七八九十百千万\d]+章|[一二三四五六七八九十]+[、.．]|\d+(?:\.\d+)*|摘要|ABSTRACT|关键词|KEY\s*WORDS?|参考文献|致谢|附录|APPENDIX|ACKNOWLEDGEMENTS?)'
+    return bool(re.match(r'^' + toc_prefix + r'\s+.+\s+\d+\s*$', t, re.I))
+
+
+def _is_unpaged_source_toc_entry(text, para=None):
+    t = str(text or '').strip()
+    if not t or len(t) > 100:
+        return False
+    if _is_source_toc_entry(t):
+        return True
+    if re.search(r'[。！？!?；;]\s*$', t):
+        return False
+    if _is_unfilled_placeholder_text(t):
+        return False
+    prefix = (
+        r'(?:第[一二三四五六七八九十百千万\d]+章\s*\S+'
+        r'|[一二三四五六七八九十]+[、.．]\s*\S+'
+        r'|\d+(?:\.\d+)*\s+\S+'
+        r'|摘要|ABSTRACT|关键词|KEY\s*WORDS?'
+        r'|参考文献|REFERENCES?|致谢|ACKNOWLEDGEMENTS?'
+        r'|附录|APPENDIX(?:\s+\S+)?)'
+    )
+    if re.match(r'^' + prefix + r'\s*$', t, re.I):
+        return True
+    if para is not None and _looks_like_heading_style(para) and len(t) <= 80:
+        return True
+    return False
+
+
+def _simple_cn_number(value):
+    s = str(value or '').strip()
+    if not s:
+        return None
+    if s.isdigit():
+        return int(s)
+    digits = {'零': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9}
+    if s == '十':
+        return 10
+    if '十' in s:
+        left, right = s.split('十', 1)
+        tens = digits.get(left, 1 if left == '' else 0)
+        ones = digits.get(right, 0) if right else 0
+        return tens * 10 + ones
+    if len(s) == 1 and s in digits:
+        return digits[s]
+    return None
+
+
+def _toc_entry_key(text):
+    t = str(text or '').strip()
+    t = re.sub(r'(?:\.{2,}|…+|·{2,}|_{2,})\s*(?:[ivxlcdm]+|\d+)\s*$', '', t, flags=re.I)
+    t = re.sub(r'\s+(?:[ivxlcdm]+|\d+)\s*$', '', t, flags=re.I)
+    return _compact_text(t)
+
+
+def _toc_entry_order(text):
+    t = str(text or '').strip()
+    m = re.match(r'^第([一二三四五六七八九十百千万\d]+)章', t)
+    if m:
+        n = _simple_cn_number(m.group(1))
+        return ('chapter', n) if n is not None else None
+    m = re.match(r'^([一二三四五六七八九十]+)[、.．]', t)
+    if m:
+        n = _simple_cn_number(m.group(1))
+        return ('cn', n) if n is not None else None
+    m = re.match(r'^(\d+)(?:\.\d+)*\b', t)
+    if m:
+        return ('num', int(m.group(1)))
+    return None
+
+
+def _source_toc_skip_count_after_title(paragraphs, title_idx, max_scan=160):
+    """Return how many paragraphs after a source TOC title should be skipped."""
+    plist = list(paragraphs)
+    n = len(plist)
+    if title_idx < 0 or title_idx >= n:
+        return 0
+    first_visible = None
+    scan_end = min(n, title_idx + 1 + max_scan)
+    for idx in range(title_idx + 1, scan_end):
+        text = str(getattr(plist[idx], 'text', '') or '').strip()
+        if text:
+            first_visible = idx
+            break
+    if first_visible is None:
+        return 0
+    first_text = str(getattr(plist[first_visible], 'text', '') or '').strip()
+    if not _is_unpaged_source_toc_entry(first_text, plist[first_visible]):
+        return 0
+
+    first_boundary_idx = None
+    for idx in range(title_idx + 1, scan_end):
+        try:
+            if _paragraph_has_page_or_section_break(plist[idx]._element):
+                first_boundary_idx = idx
+                break
+        except Exception:
+            continue
+
+    visible_count = 0
+    saw_paged_entry = False
+    saw_boundary = False
+    boundary_idx = None
+    title_has_heading_style = _looks_like_heading_style(plist[title_idx])
+    non_toc_before_boundary = False
+    skip_until = title_idx
+    seen_keys = set()
+    last_order = None
+    for idx in range(title_idx + 1, scan_end):
+        para = plist[idx]
+        text = str(getattr(para, 'text', '') or '').strip()
+        try:
+            has_boundary = _paragraph_has_page_or_section_break(para._element)
+        except Exception:
+            has_boundary = False
+        if not text:
+            skip_until = idx
+            if has_boundary:
+                saw_boundary = True
+                boundary_idx = idx
+                break
+            continue
+        paged_entry = _is_source_toc_entry(text) and not _is_source_toc_title(text)
+        unpaged_entry = _is_unpaged_source_toc_entry(text, para)
+        if not (paged_entry or unpaged_entry):
+            if first_boundary_idx is not None and not title_has_heading_style:
+                non_toc_before_boundary = True
+                skip_until = idx
+                if has_boundary:
+                    saw_boundary = True
+                    boundary_idx = idx
+                    break
+                continue
+            break
+
+        key = _toc_entry_key(text)
+        order = _toc_entry_order(text)
+        if visible_count > 0:
+            if key and key in seen_keys:
+                if first_boundary_idx is not None and not title_has_heading_style:
+                    non_toc_before_boundary = True
+                    skip_until = idx
+                    if has_boundary:
+                        saw_boundary = True
+                        boundary_idx = idx
+                        break
+                    continue
+                break
+            if saw_paged_entry and not paged_entry:
+                if first_boundary_idx is not None and not title_has_heading_style:
+                    non_toc_before_boundary = True
+                    skip_until = idx
+                    if has_boundary:
+                        saw_boundary = True
+                        boundary_idx = idx
+                        break
+                    continue
+                break
+            if order and last_order and order[0] == last_order[0] and order[1] <= last_order[1]:
+                if first_boundary_idx is not None and not title_has_heading_style:
+                    non_toc_before_boundary = True
+                    skip_until = idx
+                    if has_boundary:
+                        saw_boundary = True
+                        boundary_idx = idx
+                        break
+                    continue
+                break
+
+        visible_count += 1
+        saw_paged_entry = saw_paged_entry or paged_entry
+        if key:
+            seen_keys.add(key)
+        if order:
+            last_order = order
+        skip_until = idx
+        if has_boundary:
+            saw_boundary = True
+            boundary_idx = idx
+            break
+
+    if saw_boundary:
+        if saw_paged_entry or visible_count >= 2 or (visible_count >= 1 and non_toc_before_boundary and not title_has_heading_style):
+            return max(skip_until, boundary_idx or skip_until) - title_idx
+        return 0
+    if visible_count < 2 and not saw_paged_entry:
+        return 0
+    return max(0, skip_until - title_idx)
+
+
+def _paragraph_has_page_or_section_break(p_elem):
+    W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    if p_elem.find(f'.//{{{W}}}sectPr') is not None:
+        return True
+    for br in p_elem.iter(f'{{{W}}}br'):
+        if br.get(f'{{{W}}}type') == 'page':
+            return True
+    return False
+
+
+def _paragraph_style_id(para):
+    try:
+        pPr = para._element.find('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pPr')
+        if pPr is not None:
+            st = pPr.find('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}pStyle')
+            if st is not None:
+                return st.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val') or ''
+    except Exception:
+        pass
+    return ''
+
+
+def _heading_level_from_style(para):
+    style_id = _paragraph_style_id(para)
+    try:
+        style_name = para.style.name if para.style else ''
+    except Exception:
+        style_name = ''
+    compact = _compact_text(style_id + style_name)
+    m = re.search(r'HEADING([1-6])', compact)
+    if m:
+        return int(m.group(1))
+    m = re.search(r'标题([1-6])', compact)
+    if m:
+        return int(m.group(1))
+    if re.search(r'HEADING|TITLE|CHAPTER', compact) or '标题' in compact or '章' in compact:
+        return 1
+    return 0
+
+
+def _looks_like_heading_style(para):
+    return bool(_heading_level_from_style(para))
+
+
 def _run_text_preserve_breaks(r_elem):
     """Return visible text carried by a run, preserving explicit breaks."""
     parts = []
@@ -274,7 +652,15 @@ def _run_text_preserve_breaks(r_elem):
 
 def _math_entry_from_ooxml(math_elem, math_type='inline'):
     raw = etree.tounicode(math_elem, with_tail=False)
-    return {'type': math_type, 'xml': raw, 'text': _math_text(math_elem)}
+    clean_xml, clean_text, had_label = _strip_trailing_formula_labels_from_xml(raw)
+    if not clean_text:
+        clean_text = _strip_trailing_formula_labels(_math_text(math_elem))
+    entry = {'type': math_type, 'xml': clean_xml, 'text': clean_text}
+    if clean_text:
+        entry['formula_semantics'] = classify_formula_text(clean_text).to_dict()
+    if had_label:
+        entry['had_number_label'] = True
+    return entry
 
 
 def _images_from_run_ooxml(run_elem, rels, registry, seen_rids, location='body'):
@@ -373,13 +759,27 @@ def paragraph_stream_items(para, registry):
     def append_math(math_elem, math_type='inline'):
         entry = _math_entry_from_ooxml(math_elem, math_type)
         flush_text()
+        semantic = classify_formula_text(entry.get('text') or '')
+        if is_formula_problem_text(entry.get('text') or ''):
+            items.append({
+                'role': 'formula_problem',
+                'problem': 'contaminated_formula_text',
+                'source': 'omml',
+                'text': entry.get('text') or '',
+                'math': [entry],
+                'formula_semantics': semantic.to_dict(),
+            })
+            return
+        if _omml_text_looks_like_body(entry.get('text') or ''):
+            items.append({'role': 'text', 'text': entry.get('text') or ''})
+            return
         if math_type == 'display':
             items.append({
                 'role': 'formula',
                 'source': 'omml',
                 'text': entry.get('text') or '',
                 'math': [entry],
-                'numbered': _formula_should_number(entry.get('text') or ''),
+                'numbered': bool(entry.get('had_number_label')) or _formula_should_number(entry.get('text') or ''),
             })
         else:
             items.append({
@@ -431,6 +831,17 @@ def _append_stream_run_group(section, runs, in_appendix=False):
     if not math_items:
         _append_text_or_code(section, text, in_appendix=in_appendix)
         return
+    semantic = classify_formula_text(text)
+    if is_formula_problem_text(text):
+        section['paragraphs'].append({
+            'role': 'formula_problem',
+            'problem': 'contaminated_formula_text',
+            'source': 'omml',
+            'text': text,
+            'math': math_items,
+            'formula_semantics': semantic.to_dict(),
+        })
+        return
     non_math_text = ''.join(str(r.get('text') or '') for r in runs if r.get('type') != 'math').strip()
     if non_math_text:
         section['paragraphs'].append({
@@ -445,7 +856,7 @@ def _append_stream_run_group(section, runs, in_appendix=False):
             'source': 'omml',
             'text': text,
             'math': math_items,
-            'numbered': _formula_should_number(text),
+            'numbered': any(m.get('had_number_label') for m in math_items) or _formula_should_number(text),
         })
 
 
@@ -548,6 +959,13 @@ def _normalize_role_heading(text):
     return re.sub(r'\s+', ' ', str(text or '').strip())
 
 
+def _ascii_alpha_ratio(text):
+    text = str(text or '')
+    if not text:
+        return 0.0
+    return sum(1 for c in text if c.isascii() and c.isalpha()) / max(len(text), 1)
+
+
 def _classify_section_role(heading, level=0):
     """Map a detected heading to a semantic role used by the renderer."""
     h = _normalize_role_heading(heading)
@@ -562,13 +980,26 @@ def _classify_section_role(heading, level=0):
         return 'en_keywords'
     if re.match(r'(?i)^references?$', h) or h.startswith('参考文献'):
         return 'references'
+    if re.match(r'(?i)^acknowledg(?:e)?ments?\b|^acknowledgment\b', h):
+        return 'acknowledgement'
     if re.search(r'致\s*谢', h):
         return 'acknowledgement'
+    if re.match(r'(?i)^append(?:ix|ices)\b', h):
+        return 'appendix'
     if re.search(r'附\s*录', h):
         return 'appendix'
     if level and level > 0:
         return 'heading'
     return 'body'
+
+
+def _is_backmatter_heading(text):
+    h = _normalize_role_heading(text)
+    return bool(
+        re.match(r'(?i)^acknowledg(?:e)?ments?\b|^acknowledgment\b', h)
+        or re.match(r'(?i)^append(?:ix|ices)\b', h)
+        or re.search(r'(致\s*谢|附\s*录)', h)
+    )
 
 
 def _split_heading_number(text):
@@ -736,24 +1167,7 @@ def _looks_like_formula_text(text):
     plain text, including definition lines without numbers and continuation
     lines that start with "=".
     """
-    t = str(text or '').strip()
-    if not t or len(t) > 180:
-        return False
-    if t.endswith(('。', '！', '？', '；', ';')):
-        return False
-    if re.search(r'^\[\d+\]', t) or re.search(r'\[\d+(?:[-,，、]\d+)*\]', t):
-        return False
-    if _latex_from_formula_text(t):
-        return True
-    has_equal = bool(re.search(r'[=＝≈≤≥<>]', t))
-    has_operator = bool(re.search(r'[+\-*/×÷%]', t))
-    has_digit = bool(re.search(r'\d', t))
-    starts_continuation = bool(re.match(r'^[=＝≈≤≥<>]', t)) and has_digit
-    if starts_continuation:
-        return True
-    if has_equal and has_operator:
-        return True
-    return False
+    return semantic_looks_like_formula_text(text)
 
 
 def _latex_escape_text(text):
@@ -770,22 +1184,555 @@ def _latex_from_formula_text(text):
 
 
 def _formula_should_number(text):
-    t = str(text or '').strip()
-    if not re.search(r'\d', t):
+    if _omml_text_looks_like_body(text):
         return False
-    has_equal = bool(re.search(r'[=＝≈≤≥<>]', t))
-    has_operator = bool(re.search(r'[+*/×÷%]|\s-\s', t))
-    return bool(has_equal and has_operator)
+    return semantic_formula_should_number(text)
+
+
+def _omml_text_looks_like_body(text):
+    t = str(text or '').strip()
+    if len(t) > 220:
+        return True
+    cjk = len(re.findall(r'[\u4e00-\u9fff]', t))
+    if len(t) > 35 and cjk > 18 and re.search(r'(表明|显示|说明|分析|结果|选择|问题|模型|成本|指标)', t):
+        return True
+    if len(t) > 90 and cjk > 20 and re.search(r'[。；;，,\.]', t):
+        return True
+    return False
 
 
 def _formula_item_from_text(text):
     clean = _clean_formula_text(text)
-    item = {'role': 'formula', 'source': 'text', 'text': clean, 'numbered': _formula_should_number(clean)}
+    semantic = classify_formula_text(clean)
+    item = {
+        'role': 'formula',
+        'source': 'text',
+        'text': clean,
+        'numbered': _formula_should_number(clean),
+        'formula_semantics': semantic.to_dict(),
+    }
     latex = _latex_from_formula_text(clean)
     if latex:
         item['source'] = 'latex'
         item['latex'] = latex
     return item
+
+
+def _formula_problem_item_from_text(text):
+    clean = _clean_formula_text(text)
+    semantic = classify_formula_text(clean)
+    return {
+        'role': 'formula_problem',
+        'problem': 'contaminated_formula_text',
+        'source': 'text',
+        'text': clean,
+        'formula_semantics': semantic.to_dict(),
+    }
+
+
+def _rich_text_item_from_inline_formula_spans(text):
+    spans = split_inline_math_spans(text)
+    if not spans:
+        return None
+    runs = []
+    math_entries = []
+    pos = 0
+    for span in spans:
+        start = int(span.get('start') or 0)
+        end = int(span.get('end') or start)
+        if start > pos:
+            runs.append({'type': 'text', 'text': text[pos:start]})
+        formula_text = str(span.get('text') or '').strip()
+        if not formula_text:
+            pos = max(pos, end)
+            continue
+        entry = {
+            'type': 'inline',
+            'text': formula_text,
+            'formula_semantics': span,
+        }
+        if span.get('latex'):
+            entry['latex'] = span.get('latex')
+        math_entries.append(entry)
+        runs.append({'type': 'math', 'text': formula_text, 'math': [entry]})
+        pos = max(pos, end)
+    if pos < len(text):
+        runs.append({'type': 'text', 'text': text[pos:]})
+    if not math_entries:
+        return None
+    return {
+        'role': 'rich_text',
+        'text': text,
+        'runs': runs,
+        'math': math_entries,
+    }
+
+
+def _item_text(item):
+    if isinstance(item, str):
+        return item
+    if isinstance(item, dict):
+        return item.get('text') or item.get('code') or ''
+    return ''
+
+
+def _item_role(item):
+    return item.get('role') if isinstance(item, dict) else 'text'
+
+
+def _is_formula_like_item(item):
+    return isinstance(item, dict) and (item.get('role') == 'formula' or item.get('latex') or item.get('xml') or item.get('math'))
+
+
+def _is_split_formula_fragment(item):
+    text = str(_item_text(item) or '').strip()
+    if not text or len(text) > 18:
+        return False
+    if re.search(r'[\u4e00-\u9fff]', text):
+        return False
+    return bool(re.fullmatch(r'[A-Za-z0-9_\s∆ΔλΛµμ%+\-*/·×÷=<>≤≥≈∈∑().,α-ωΑ-Ω]+', text))
+
+
+def _is_ratio_variable_fragment(text):
+    t = re.sub(r'\s+', '', str(text or ''))
+    return bool(re.fullmatch(r'[a-zα-ω][A-Za-z0-9_α-ωΑ-Ω]*', t))
+
+
+def _latex_identifier(token):
+    t = re.sub(r'\s+', '', str(token or ''))
+    if not t:
+        return ''
+    greek = {
+        '∆': r'\Delta',
+        'Δ': r'\Delta',
+        'λ': r'\lambda',
+        'Λ': r'\Lambda',
+        'μ': r'\mu',
+        'α': r'\alpha',
+        'β': r'\beta',
+        'γ': r'\gamma',
+    }
+    if t in greek:
+        return greek[t]
+    m = re.fullmatch(r'([∆ΔλΛμ])([A-Za-z0-9]+)', t)
+    if m:
+        base, suffix = m.groups()
+        command = greek.get(base, base)
+        if base in ('∆', 'Δ'):
+            return command + ' ' + _latex_identifier(suffix)
+        return command + r'_{\mathrm{' + suffix + '}}'
+    if re.fullmatch(r'[A-Za-z][A-Za-z0-9]*', t):
+        if len(t) == 1:
+            return t
+        return t[0] + r'_{\mathrm{' + t[1:] + '}}'
+    return t
+
+
+def _latex_math_expr(text, sum_lower=None, sum_upper=None):
+    s = str(text or '').strip()
+    s = s.replace('−', '-').replace('－', '-').replace('＝', '=')
+    s = s.replace('×', r'\times ').replace('·', r'\cdot ').replace('÷', r'\div ')
+    s = s.replace('%', r'\%')
+    if sum_lower and sum_upper:
+        s = s.replace('∑', r'\sum_{' + sum_lower + '}^{' + str(sum_upper) + '}')
+    else:
+        s = s.replace('∑', r'\sum')
+    s = re.sub(r'[∆ΔλΛμ][A-Za-z0-9]*', lambda m: _latex_identifier(m.group(0)), s)
+    s = re.sub(r'(?<![\\{])\b[A-Za-z][A-Za-z0-9]*\b', lambda m: _latex_identifier(m.group(0)), s)
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
+
+
+def _repaired_formula_item(text, latex, numbered=False, repair='split_formula_layout'):
+    semantic = classify_formula_text(text)
+    return {
+        'role': 'formula',
+        'source': 'repaired_' + repair,
+        'text': text,
+        'latex': latex,
+        'numbered': bool(numbered),
+        'formula_semantics': semantic.to_dict(),
+    }
+
+
+def _split_formula_problem_item(text, problem='split_formula_layout'):
+    clean = _clean_formula_text(text)
+    semantic = classify_formula_text(clean)
+    return {
+        'role': 'formula_problem',
+        'problem': problem,
+        'source': 'repair',
+        'text': clean,
+        'formula_semantics': semantic.to_dict(),
+    }
+
+
+def _repair_split_sum_bounds(items, start):
+    upper_text = str(_item_text(items[start]) or '').strip()
+    uppers = re.findall(r'\d+', upper_text)
+    if not uppers or start + 1 >= len(items):
+        return None
+    formula = items[start + 1]
+    formula_text = str(_item_text(formula) or '').strip()
+    if '∑' not in formula_text:
+        return None
+    clean_formula_text, stale_labels = _split_trailing_formula_labels(formula_text)
+    if not stale_labels:
+        clean_formula_text = _strip_trailing_formula_labels(formula_text)
+    j = start + 2
+    lowers = []
+    while j < len(items) and len(lowers) < max(1, len(uppers)):
+        txt = str(_item_text(items[j]) or '').strip()
+        if re.fullmatch(r'[A-Za-z]\s*=\s*\d+', txt):
+            lowers.append(re.sub(r'\s+', '', txt))
+            j += 1
+            continue
+        break
+    if not lowers:
+        return None
+    lower = lowers[0]
+    upper = uppers[0]
+    latex = _latex_math_expr(clean_formula_text, sum_lower=lower, sum_upper=upper)
+    repaired = _repaired_formula_item(clean_formula_text, latex, numbered=bool(stale_labels or (formula.get('numbered') if isinstance(formula, dict) else False)), repair='sum_bounds')
+    return [repaired], j
+
+
+def _repair_missing_sum_symbol_bounds(items, start):
+    upper_text = str(_item_text(items[start]) or '').strip()
+    m_upper = re.fullmatch(r'\d+', upper_text)
+    if not m_upper or start + 2 >= len(items):
+        return None
+    formula = items[start + 1]
+    formula_text = str(_item_text(formula) or '').strip()
+    lower_text = str(_item_text(items[start + 2]) or '').strip()
+    if '∑' in formula_text or not re.fullmatch(r'[A-Za-z]\s*=\s*\d+', lower_text):
+        return None
+    if not re.search(r'[A-Za-z][A-Za-z0-9]*\s*\(\s*[A-Za-z]\s*\)', formula_text):
+        return None
+    lower = re.sub(r'\s+', '', lower_text)
+    upper = m_upper.group(0)
+    text = f'∑_{{{lower}}}^{{{upper}}} {formula_text}'
+    latex = _latex_math_expr('∑' + formula_text, sum_lower=lower, sum_upper=upper)
+    repaired = _repaired_formula_item(text, latex, numbered=bool(formula.get('numbered') if isinstance(formula, dict) else False), repair='missing_sum_symbol')
+    return [repaired], start + 3
+
+
+def _infer_sum_lower_from_context(out, upper):
+    upper = str(upper or '').strip()
+    if not upper:
+        return None
+    for prev in reversed(out[-12:]):
+        text = str(_item_text(prev) or '')
+        m = re.search(r'∑_\{\s*([A-Za-z]\s*=\s*1)\s*\}\^\{\s*' + re.escape(upper) + r'\s*\}', text)
+        if m:
+            return re.sub(r'\s+', '', m.group(1))
+        if '∑' in text and upper in text:
+            lower = _infer_sum_lower(text)
+            if lower:
+                return lower
+    return None
+
+
+def _repair_labeled_inline_sum_missing_lower(item, out):
+    text = str(_item_text(item) or '').strip()
+    m = re.match(r'^(?P<label>[A-Za-z][A-Za-z0-9_,]*\s*=\s*)∑\s*(?P<upper>\d+)\s+(?P<expr>.+)$', text)
+    if not m:
+        return None
+    expr, tail = _split_formula_expression_tail(m.group('expr'))
+    if not expr:
+        return None
+    upper = m.group('upper')
+    lower = _infer_sum_lower(expr)
+    if not lower:
+        context_lower = _infer_sum_lower_from_context(out, upper)
+        if upper == '24' and context_lower == 't=1':
+            lower = context_lower
+    if not lower:
+        return None
+    label = re.sub(r'\s+', '', m.group('label') or '')
+    display_text = f'{label}∑_{{{lower}}}^{{{upper}}} {expr}'
+    latex = _latex_math_expr(label + '∑' + expr, sum_lower=lower, sum_upper=upper)
+    repaired = [_repaired_formula_item(display_text, latex, numbered=bool(item.get('numbered') if isinstance(item, dict) else False), repair='inline_sum_missing_lower')]
+    _append_repair_tail(repaired, tail)
+    return repaired, None
+
+
+def _repair_fraction_sum_layout(items, start):
+    label = str(_item_text(items[start]) or '').strip()
+    if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*\s*=', label) or start + 5 >= len(items):
+        return None
+    numerator = str(_item_text(items[start + 1]) or '').strip()
+    denominator = str(_item_text(items[start + 2]) or '').strip()
+    upper = str(_item_text(items[start + 3]) or '').strip()
+    lower = str(_item_text(items[start + 4]) or '').strip()
+    expr = str(_item_text(items[start + 5]) or '').strip()
+    if not numerator or not denominator or not re.fullmatch(r'\d+', upper) or not re.fullmatch(r'[A-Za-z]\s*=\s*\d+', lower):
+        return None
+    if not expr or not re.search(r'[A-Za-z∆ΔλΛμ]', expr):
+        return None
+    clean_expr = expr.strip()
+    if clean_expr.endswith(']') and '[' not in clean_expr:
+        clean_expr = '[' + clean_expr
+    lower = re.sub(r'\s+', '', lower)
+    lhs = label.replace(' ', '')
+    frac_latex = r'\frac{' + _latex_math_expr(numerator) + '}{' + _latex_math_expr(denominator) + '}'
+    sum_latex = _latex_math_expr('∑' + clean_expr, sum_lower=lower, sum_upper=upper)
+    latex = _latex_identifier(lhs.rstrip('=')) + '=' + frac_latex + sum_latex
+    display_text = f'{lhs}{numerator}/{denominator} ∑_{{{lower}}}^{{{upper}}} {clean_expr}'
+    numbered = False
+    next_i = start + 6
+    if next_i < len(items) and is_formula_label(str(_item_text(items[next_i]) or '').strip()):
+        numbered = True
+        next_i += 1
+    return [_repaired_formula_item(display_text, latex, numbered=numbered, repair='fraction_sum_layout')], next_i
+
+
+def _repair_max_sum_layout(items, start):
+    op = str(_item_text(items[start]) or '').strip().lower()
+    if op not in {'max', 'min'} or start + 4 >= len(items):
+        return None
+    opt_var = str(_item_text(items[start + 1]) or '').strip()
+    upper = str(_item_text(items[start + 2]) or '').strip()
+    formula = items[start + 3]
+    formula_text = str(_item_text(formula) or '').strip()
+    lower = str(_item_text(items[start + 4]) or '').strip()
+    if not _is_split_formula_fragment(opt_var) or not re.fullmatch(r'\d+', upper) or not re.fullmatch(r'[A-Za-z]\s*=\s*\d+', lower):
+        return None
+    if '∑' in formula_text:
+        return None
+    clean_formula, labels = _split_trailing_formula_labels(formula_text)
+    clean_formula = clean_formula or formula_text
+    lower = re.sub(r'\s+', '', lower)
+    lower_var = lower.split('=', 1)[0]
+    summand_match = re.search(r'([A-Za-zα-ωΑ-Ω][A-Za-z0-9_α-ωΑ-Ω]*\s*\(\s*' + re.escape(lower_var) + r'\s*\))', clean_formula)
+    if not summand_match:
+        return None
+    summand = summand_match.group(1)
+    display_body = clean_formula[:summand_match.start()] + f'∑_{{{lower}}}^{{{upper}}} {summand}' + clean_formula[summand_match.end():]
+    latex_body_src = clean_formula[:summand_match.start()] + '∑' + summand + clean_formula[summand_match.end():]
+    latex_body = _latex_math_expr(latex_body_src, sum_lower=lower, sum_upper=upper)
+    latex = ('\\max' if op == 'max' else '\\min') + '_{' + _latex_identifier(opt_var) + '} ' + latex_body
+    return [_repaired_formula_item(f'{op} {opt_var} {display_body}', latex, numbered=bool(labels or (formula.get('numbered') if isinstance(formula, dict) else False)), repair='max_sum_layout')], start + 5
+
+
+def _split_percentage_suffix(rhs):
+    text = str(rhs or '').strip()
+    m = re.match(r'^(.*?)(?:[×x*]\s*100\s*%|\\times\s*100\s*%)$', text)
+    if m:
+        return m.group(1).strip(), True
+    return text, False
+
+
+def _append_repair_tail(out, tail):
+    text = str(tail or '').strip()
+    if not text:
+        return
+    rich = _rich_text_item_from_inline_formula_spans(text)
+    out.append(rich or text)
+
+
+def _split_formula_expression_tail(text):
+    s = str(text or '').strip()
+    if not s:
+        return '', ''
+    m = re.search(r'[\u4e00-\u9fff]', s)
+    if not m:
+        return s, ''
+    idx = m.start()
+    if idx > 0 and s[idx - 1] in '（(':
+        idx -= 1
+    return s[:idx].strip().rstrip('，,。;；'), s[idx:].strip()
+
+
+def _infer_sum_lower(expr):
+    text = str(expr or '')
+    candidates = []
+    candidates.extend(re.findall(r'\b[A-Za-z][A-Za-z0-9]*\s*\(\s*([A-Za-z])\s*\)', text))
+    candidates.extend(re.findall(r'\b[A-Za-z][A-Za-z0-9]*\s*_\s*([A-Za-z])\b', text))
+    candidates = [c for c in candidates if re.fullmatch(r'[A-Za-z]', c or '')]
+    if not candidates:
+        return None
+    unique = set(candidates)
+    if len(unique) != 1:
+        return None
+    return candidates[0] + '=1'
+
+
+def _repair_split_sum_prefix(items, start):
+    prefix = str(_item_text(items[start]) or '').strip()
+    m = re.fullmatch(r'∑\s*(\d+)', prefix)
+    if not m or start + 1 >= len(items):
+        return None
+    formula_text = str(_item_text(items[start + 1]) or '').strip()
+    if not formula_text or re.search(r'[\u4e00-\u9fff]', prefix):
+        return None
+    expr, tail = _split_formula_expression_tail(formula_text)
+    if not expr:
+        return None
+    upper = m.group(1)
+    lower = _infer_sum_lower(expr)
+    if not lower:
+        repaired = [_split_formula_problem_item(prefix + ' ' + expr, problem='split_sum_index_unknown')]
+        _append_repair_tail(repaired, tail)
+        return repaired, start + 2
+    text = f'∑_{{{lower}}}^{{{upper}}} {expr}'
+    latex = _latex_math_expr('∑' + expr, sum_lower=lower, sum_upper=upper)
+    repaired = [_repaired_formula_item(text, latex, repair='sum_prefix')]
+    _append_repair_tail(repaired, tail)
+    return repaired, start + 2
+
+
+def _repair_labeled_sum_continuation(items, start, out=None):
+    current_text = str(_item_text(items[start]) or '').strip()
+    m = re.match(r'^(?P<prefix>.*?)(?P<label>[A-Za-z][A-Za-z0-9_,]*\s*=\s*)∑\s*(?P<upper>\d+)\s*$', current_text)
+    if not m or start + 1 >= len(items):
+        return None
+    next_text = str(_item_text(items[start + 1]) or '').strip()
+    expr, tail = _split_formula_expression_tail(next_text)
+    if not expr:
+        return None
+    prefix = (m.group('prefix') or '').strip()
+    label = re.sub(r'\s+', '', m.group('label') or '')
+    upper = m.group('upper')
+    lower = _infer_sum_lower(expr)
+    if not lower:
+        context_lower = _infer_sum_lower_from_context(out or [], upper)
+        if upper == '24' and context_lower == 't=1':
+            lower = context_lower
+    repaired = []
+    if prefix:
+        repaired.append(prefix)
+    if not lower:
+        repaired.append(_split_formula_problem_item(label + '∑' + upper + ' ' + expr, problem='split_sum_index_unknown'))
+        _append_repair_tail(repaired, tail)
+        return repaired, start + 2
+    latex = _latex_math_expr(label + '∑' + expr, sum_lower=lower, sum_upper=upper)
+    text = f'{label}∑_{{{lower}}}^{{{upper}}} {expr}'
+    repaired.append(_repaired_formula_item(text, latex, repair='labeled_sum_continuation'))
+    _append_repair_tail(repaired, tail)
+    return repaired, start + 2
+
+
+def _repair_split_ratio_cluster(items, start):
+    first_var = str(_item_text(items[start]) or '').strip()
+    if not _is_ratio_variable_fragment(first_var) or start + 1 >= len(items):
+        return None
+    first_formula = items[start + 1]
+    if not _is_formula_like_item(first_formula):
+        return None
+    first_rhs = str(_item_text(first_formula) or '').strip()
+    if not first_rhs.startswith('=') or '100' not in first_rhs:
+        return None
+
+    formulas = [first_formula]
+    variables = [first_var]
+    denominators = []
+    current_formula_idx = start + 1
+    j = current_formula_idx + 1
+    while True:
+        fragments = []
+        while j < len(items) and _is_split_formula_fragment(items[j]) and not _is_formula_like_item(items[j]):
+            fragments.append(str(_item_text(items[j]) or '').strip())
+            j += 1
+        if j < len(items) and _is_formula_like_item(items[j]) and str(_item_text(items[j]) or '').strip().startswith('=') and '100' in str(_item_text(items[j]) or ''):
+            next_var_pos = None
+            for pos, frag in enumerate(fragments):
+                if _is_ratio_variable_fragment(frag):
+                    next_var_pos = pos
+                    break
+            if next_var_pos is None:
+                return None
+            denom_parts = fragments[:next_var_pos] + fragments[next_var_pos + 1:]
+            if not denom_parts:
+                return None
+            denominators.append(''.join(denom_parts))
+            variables.append(fragments[next_var_pos])
+            formulas.append(items[j])
+            current_formula_idx = j
+            j += 1
+            continue
+        if fragments:
+            denominators.append(''.join(fragments))
+        break
+
+    if len(formulas) < 2 or len(denominators) != len(formulas):
+        return None
+
+    repaired = []
+    for var, formula, denom in zip(variables, formulas, denominators):
+        rhs = str(_item_text(formula) or '').strip().lstrip('=').strip()
+        rhs = _strip_trailing_formula_labels(rhs)
+        numerator, has_percent = _split_percentage_suffix(rhs)
+        lhs_latex = _latex_identifier(var)
+        denom_latex = _latex_identifier(denom)
+        numerator_latex = _latex_math_expr(numerator)
+        latex = lhs_latex + r'=\frac{' + numerator_latex + '}{' + denom_latex + '}'
+        if has_percent:
+            latex += r'\times100\%'
+        text = f'{var}=({numerator})/({denom})' + ('×100%' if has_percent else '')
+        repaired.append(_repaired_formula_item(text, latex, numbered=bool(formula.get('numbered') if isinstance(formula, dict) else False), repair='ratio_cluster'))
+    return repaired, j
+
+
+def repair_split_formula_layouts(paragraphs):
+    """Repair formula layouts that were already fragmented in a source DOCX."""
+    out = []
+    i = 0
+    while i < len(paragraphs):
+        if _is_split_formula_fragment(paragraphs[i]):
+            max_sum_repair = _repair_max_sum_layout(paragraphs, i)
+            if max_sum_repair:
+                repaired, next_i = max_sum_repair
+                out.extend(repaired)
+                i = next_i
+                continue
+            fraction_sum_repair = _repair_fraction_sum_layout(paragraphs, i)
+            if fraction_sum_repair:
+                repaired, next_i = fraction_sum_repair
+                out.extend(repaired)
+                i = next_i
+                continue
+            sum_repair = _repair_split_sum_bounds(paragraphs, i)
+            if sum_repair:
+                repaired, next_i = sum_repair
+                out.extend(repaired)
+                i = next_i
+                continue
+            missing_sum_repair = _repair_missing_sum_symbol_bounds(paragraphs, i)
+            if missing_sum_repair:
+                repaired, next_i = missing_sum_repair
+                out.extend(repaired)
+                i = next_i
+                continue
+            sum_prefix_repair = _repair_split_sum_prefix(paragraphs, i)
+            if sum_prefix_repair:
+                repaired, next_i = sum_prefix_repair
+                out.extend(repaired)
+                i = next_i
+                continue
+            ratio_repair = _repair_split_ratio_cluster(paragraphs, i)
+            if ratio_repair:
+                if out and re.fullmatch(r'[A-Za-z]\s*=\s*\d+', str(_item_text(out[-1]) or '').strip()):
+                    out.pop()
+                repaired, next_i = ratio_repair
+                out.extend(repaired)
+                i = next_i
+                continue
+        labeled_sum_repair = _repair_labeled_sum_continuation(paragraphs, i, out)
+        if labeled_sum_repair:
+            repaired, next_i = labeled_sum_repair
+            out.extend(repaired)
+            i = next_i
+            continue
+        inline_sum_repair = _repair_labeled_inline_sum_missing_lower(paragraphs[i], out)
+        if inline_sum_repair:
+            repaired, _ = inline_sum_repair
+            out.extend(repaired)
+            i += 1
+            continue
+        out.append(paragraphs[i])
+        i += 1
+    return out
 
 def _append_text_or_code(section, text, in_appendix=False):
     """Append semantic blocks while preserving captions, code and inline citations."""
@@ -794,16 +1741,34 @@ def _append_text_or_code(section, text, in_appendix=False):
     text = _clean_text_artifacts(text)
     if not text:
         return
+    semantic = classify_formula_text(text)
     if _is_figure_caption(text):
         section['paragraphs'].append({'role': 'figure_caption', 'text': _normalize_caption_spacing(text)})
     elif _is_table_caption(text):
         section['paragraphs'].append({'role': 'table_caption', 'text': _normalize_caption_spacing(text)})
-    elif _looks_like_formula_text(text):
+    elif re.match(r'^\s*\$\$.+\$\$\s*$', text, re.S):
         section['paragraphs'].append(_formula_item_from_text(text))
-    elif in_appendix and (_looks_like_code_line(text) or '\n' in text):
-        section['paragraphs'].append({'role': 'code', 'code': _clean_code_text(text)})
     else:
-        section['paragraphs'].append(text)
+        rich_item = _rich_text_item_from_inline_formula_spans(text)
+        rich_has_text = bool(rich_item and any(
+            r.get('type') == 'text' and str(r.get('text') or '').strip(' \t\r\n，,。.;；:：()（）')
+            for r in rich_item.get('runs') or []
+        ))
+        if rich_item and rich_has_text:
+            section['paragraphs'].append(rich_item)
+            return
+        if is_formula_problem_text(text):
+            section['paragraphs'].append(_formula_problem_item_from_text(text))
+        elif _looks_like_formula_text(text):
+            section['paragraphs'].append(_formula_item_from_text(text))
+        elif in_appendix and (_looks_like_code_line(text) or '\n' in text):
+            section['paragraphs'].append({'role': 'code', 'code': _clean_code_text(text)})
+        elif rich_item:
+            section['paragraphs'].append(rich_item)
+        elif _omml_text_looks_like_body(text):
+            section['paragraphs'].append(text)
+        else:
+            section['paragraphs'].append(text)
 
 def extract(docx_path, output_dir='Inputs'):
     """Extract content from a content docx into structured JSON + copy images."""
@@ -829,14 +1794,23 @@ def extract(docx_path, output_dir='Inputs'):
         'sections': [],
         'references': [],
     }
+    content['_meta']['source_placeholders'] = _placeholder_samples(doc.paragraphs)
 
     # ── Extract title info ──
     # Find the largest-text paragraph in the first 20 paragraphs
     text_start = 0
     best_title = ('', 0, 0)  # (text, size, index)
-    for i, p in enumerate(doc.paragraphs[:20]):
+    for i, p in enumerate(doc.paragraphs[:30]):
         txt = p.text.strip()
         if not txt or len(txt) < 10:
+            continue
+        labeled_title = _extract_labeled_title(txt)
+        if labeled_title:
+            content['title_info']['title_cn'] = labeled_title
+            content.setdefault('cover_info', {})['paper_title'] = labeled_title
+            text_start = max(text_start, i + 1)
+            continue
+        if _is_unfilled_placeholder_text(txt):
             continue
         if txt.startswith('（') and txt.endswith('）'):
             continue
@@ -853,6 +1827,18 @@ def extract(docx_path, output_dir='Inputs'):
     if best_title[0]:
         content['title_info']['title_cn'] = best_title[0]
         text_start = best_title[2] + 1
+        for j, p in enumerate(doc.paragraphs[text_start:min(text_start + 6, len(doc.paragraphs))], start=text_start):
+            txt = _clean_text_artifacts(p.text)
+            if not txt:
+                continue
+            if re.match(r'(?i)^(abstract|key\s*words?)\b', txt) or txt.startswith(('摘要', '关键词')):
+                break
+            if _classify_section_role(txt, 1) in {'references', 'acknowledgement', 'appendix'}:
+                continue
+            if _ascii_alpha_ratio(txt) > 0.55 and not re.match(r'^\d+(?:\.\d+)*\s+', txt):
+                content['title_info']['title_en'] = txt
+                text_start = j + 1
+                break
 
     # ── Extract cover info from content docx tables ──
     cover_info = {}
@@ -884,11 +1870,14 @@ def extract(docx_path, output_dir='Inputs'):
     current_section = {'heading': '正文', 'level': 1, 'role': 'body', 'paragraphs': [], 'images': []}
     sections = [current_section]
     ref_section = None
+    collected_references = []
 
     # Skip body elements before text_start
     _body_children = list(doc.element.body)
     _p_idx = 0  # paragraph index in body children
     _started = False
+    _source_toc_skip_remaining = 0
+    _source_toc_skipped = 0
     for _child in _body_children:
         _tag = _child.tag.split('}')[-1]
 
@@ -903,15 +1892,30 @@ def extract(docx_path, output_dir='Inputs'):
 
             level = detect_heading_level(p)
 
+            if _source_toc_skip_remaining > 0:
+                _source_toc_skip_remaining -= 1
+                _source_toc_skipped += 1
+                continue
+
+            if _is_source_toc_title(text):
+                skip_after_title = _source_toc_skip_count_after_title(doc.paragraphs, _p_idx - 1)
+                if skip_after_title:
+                    _source_toc_skip_remaining = skip_after_title
+                    _source_toc_skipped += 1
+                    continue
+
             if re.match(r'(?i)^references?\b', text) or text.startswith('参考文献'):
                 ref_section = {'heading': text, 'entries': []}
                 continue
 
             # Back matter after references (致谢/附录) must not be swallowed
             # by the reference collector. Treat it as normal sections again.
-            if ref_section is not None and level > 0 and re.search(r'(致\s*谢|附\s*录)', text):
-                _h = _normalize_heading_spacing(text.split('（')[0].strip())
-                current_section = {'heading': _h, 'level': level, 'role': _classify_section_role(_h, level), 'paragraphs': [], 'images': []}
+            if ref_section is not None and _is_backmatter_heading(text):
+                if ref_section.get('entries'):
+                    collected_references.extend(ref_section['entries'])
+                _h = _normalize_heading_spacing(re.split(r'[:：]', text, maxsplit=1)[0].strip())
+                _level = level or 1
+                current_section = {'heading': _h, 'level': _level, 'role': _classify_section_role(_h, _level), 'paragraphs': [], 'images': []}
                 sections.append(current_section)
                 ref_section = None
                 continue
@@ -991,7 +1995,10 @@ def extract(docx_path, output_dir='Inputs'):
                     current_section['paragraphs'].append(_img)
 
     if ref_section and ref_section['entries']:
-        content['references'] = ref_section['entries']
+        collected_references.extend(ref_section['entries'])
+        ref_section = None
+    if collected_references:
+        content['references'] = collected_references
 
     # Filter empty placeholder sections, but KEEP structural headings.
     # A level-1 chapter can legitimately have no direct paragraphs because it is
@@ -1006,8 +2013,8 @@ def extract(docx_path, output_dir='Inputs'):
             continue
         if s['paragraphs'] or s['images'] or (s.get('heading') and s.get('heading') != '正文'):
             content['sections'].append(s)
-    if ref_section:
-        content['references'] = ref_section['entries']
+    if collected_references:
+        content['references'] = collected_references
 
     # Mark the first real body chapter so renderers can start it on a new page.
     _front_roles = {'cn_abstract', 'cn_keywords', 'en_abstract', 'en_keywords'}
@@ -1018,6 +2025,7 @@ def extract(docx_path, output_dir='Inputs'):
 
     # Pair images with following figure captions after all sections are built.
     for _s in content['sections']:
+        _s['paragraphs'] = repair_split_formula_layouts(_s.get('paragraphs') or [])
         _s['paragraphs'] = pair_figure_blocks(_s.get('paragraphs') or [])
 
     # Count saved images without running a second extraction pass.
@@ -1030,6 +2038,8 @@ def extract(docx_path, output_dir='Inputs'):
     content['_meta']['images_dir'] = os.path.abspath(fig_dir)
     content['_meta']['image_extract_failures'] = image_registry.failures
     content['_meta']['non_body_images'] = _non_body_image_entries(doc)
+    if _source_toc_skipped:
+        content['_meta']['source_toc_skipped_paragraphs'] = _source_toc_skipped
 
     return content
 

@@ -167,6 +167,7 @@ def _profile_subset(profile: Dict[str, Any]) -> Dict[str, Any]:
         "font", "size", "bold", "italic", "align",
         "line_spacing_val", "line_spacing_rule", "line_spacing_fixed_pt",
         "space_before_pt", "space_after_pt", "first_indent_cm",
+        "left_indent_cm", "hanging_indent_cm",
     ]
     return {k: profile.get(k) for k in keys if k in profile and profile.get(k) is not None}
 
@@ -295,33 +296,39 @@ def _issue(code: str, severity: str, message: str, detail: str = "") -> Dict[str
 
 def _style_issues(role: str, text: str, p: ET.Element, profile: Dict[str, Any]) -> List[str]:
     issues: List[str] = []
+    snippet = re.sub(r"\s+", " ", str(text or "")).strip()
+    label = role if not snippet else f"{role} `{snippet[:50]}`"
     run = _first_run_props(p)
     para = _para_props(p)
     if profile.get("size") is not None and run.get("size") is not None:
         if abs(float(run["size"]) - float(profile["size"])) > 0.05:
-            issues.append(f"{role}: size {run['size']} != {profile['size']}")
+            issues.append(f"{label}: size {run['size']} != {profile['size']}")
     for key in ("bold", "italic"):
         if key in profile and bool(run.get(key)) != bool(profile.get(key)):
-            issues.append(f"{role}: {key} {run.get(key)} != {bool(profile.get(key))}")
+            issues.append(f"{label}: {key} {run.get(key)} != {bool(profile.get(key))}")
     expected = _expected_align(profile.get("align"))
     if expected and para.get("align") != expected:
-        issues.append(f"{role}: align {para.get('align')} != {expected}")
+        issues.append(f"{label}: align {para.get('align')} != {expected}")
     font = profile.get("font")
     if font:
         if _is_cjk_font(str(font)):
             if _is_cjk_text(text) and run.get("east_asia_font") != font:
-                issues.append(f"{role}: eastAsia font {run.get('east_asia_font')} != {font}")
+                issues.append(f"{label}: eastAsia font {run.get('east_asia_font')} != {font}")
         elif run.get("ascii_font") != font:
-            issues.append(f"{role}: ascii font {run.get('ascii_font')} != {font}")
+            issues.append(f"{label}: ascii font {run.get('ascii_font')} != {font}")
     expected_line = _expected_line_twips(profile)
     if expected_line is not None and para.get("line") is not None and abs(int(para["line"]) - expected_line) > 1:
-        issues.append(f"{role}: line {para.get('line')} != {expected_line}")
+        issues.append(f"{label}: line {para.get('line')} != {expected_line}")
     if "space_before_pt" in profile and abs(int(para["space_before"]) - _pt_to_twips(profile.get("space_before_pt"))) > 1:
-        issues.append(f"{role}: space_before {para.get('space_before')} != {_pt_to_twips(profile.get('space_before_pt'))}")
+        issues.append(f"{label}: space_before {para.get('space_before')} != {_pt_to_twips(profile.get('space_before_pt'))}")
     if "space_after_pt" in profile and abs(int(para["space_after"]) - _pt_to_twips(profile.get("space_after_pt"))) > 1:
-        issues.append(f"{role}: space_after {para.get('space_after')} != {_pt_to_twips(profile.get('space_after_pt'))}")
+        issues.append(f"{label}: space_after {para.get('space_after')} != {_pt_to_twips(profile.get('space_after_pt'))}")
     if "first_indent_cm" in profile and abs(int(para["first_line"]) - _cm_indent_to_twips(profile.get("first_indent_cm"))) > 3:
-        issues.append(f"{role}: first_line {para.get('first_line')} != {_cm_indent_to_twips(profile.get('first_indent_cm'))}")
+        issues.append(f"{label}: first_line {para.get('first_line')} != {_cm_indent_to_twips(profile.get('first_indent_cm'))}")
+    if "left_indent_cm" in profile and profile.get("left_indent_cm") is not None and abs(int(para["left"]) - _cm_indent_to_twips(profile.get("left_indent_cm"))) > 3:
+        issues.append(f"{label}: left {para.get('left')} != {_cm_indent_to_twips(profile.get('left_indent_cm'))}")
+    if "hanging_indent_cm" in profile and profile.get("hanging_indent_cm") is not None and abs(int(para["hanging"]) - _cm_indent_to_twips(profile.get("hanging_indent_cm"))) > 3:
+        issues.append(f"{label}: hanging {para.get('hanging')} != {_cm_indent_to_twips(profile.get('hanging_indent_cm'))}")
     return issues
 
 
