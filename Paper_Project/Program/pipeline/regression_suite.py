@@ -25,6 +25,7 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, List
 
 from docx import Document
@@ -37,7 +38,26 @@ if str(PIPELINE_DIR) not in sys.path:
     sys.path.insert(0, str(PIPELINE_DIR))
 
 from content_parser import extract as extract_docx_content
-from content_parser import _strip_trailing_formula_labels_from_xml
+from content_parser_modules.caption_flow import (
+    is_figure_caption,
+    normalize_caption_spacing,
+    pair_figure_blocks,
+)
+from content_parser_modules.body_dispatcher import append_text_or_code, parse_body_sections
+from content_parser_modules.formula_extractor import _strip_trailing_formula_labels_from_xml
+from content_parser_modules.image_extractor import ImageRegistry
+from content_parser_modules.paragraph_stream import append_stream_run_group
+from content_parser_modules.reference_collector import ReferenceCollector, is_reference_heading
+from content_parser_modules.section_builder import (
+    filter_content_sections,
+    make_body_section,
+    mark_first_body_page_break,
+    postprocess_section_paragraphs,
+)
+from content_parser_modules.text_cleaner import (
+    clean_code_text,
+    clean_text_artifacts,
+)
 from formula_semantics import (
     CATEGORY_CONTAMINATED,
     CATEGORY_DISPLAY_MATH,
@@ -50,10 +70,40 @@ from formula_semantics import (
 from format_extractor import extract as extract_docx_format
 from latex_omath import latex_to_omath
 from md_parser import extract_content as extract_md_content
+from pipeline_runner.artifacts import build_content_markdown, write_content_artifacts, write_format_artifacts
+from pipeline_runner.build_phase import generate_and_build_docx_phase
+from pipeline_runner.cli import build_arg_parser, dispatch_cli
+from pipeline_runner.contracts import (
+    has_contract_errors,
+    validate_build_manifest,
+    validate_content_data,
+    validate_format_data,
+    validate_qa_report,
+)
+from pipeline_runner.context import (
+    create_unique_output_dir,
+    normalize_qa_level,
+    resolve_inputs,
+    write_workflow_mode,
+)
+from pipeline_runner.dependencies import load_optional_dependencies
+from pipeline_runner.execution import ScriptExecutionResult, run_generated_script
+from pipeline_runner.io import normalize_mode, scan_inputs
+from pipeline_runner.qa import QADependencies, run_qa_phases
+from pipeline_runner.summary import build_completion_summary
+from pipeline_runner.template_phase import write_template_profile_phase, write_template_requirements_phase
+from pipeline_runner.verification import VerificationError, _merge_content_results, double_verify
 from qa_conformance import check_conformance
 from qa_checker import check_output, write_reports
 from script_generator import generate
-from script_generator import _front_matter_sections
+from script_generator import (
+    RUNTIME_TEMPLATE,
+    _extract_page_and_header,
+    _front_matter_sections,
+    _infer_style_profiles,
+    _infer_template_rules,
+    _normalize_numbered_section_order,
+)
 from template_profiler import profile_format
 from privacy import sanitize_value
 
@@ -154,6 +204,519 @@ def base_content(paragraphs: List[Any], meta_tables: int = 0) -> Dict[str, Any]:
         ],
         "references": ["[1] Synthetic reference."],
     }
+
+
+@case
+def pipeline_contracts_accept_current_handoffs() -> None:
+    manifest = {
+        "schema_version": 1,
+        "counts": {
+            "content_images_rendered": 0,
+            "content_tables_rendered": 1,
+            "content_formulas_rendered": 2,
+        },
+    }
+    qa_report = {
+        "schema_version": 1,
+        "mode": "developer",
+        "passed": True,
+        "counts": {},
+        "issues": [],
+        "next_action": "ok",
+    }
+    all_issues = (
+        validate_format_data(base_format())
+        + validate_content_data(base_content(["Body text"]))
+        + validate_build_manifest(manifest)
+        + validate_qa_report(qa_report)
+    )
+    assert_true(not has_contract_errors(all_issues), "valid current handoff structures should satisfy contracts")
+
+
+@case
+def pipeline_contracts_report_structural_errors() -> None:
+    issues = (
+        validate_format_data({"paragraphs": {}})
+        + validate_content_data({"sections": {}})
+        + validate_build_manifest({"counts": {"content_images_rendered": -1}})
+        + validate_qa_report({"passed": "yes", "counts": [], "issues": [{"code": ""}]})
+    )
+    codes = {issue.code for issue in issues}
+    assert_true("FORMAT_SECTIONS_MISSING" in codes, "missing format sections was not reported")
+    assert_true("FORMAT_PARAGRAPHS_NOT_LIST" in codes, "invalid format paragraphs was not reported")
+    assert_true("CONTENT_SECTIONS_NOT_LIST" in codes, "invalid content sections was not reported")
+    assert_true("MANIFEST_COUNT_INVALID" in codes, "invalid manifest count was not reported")
+    assert_true("QA_REPORT_PASSED_NOT_BOOL" in codes, "invalid QA passed flag was not reported")
+    assert_true("QA_REPORT_ISSUE_CODE_MISSING" in codes, "invalid QA issue code was not reported")
+    assert_true(has_contract_errors(issues), "structural contract errors should be marked as errors")
+
+
+@case
+def pipeline_io_helpers_scan_inputs_and_normalize_modes() -> None:
+    work = new_workdir("pipeline_io")
+    (work / "paper.docx").write_text("x", encoding="utf-8")
+    (work / "notes.md").write_text("x", encoding="utf-8")
+    (work / "~$paper.docx").write_text("x", encoding="utf-8")
+    (work / "ignore.txt").write_text("x", encoding="utf-8")
+    assert_true(scan_inputs(str(work)) == ["notes.md", "paper.docx"], "scan_inputs should skip temp and unsupported files")
+    assert_true(scan_inputs(str(work), exts=(".docx",)) == ["paper.docx"], "scan_inputs should respect extension filters")
+    assert_true(normalize_mode("developer") == "developer", "developer mode should be preserved")
+    assert_true(normalize_mode("bad-mode") == "user", "unknown mode should fall back to user")
+
+
+@case
+def pipeline_cli_dispatches_md_parameter_and_single_file_modes() -> None:
+    parser = build_arg_parser()
+    calls: List[Dict[str, Any]] = []
+
+    def fake_run(template_file, content_file, **kwargs):
+        calls.append({"template": template_file, "content": content_file, **kwargs})
+        return "ok"
+
+    def expect_exit_zero(args, template_dir="", inputs_dir=""):
+        try:
+            dispatch_cli(args, run_pipeline=fake_run, template_dir=template_dir, inputs_dir=inputs_dir)
+        except SystemExit as exc:
+            assert_true(exc.code == 0, f"dispatch returned nonzero exit: {exc.code}")
+            return
+        fail("dispatch should exit through exit_from_result")
+
+    expect_exit_zero(parser.parse_args(["--md", "paper.md", "--mode", "developer", "--qa-level", "basic", "--no-qa"]))
+    assert_true(calls[-1]["template"] is None and calls[-1]["content"] is None, "MD mode should not require template/content")
+    assert_true(calls[-1]["md_file"] == "paper.md", "MD mode did not pass md_file")
+    assert_true(calls[-1]["mode"] == "developer" and calls[-1]["run_qa"] is False, "MD mode options were not preserved")
+
+    expect_exit_zero(parser.parse_args(["--template", "t.docx", "--content", "c.docx"]))
+    assert_true(calls[-1]["template"] == "t.docx" and calls[-1]["content"] == "c.docx", "parameter mode files changed")
+    assert_true(calls[-1]["mode"] == "user", "non-interactive auto mode should default to user")
+
+    work = new_workdir("pipeline_cli")
+    template_dir = work / "Templates"
+    inputs_dir = work / "Inputs"
+    template_dir.mkdir()
+    inputs_dir.mkdir()
+    (template_dir / "only.docx").write_bytes(b"")
+    (inputs_dir / "only.md").write_text("# Paper", encoding="utf-8")
+    expect_exit_zero(parser.parse_args(["--mode", "user"]), template_dir=str(template_dir), inputs_dir=str(inputs_dir))
+    assert_true(calls[-1]["template"] == "only.docx" and calls[-1]["content"] == "only.md", "single-file interactive dispatch changed")
+
+
+@case
+def pipeline_context_resolves_inputs_outputs_and_workflow() -> None:
+    work = new_workdir("pipeline_context")
+    template_dir = work / "Templates"
+    inputs_dir = work / "Inputs"
+    outputs_dir = work / "Outputs"
+    template_dir.mkdir()
+    inputs_dir.mkdir()
+    outputs_dir.mkdir()
+    (template_dir / "template.docx").write_text("x", encoding="utf-8")
+    (inputs_dir / "paper.md").write_text("# Paper", encoding="utf-8")
+
+    resolution = resolve_inputs("template.docx", "paper.md", None, str(template_dir), str(inputs_dir))
+    assert_true(resolution.ok, f"expected inputs to resolve: {resolution.error}")
+    assert_true(resolution.inputs.use_md_content is True, "markdown content flag was not set")
+    assert_true(resolution.inputs.content_name == "paper", "content stem was not preserved")
+    assert_true(normalize_qa_level("bad-level") == "strict", "invalid QA level should fall back to strict")
+
+    first_dir, first_name = create_unique_output_dir(str(outputs_dir), "paper", today="2026-05-26")
+    second_dir, second_name = create_unique_output_dir(str(outputs_dir), "paper", today="2026-05-26")
+    assert_true(first_name == "2026-05-26_paper", "first output folder name changed")
+    assert_true(second_name == "2026-05-26_paper_2", "duplicate output folder suffix changed")
+    workflow_path = write_workflow_mode(
+        first_dir,
+        mode="developer",
+        template_path=resolution.inputs.template_path,
+        content_path=resolution.inputs.content_path,
+        run_qa=True,
+        qa_level="visual",
+        golden_dir="Golden",
+        update_golden=False,
+        require_wps=True,
+    )
+    workflow = json.loads(Path(workflow_path).read_text(encoding="utf-8"))
+    assert_true(workflow["mode"] == "developer", "workflow mode was not written")
+    assert_true(workflow["qa_level"] == "visual", "workflow QA level was not written")
+    assert_true(workflow["require_wps"] is True, "workflow require_wps flag was not written")
+
+
+@case
+def pipeline_dependencies_loads_optional_modules_and_reports_missing() -> None:
+    def marker(name):
+        return lambda *args, **kwargs: name
+
+    modules = {
+        "qa_checker": SimpleNamespace(check_and_write=marker("qa")),
+        "qa_conformance": SimpleNamespace(check_and_write=marker("conformance"), write_requirements=marker("requirements")),
+        "template_profiler": SimpleNamespace(write_profile=marker("profile")),
+        "md_parser": SimpleNamespace(extract_format=marker("md_format"), extract_content=marker("md_content")),
+    }
+
+    def fake_import_module(name):
+        if name == "qa_visual":
+            raise ImportError("visual unavailable")
+        return modules[name]
+
+    deps = load_optional_dependencies(import_module=fake_import_module)
+    assert_true(deps.qa_check_and_write() == "qa", "qa checker dependency was not loaded")
+    assert_true(deps.conformance_check_and_write() == "conformance", "conformance dependency was not loaded")
+    assert_true(deps.write_template_requirements() == "requirements", "template requirements dependency was not loaded")
+    assert_true(deps.write_template_profile() == "profile", "template profiler dependency was not loaded")
+    assert_true(deps.extract_md_format() == "md_format" and deps.extract_md_content() == "md_content", "md parser dependencies were not loaded")
+    assert_true(deps.visual_check_and_write is None, "missing visual dependency should be None")
+    assert_true("visual unavailable" in deps.optional_import_detail("qa_visual"), "missing dependency detail was not preserved")
+    assert_true(deps.optional_import_detail("qa_checker") == "", "available dependency should not report an error detail")
+
+
+@case
+def pipeline_artifacts_write_format_and_content_handoffs() -> None:
+    work = new_workdir("pipeline_artifacts")
+    fmt_json_path, fmt_md_path = write_format_artifacts(base_format(), "# Format", str(work))
+    assert_true(Path(fmt_json_path).exists(), "format.json was not written")
+    assert_true(Path(fmt_md_path).read_text(encoding="utf-8") == "# Format", "format markdown changed")
+
+    content = base_content(
+        [
+            {"text": "A paragraph with math", "math": [{"text": "E=mc^2"}]},
+            "Plain paragraph",
+        ]
+    )
+    content["sections"][0]["images"] = ["fig1.png"]
+    cnt_json_path, cnt_md_path = write_content_artifacts(content, str(work), str(work / "paper.docx"))
+    summary = Path(cnt_md_path).read_text(encoding="utf-8")
+    assert_true(Path(cnt_json_path).exists(), "content.json was not written")
+    assert_true("# 内容提取" in summary, "content report title missing")
+    assert_true("- [图片] fig1.png" in summary, "content report image line missing")
+    assert_true("(+1公式)" in summary, "content report math count missing")
+    assert_true("## 参考文献" in build_content_markdown(content, str(work / "paper.docx")), "references section missing")
+
+
+@case
+def pipeline_execution_runs_generated_script_with_utf8_output() -> None:
+    work = new_workdir("pipeline_execution")
+    script = work / "build_generated.py"
+    script.write_text("print('生成完成')\n", encoding="utf-8")
+    result = run_generated_script(str(script), str(work), python_executable=sys.executable)
+    assert_true(result.returncode == 0, f"generated script returned {result.returncode}: {result.stderr}")
+    assert_true("生成完成" in result.stdout, "UTF-8 stdout was not decoded")
+
+
+@case
+def pipeline_build_phase_generates_and_blocks_on_failure() -> None:
+    work = new_workdir("pipeline_build_phase")
+    steps: List[str] = []
+    calls: List[str] = []
+
+    def fake_step(label):
+        steps.append(label)
+
+    def fake_generate(fmt_json_path, cnt_json_path, out_dir, output_docx_name):
+        calls.append(f"generate:{Path(out_dir).name}:{output_docx_name}")
+        Path(out_dir, "build_generated.py").write_text("print('ok')\n", encoding="utf-8")
+        return 11
+
+    def fake_run(gen_py_path, out_dir, python_executable):
+        calls.append(f"run:{Path(gen_py_path).name}:{python_executable}")
+        return ScriptExecutionResult(returncode=0, stdout="built\n", stderr="")
+
+    ok = generate_and_build_docx_phase(
+        "format.json",
+        "content.json",
+        str(work),
+        "folder",
+        output_docx_name="out.docx",
+        generate_script=fake_generate,
+        run_generated_script=fake_run,
+        python_executable="python",
+        step=fake_step,
+    )
+    assert_true(ok is True, "build phase should pass when generated script succeeds")
+    assert_true(
+        steps[:2]
+        == [
+            "Phase 4/6: 生成构建脚本",
+            "Phase 5/6: 构建最终 docx（生成静态目录；可用 Word COM 时写入页码）",
+        ],
+        f"unexpected build steps: {steps}",
+    )
+    assert_true(calls == [f"generate:{work.name}:out.docx", "run:build_generated.py:python"], f"unexpected build calls: {calls}")
+
+    def failing_run(gen_py_path, out_dir, python_executable):
+        return ScriptExecutionResult(returncode=1, stdout="", stderr="boom")
+
+    failed = generate_and_build_docx_phase(
+        "format.json",
+        "content.json",
+        str(work),
+        "folder",
+        output_docx_name="out.docx",
+        generate_script=fake_generate,
+        run_generated_script=failing_run,
+        python_executable="python",
+        step=fake_step,
+    )
+    assert_true(failed is False, "build phase should block when generated script fails")
+
+
+@case
+def pipeline_qa_runs_strict_and_blocks_failures() -> None:
+    work = new_workdir("pipeline_qa")
+    calls: List[str] = []
+
+    def passing_qa(out_dir, mode, output_docx_name):
+        calls.append("qa")
+        return {"passed": True, "issues": [], "counts": {}, "mode": mode}
+
+    def passing_conformance(out_dir, mode, output_docx_name, project_root):
+        calls.append("conformance")
+        return {"passed": True, "issues": []}
+
+    deps = QADependencies(
+        qa_check_and_write=passing_qa,
+        conformance_check_and_write=passing_conformance,
+        visual_check_and_write=None,
+        optional_import_detail=lambda name: "",
+    )
+    assert_true(
+        run_qa_phases(str(work), mode="developer", output_docx_name="最终论文.docx", qa_level="strict", project_root=str(work), deps=deps),
+        "strict QA should pass when structural and conformance QA pass",
+    )
+    assert_true(calls == ["qa", "conformance"], f"unexpected QA call order: {calls}")
+
+    def failing_qa(out_dir, mode, output_docx_name):
+        return {
+            "passed": False,
+            "counts": {},
+            "issues": [{"severity": "error", "code": "TEST_ERROR", "message": "Synthetic failure", "active_owner": "developer"}],
+            "repair_plan": {"steps": []},
+        }
+
+    failing_deps = QADependencies(
+        qa_check_and_write=failing_qa,
+        conformance_check_and_write=passing_conformance,
+        visual_check_and_write=None,
+        optional_import_detail=lambda name: "",
+    )
+    assert_true(
+        not run_qa_phases(str(work), mode="developer", output_docx_name="最终论文.docx", qa_level="basic", project_root=str(work), deps=failing_deps),
+        "QA should block the pipeline when the required QA report fails",
+    )
+
+
+@case
+def pipeline_summary_mentions_outputs_and_mode() -> None:
+    summary = build_completion_summary("2026-05-27_demo", "最终论文.docx", "developer")
+    assert_true("Outputs/2026-05-27_demo/" in summary, "output directory missing from completion summary")
+    assert_true("最终论文.docx" in summary, "output docx missing from completion summary")
+    assert_true("当前模式: 开发者" in summary, "developer mode missing from completion summary")
+    assert_true("build_generated.py" in summary, "user fine-tuning target missing from completion summary")
+
+
+@case
+def pipeline_verification_double_verify_arbitrates_format_mismatch() -> None:
+    calls: List[int] = []
+
+    def flaky_format_extractor(path):
+        calls.append(len(calls) + 1)
+        paragraph_count = 1 if len(calls) != 2 else 2
+        fmt = {
+            "_meta": {"paragraphs": paragraph_count},
+            "paragraphs": [{"runs": []} for _ in range(paragraph_count)],
+            "tables": [],
+            "sections": [],
+        }
+        return fmt, "# Format"
+
+    result, report = double_verify(flaky_format_extractor, "synthetic.docx", "Format")
+    assert_true(len(calls) == 3, "format mismatch should trigger a third arbitration run")
+    assert_true(len(result["paragraphs"]) == 1, "third run should arbitrate back to the majority shape")
+    assert_true(report == "# Format", "format markdown payload should be preserved")
+
+
+@case
+def pipeline_verification_arbitrates_content_mismatch() -> None:
+    work = new_workdir("pipeline_verify_content_majority")
+    calls: List[int] = []
+
+    def flaky_content_extractor(path, output_dir=None):
+        calls.append(len(calls) + 1)
+        references = [{"text": "Synthetic reference"}] if len(calls) == 2 else []
+        return {
+            "_meta": {"images_extracted": 0, "image_extract_failures": [], "non_body_images": []},
+            "sections": [{"heading": "Body", "paragraphs": ["Text"]}],
+            "references": references,
+        }
+
+    result = double_verify(flaky_content_extractor, "synthetic.docx", "Content", output_dir=str(work))
+    assert_true(len(calls) == 3, "content mismatch should trigger a third arbitration run")
+    assert_true(result["references"] == [], "third run should arbitrate content back to the majority shape")
+
+
+@case
+def pipeline_verification_converges_incremental_content_and_materializes_images() -> None:
+    work = new_workdir("pipeline_verify_content_converge")
+    calls: List[int] = []
+
+    def incremental_content_extractor(path, output_dir=None):
+        calls.append(len(calls) + 1)
+        run_no = len(calls)
+        base = Path(path).stem
+        fig_dir = Path(output_dir) / base / "figures"
+        fig_dir.mkdir(parents=True, exist_ok=True)
+
+        image_names = [f"img{i}.png" for i in range(1, run_no + 1)]
+        for image_name in image_names:
+            (fig_dir / image_name).write_bytes(PNG_1X1)
+
+        references = [{"text": f"[{i}] Ref {i}"} for i in range(1, run_no + 1)]
+        return {
+            "_meta": {
+                "images_extracted": len(image_names),
+                "images_dir": str(fig_dir),
+                "image_extract_failures": [{"target": "transient", "error": "miss"}] if run_no == 1 else [],
+                "non_body_images": [],
+            },
+            "sections": [
+                {
+                    "heading": "Body",
+                    "level": 1,
+                    "paragraphs": [{"role": "image", "image": image_names[-1]}],
+                    "images": [image_names[-1]],
+                }
+            ],
+            "references": references,
+        }
+
+    result = double_verify(incremental_content_extractor, "synthetic.docx", "Content", output_dir=str(work))
+    assert_true(len(calls) == 5, "content convergence should keep collecting unstable recoverable content up to the cap")
+    assert_true(result["_meta"].get("converged_extraction"), "convergence metadata was not recorded")
+    assert_true(len(result["references"]) == 5, f"references were not merged: {result['references']}")
+    assert_true(result["sections"][0]["images"] == ["img1.png", "img2.png", "img3.png", "img4.png", "img5.png"], "section images were not unioned")
+
+    paragraph_images = sorted(
+        item.get("image")
+        for item in result["sections"][0]["paragraphs"]
+        if isinstance(item, dict) and item.get("image")
+    )
+    assert_true(paragraph_images == ["img1.png", "img2.png", "img3.png", "img4.png", "img5.png"], f"paragraph images were not merged: {paragraph_images}")
+    final_fig_dir = work / "synthetic" / "figures"
+    assert_true((final_fig_dir / "img1.png").exists() and (final_fig_dir / "img5.png").exists(), "converged images were not materialized")
+    assert_true(not (work / "_extract_verify_runs").exists(), "isolated verification directories were not cleaned")
+    assert_true(result["_meta"].get("image_extract_failures") == [], "transient image failures should not survive convergence")
+
+
+@case
+def pipeline_verification_inserts_recovered_items_near_anchors() -> None:
+    def content_with(paragraphs, images=None):
+        return {
+            "_meta": {
+                "images_extracted": len(images or []),
+                "image_extract_failures": [],
+                "non_body_images": [],
+            },
+            "sections": [
+                {
+                    "heading": "Body",
+                    "level": 1,
+                    "role": "body",
+                    "paragraphs": paragraphs,
+                    "images": images or [],
+                }
+            ],
+            "references": [],
+        }
+
+    merged, _reason = _merge_content_results(
+        [
+            content_with(["before", {"role": "image", "image": "img.png"}, "middle", "after"], ["img.png"]),
+            content_with(["before", {"role": "formula", "source": "latex", "latex": "E=mc^2", "text": "E=mc^2"}, "middle", "after"]),
+            content_with(["before", {"role": "table", "table_rows": [["A"], ["1"]]}, "middle", "after"]),
+        ]
+    )
+    paragraphs = merged["sections"][0]["paragraphs"]
+    middle_index = paragraphs.index("middle")
+    formula_index = next(i for i, item in enumerate(paragraphs) if isinstance(item, dict) and item.get("role") == "formula")
+    table_index = next(i for i, item in enumerate(paragraphs) if isinstance(item, dict) and item.get("table_rows"))
+    assert_true(formula_index < middle_index, f"recovered formula drifted to section tail: {paragraphs}")
+    assert_true(table_index < middle_index, f"recovered table drifted to section tail: {paragraphs}")
+
+
+@case
+def pipeline_verification_fails_when_no_majority_signature() -> None:
+    calls: List[int] = []
+
+    def unstable_content_extractor(path):
+        calls.append(len(calls) + 1)
+        return {
+            "_meta": {"images_extracted": len(calls), "image_extract_failures": [], "non_body_images": []},
+            "sections": [{"heading": f"Body {idx}", "paragraphs": ["Text"]} for idx in range(len(calls))],
+            "references": [],
+        }
+
+    try:
+        double_verify(unstable_content_extractor, "synthetic.docx", "Content")
+    except VerificationError as exc:
+        assert_true("verification failed" in str(exc), "failure should explain that verification failed")
+        assert_true(len(calls) == 3, "unresolved mismatch should stop after the third run")
+        return
+    fail("unresolved extraction mismatch should raise VerificationError")
+
+
+@case
+def run_pipeline_completion_step_is_named() -> None:
+    root = PIPELINE_DIR.parents[2]
+    text = (root / "run_pipeline.py").read_text(encoding="utf-8")
+    assert_true("step('完成')" in text or 'step("完成")' in text, "completion step should have a user-visible label")
+    assert_true("step('??')" not in text and 'step("??")' not in text, "placeholder completion step leaked into run_pipeline.py")
+
+
+@case
+def pipeline_template_phase_writes_profile_and_requirements() -> None:
+    work = new_workdir("pipeline_template_phase")
+    calls: List[str] = []
+
+    def fake_profile(fmt, out_dir, project_root):
+        calls.append(f"profile:{project_root}")
+        return {
+            "capabilities": {
+                "has_cover": True,
+                "has_heading_styles": False,
+                "has_caption_styles": True,
+            },
+            "risk_flags": {"mixed_headers": True, "low_sample": False},
+        }
+
+    profile = write_template_profile_phase(
+        base_format(),
+        str(work),
+        project_root="ROOT",
+        write_template_profile=fake_profile,
+    )
+    assert_true(profile["capabilities"]["has_cover"] is True, "profile return value was not preserved")
+
+    def fake_requirements(fmt, content, out_dir):
+        calls.append("requirements")
+        Path(out_dir, "template_requirements.json").write_text("{}", encoding="utf-8")
+
+    ok = write_template_requirements_phase(
+        base_format(),
+        base_content(["Body"]),
+        str(work),
+        write_template_requirements=fake_requirements,
+        optional_import_detail=lambda name: " detail",
+    )
+    assert_true(ok is True, "requirements phase should report success")
+    assert_true(calls == ["profile:ROOT", "requirements"], f"unexpected template phase calls: {calls}")
+    assert_true((work / "template_requirements.json").exists(), "requirements writer was not called")
+
+    skipped = write_template_requirements_phase(
+        base_format(),
+        base_content(["Body"]),
+        str(work),
+        write_template_requirements=None,
+        optional_import_detail=lambda name: " detail",
+    )
+    assert_true(skipped is False, "missing requirements writer should report skipped")
 
 
 def run_generated_case(name: str, content: Dict[str, Any], fmt: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -287,6 +850,34 @@ def display_formula_remains_display() -> None:
 
 
 @case
+def latex_delimited_text_formula_with_number_renders_native() -> None:
+    content = base_content([
+        {"role": "formula", "source": "text", "text": r"$$E_{total}=\sum_{t=1}^{24}P(t)\Delta t$$ (1.1)"}
+    ])
+    result = run_generated_case("latex_delimited_numbered_text_formula", content)
+    assert_true(result["manifest"]["counts"]["display_formulas_rendered"] == 1, "numbered LaTeX text formula was not rendered")
+    assert_true(omath_para_count(result["xml"]) == 1, "numbered LaTeX text formula did not create display OMML")
+    assert_true("[LaTeX error" not in result["xml"] and "$$" not in result["xml"], "LaTeX text leaked into final XML")
+    assert_true(not result["report"]["issues"], f"unexpected QA issues: {result['report']['issues']}")
+
+
+@case
+def latex_delimited_appendix_formula_with_letter_number_renders_native() -> None:
+    content = base_content([
+        {
+            "role": "formula",
+            "source": "text",
+            "text": r"$$R_{green}=\frac{E_{renew}}{E_{total}}\times100\%$$" + " \uff08A.1\uff09",
+        }
+    ])
+    result = run_generated_case("latex_delimited_appendix_formula", content)
+    assert_true(result["manifest"]["counts"]["display_formulas_rendered"] == 1, "appendix-numbered LaTeX text formula was not rendered")
+    assert_true(omath_para_count(result["xml"]) == 1, "appendix-numbered formula did not create display OMML")
+    assert_true("[LaTeX error" not in result["xml"] and "$$" not in result["xml"], "appendix formula leaked LaTeX/error text")
+    assert_true(not result["report"]["issues"], f"unexpected QA issues: {result['report']['issues']}")
+
+
+@case
 def source_formula_label_cleanup_preserves_arguments() -> None:
     for expr in ["f(1)", "x^{(1)}", "P=f(1)"]:
         _xml, text, had_label = _strip_trailing_formula_labels_from_xml(latex_to_omath(expr, display=True))
@@ -378,6 +969,198 @@ def image_manifest_matches_rendered_body_images() -> None:
 
 
 @case
+def caption_flow_pairs_images_with_nearby_captions() -> None:
+    paragraphs = [
+        {"role": "image", "image": "a.png"},
+        "intervening prose",
+        {"role": "figure_caption", "text": "Fig. 1 Demo"},
+        {"role": "image", "image": "b.png"},
+        {"role": "image", "image": "c.png"},
+        {"role": "figure_caption", "text": "Figure 2 First"},
+        {"role": "figure_caption", "text": "Figure 3 Second"},
+    ]
+    paired = pair_figure_blocks(paragraphs)
+    assert_true(paired[0] == {"role": "figure", "image": "a.png", "caption": "Fig. 1 Demo"}, "image/body/caption was not paired")
+    assert_true(paired[1] == "intervening prose", "intervening prose was not preserved after pairing")
+    assert_true(paired[2] == {"role": "figure", "image": "b.png", "caption": "Figure 2 First"}, "first stacked image was not paired")
+    assert_true(paired[3] == {"role": "figure", "image": "c.png", "caption": "Figure 3 Second"}, "second stacked image was not paired")
+    assert_true(is_figure_caption("\u56fe1\u7ed3\u679c\u5bf9\u6bd4"), "Chinese figure caption was not detected")
+    assert_true(normalize_caption_spacing("\u56fe1\u7ed3\u679c") == "\u56fe 1 \u7ed3\u679c", "Chinese figure caption spacing was not normalized")
+
+
+@case
+def text_cleaner_removes_editor_noise_and_preserves_code_lines() -> None:
+    assert_true(clean_text_artifacts("[label](https://example.test)") == "label", "markdown link label was not preserved")
+    assert_true(clean_text_artifacts("Plain Text") == "", "editor noise was not removed")
+    assert_true(clean_text_artifacts("\u590d\u5236") == "", "Chinese editor noise was not removed")
+    code = clean_code_text(" interface  Gi0/0/1 \nPlain Text\n ip   address  10.0.0.1 ")
+    assert_true(code == "interface Gi0/0/1\nip address 10.0.0.1", f"code cleanup changed unexpectedly: {code!r}")
+
+
+@case
+def paragraph_stream_run_group_preserves_text_and_math_semantics() -> None:
+    section = {"paragraphs": []}
+
+    def append_text(section_obj: Dict[str, Any], text: str, in_appendix: bool = False) -> None:
+        section_obj["paragraphs"].append({"role": "text", "text": text, "appendix": in_appendix})
+
+    append_stream_run_group(
+        section,
+        [{"type": "text", "text": "plain text"}],
+        append_text_or_code_func=append_text,
+        in_appendix=True,
+    )
+    assert_true(section["paragraphs"][0] == {"role": "text", "text": "plain text", "appendix": True}, "plain run group bypassed text callback")
+
+    append_stream_run_group(
+        section,
+        [{"type": "math", "text": "a=b", "math": [{"text": "a=b", "had_number_label": True}]}],
+        append_text_or_code_func=append_text,
+    )
+    formula = section["paragraphs"][1]
+    assert_true(formula["role"] == "formula", "math-only run group did not become a formula")
+    assert_true(formula["numbered"] is True, "math had_number_label was not preserved")
+
+
+@case
+def reference_collector_exits_before_backmatter_and_keeps_tables() -> None:
+    collector = ReferenceCollector(
+        clean_text_func=clean_text_artifacts,
+        is_backmatter_heading_func=lambda text: text == "Appendix A",
+        normalize_heading_spacing_func=lambda text: text,
+        classify_section_role_func=lambda heading, level: "appendix",
+        table_rows_look_like_code_func=lambda rows: rows and rows[0] and rows[0][0].startswith("interface"),
+        code_text_from_table_rows_func=lambda rows, clean_code_func=None: clean_code_func(rows[0][0]) if clean_code_func else rows[0][0],
+        clean_code_func=clean_code_text,
+    )
+    assert_true(is_reference_heading("\u53c2\u8003\u6587\u732e"), "Chinese reference heading was not detected")
+    assert_true(collector.start_if_heading("References"), "English reference heading was not accepted")
+    assert_true(collector.consume_text("[1]  Example  Paper"), "active collector did not consume reference text")
+    assert_true(collector.consume_table_rows([["interface  Gi0/0/1\n ip  address  10.0.0.1"]]), "active collector did not consume reference table")
+    backmatter = collector.exit_to_backmatter_section("Appendix A", 1)
+    assert_true(backmatter and backmatter["role"] == "appendix", "collector did not exit on backmatter")
+    refs = collector.finish()
+    assert_true(refs[0] == "[1] Example Paper", f"reference text was not cleaned: {refs[0]!r}")
+    assert_true(refs[1]["role"] == "code", "reference code table was not preserved as code")
+    assert_true(refs[1]["code"] == "interface Gi0/0/1\nip address 10.0.0.1", "reference code table was not cleaned")
+
+
+@case
+def section_builder_filters_placeholder_and_finalizes_blocks() -> None:
+    sections = [
+        make_body_section(),
+        {"heading": "Abstract", "level": 1, "role": "en_abstract", "paragraphs": ["Summary"], "images": []},
+        {"heading": "1 Introduction", "level": 1, "role": "body", "paragraphs": [], "images": []},
+        {
+            "heading": "2 Results",
+            "level": 1,
+            "role": "body",
+            "paragraphs": [
+                {"role": "image", "image": "fig1.png"},
+                {"role": "figure_caption", "text": "Fig. 1. Result overview"},
+            ],
+            "images": ["fig1.png"],
+        },
+    ]
+    filtered = filter_content_sections(sections)
+    assert_true(filtered[0]["heading"] == "Abstract", "initial body placeholder was not filtered")
+    assert_true(filtered[1]["heading"] == "1 Introduction", "empty structural heading was dropped")
+    mark_first_body_page_break(filtered)
+    assert_true(not filtered[0].get("page_break_before"), "front matter was marked as first body page")
+    assert_true(filtered[1].get("page_break_before") is True, "first body section was not marked for page break")
+    postprocess_section_paragraphs(filtered)
+    assert_true(filtered[2]["paragraphs"][0]["role"] == "figure", "image and figure caption were not paired")
+    assert_true(filtered[2]["paragraphs"][0]["caption"] == "Fig. 1. Result overview", "figure caption text changed")
+
+
+@case
+def body_dispatcher_routes_sections_references_tables_and_appendix_code() -> None:
+    work = new_workdir("body_dispatcher")
+    fig_dir = work / "figures"
+    fig_dir.mkdir(parents=True, exist_ok=True)
+    doc = Document()
+    doc.add_paragraph("1 Introduction")
+    doc.add_paragraph("报名序号: [报名序号]")
+    doc.add_paragraph("图 1 系统结构示意")
+    doc.add_paragraph("参考文献")
+    table = doc.add_table(rows=1, cols=1)
+    table.cell(0, 0).text = "[1] Zhang S. Synthetic reference."
+    doc.add_paragraph("附录 A")
+    doc.add_paragraph("interface Gi0/0/1\n ip address 10.0.0.1")
+
+    scratch = {"paragraphs": []}
+    append_text_or_code(scratch, r"$$a=b$$")
+    assert_true(scratch["paragraphs"][0]["role"] == "formula", "dispatcher text append did not preserve display math")
+
+    result = parse_body_sections(doc, 0, ImageRegistry(str(fig_dir), "dispatch_img"))
+    sections = filter_content_sections(result.sections)
+    assert_true(sections[0]["heading"] == "1 Introduction", "body heading was not routed into a section")
+    assert_true(result.placeholders_removed == 1, "unfilled placeholder paragraph was not filtered")
+    assert_true(sections[0]["paragraphs"][0]["role"] == "figure_caption", "figure caption was not classified")
+    assert_true(result.references and result.references[0]["role"] == "table", "reference table was not captured before appendix")
+    assert_true(sections[1]["role"] == "appendix", "back matter did not exit reference collection")
+    assert_true(sections[1]["paragraphs"][0]["role"] == "code", "appendix command text was not routed as code")
+
+
+@case
+def content_parser_preserves_table_at_start_of_body() -> None:
+    work = new_workdir("parser_table_first")
+
+    docx = work / "table_first_then_text.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Metric"
+    table.cell(0, 1).text = "Value"
+    table.cell(1, 0).text = "Accuracy"
+    table.cell(1, 1).text = "98%"
+    doc.add_paragraph("Body paragraph after the opening table.")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("table_rows")]
+    assert_true(len(table_items) == 1, f"opening table was not preserved in content stream: {items}")
+    assert_true(table_items[0]["table_rows"][1] == ["Accuracy", "98%"], "opening table rows changed")
+
+    table_only_docx = work / "table_only.docx"
+    doc = Document()
+    table = doc.add_table(rows=1, cols=2)
+    table.cell(0, 0).text = "Only"
+    table.cell(0, 1).text = "Table"
+    doc.save(table_only_docx)
+
+    table_only = extract_docx_content(str(table_only_docx), output_dir=str(work / "only_out"))
+    only_items = [item for sec in table_only.get("sections") or [] for item in sec.get("paragraphs") or []]
+    assert_true(
+        any(isinstance(item, dict) and item.get("table_rows") for item in only_items),
+        f"table-only document became empty content: {table_only}",
+    )
+
+
+@case
+def content_parser_does_not_count_cover_table_as_body_table() -> None:
+    work = new_workdir("parser_cover_table_count")
+    docx = work / "cover_table_count.docx"
+    doc = Document()
+    cover = doc.add_table(rows=1, cols=2)
+    cover.cell(0, 0).text = "\u5b66\u6821\u7f16\u7801"
+    cover.cell(0, 1).text = "10001"
+    title = "\u9762\u5411\u7eff\u7535\u6d88\u7eb3\u7684\u591a\u6e90\u80fd\u6e90\u8c03\u5ea6\u7814\u7a76"
+    p = doc.add_paragraph(title)
+    p.runs[0].font.size = Pt(16)
+    doc.add_paragraph("\u6458\u8981\uff1a\u672c\u6587\u6458\u8981\u7528\u4e8e\u9a8c\u8bc1\u5c01\u9762\u8868\u683c\u4e0d\u5e94\u8ba1\u5165\u6b63\u6587\u8868\u683c\u3002")
+    doc.add_paragraph("\u5173\u952e\u8bcd\uff1a\u7eff\u7535\uff1b\u8c03\u5ea6")
+    doc.add_heading("\u7b2c1\u7ae0 \u7eea\u8bba", 1)
+    doc.add_paragraph("\u6b63\u6587\u6bb5\u843d\u3002")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    meta = content.get("_meta") or {}
+    assert_true(meta.get("source_tables_count") == 1, f"source table count was not recorded: {meta}")
+    assert_true(meta.get("tables_count") == 0, f"cover table was counted as a body table: {meta}")
+
+
+@case
 def low_res_image_fragment_is_reported_and_not_upscaled() -> None:
     img_src = new_workdir("tiny_image_src")
     write_sample_png(img_src / "tiny.png", width=76, height=18)
@@ -390,6 +1173,9 @@ def low_res_image_fragment_is_reported_and_not_upscaled() -> None:
     result = run_generated_case("tiny_image_fragment", content)
     codes = [item["code"] for item in result["report"]["issues"]]
     assert_true("LOW_RES_IMAGE_FRAGMENT" in codes, "QA did not report a low-resolution image fragment")
+    issue = next(item for item in result["report"]["issues"] if item["code"] == "LOW_RES_IMAGE_FRAGMENT")
+    assert_true(issue["severity"] == "warning", f"contained image fragment should be a warning: {issue}")
+    assert_true(result["manifest"]["counts"].get("content_image_fragments_contained") == 1, "contained image fragment was not counted")
     m = re.search(r"<wp:extent[^>]+cx=\"(\d+)\"[^>]+cy=\"(\d+)\"", result["xml"])
     assert_true(bool(m), "generated DOCX did not contain an image extent")
     width_inches = int(m.group(1)) / 914400
@@ -527,13 +1313,17 @@ def content_parser_detects_latex_delimited_formula_paragraphs() -> None:
     doc.add_paragraph(r"$$L=\lim_{n\to\infty}\frac{1}{n}\sum_{i=1}^{n}x_i$$")
     doc.add_paragraph(r"$$M=\begin{matrix}a&b\\c&d\end{matrix}$$")
     doc.add_paragraph(r"$$I=\int_0^T f(t)\,dt$$")
+    doc.add_paragraph(r"$$E_{total}=\sum_{t=1}^{24}P(t)\Delta t$$ (1.1)")
+    doc.add_paragraph(r"$$R_{green}=\frac{E_{renew}}{E_{total}}\times100\%$$" + " \uff08A.1\uff09")
     doc.save(docx)
 
     content = extract_docx_content(str(docx), output_dir=str(work))
     paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
     formulas = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "formula"]
-    assert_true(len(formulas) == 3, f"LaTeX-delimited paragraphs were not all formulas: {paragraphs}")
+    assert_true(len(formulas) == 5, f"LaTeX-delimited paragraphs were not all formulas: {paragraphs}")
     assert_true(all(f.get("source") == "latex" and f.get("latex") for f in formulas), "LaTeX delimiters were not stripped into latex fields")
+    assert_true(all("$$" not in (f.get("latex") or "") for f in formulas), "LaTeX delimiters leaked into formula latex")
+    assert_true(any(f.get("text", "").endswith("\uff08A.1\uff09") and f.get("latex", "").startswith("R_{green}") for f in formulas), "appendix formula label was not handled")
 
 
 @case
@@ -816,6 +1606,61 @@ def content_parser_extracts_english_title_before_abstract() -> None:
 
 
 @case
+def content_parser_extracts_docx_title_style_without_explicit_font_size() -> None:
+    work = new_workdir("parser_title_style")
+    docx = work / "title_style.docx"
+    title = "\u9762\u5411\u4e2d\u6587\u6bd5\u4e1a\u8bba\u6587\u7684\u673a\u5668\u5b66\u4e60\u6392\u7248\u6d41\u6c34\u7ebf\u7814\u7a76"
+    doc = Document()
+    doc.add_heading(title, 0)
+    doc.add_heading("\u6458\u8981", 1)
+    doc.add_paragraph("\u672c\u6587\u6458\u8981\u7528\u4e8e\u9a8c\u8bc1\u9898\u540d\u6837\u5f0f\u63d0\u53d6\u3002")
+    doc.add_heading("1 \u7eea\u8bba", 1)
+    doc.add_paragraph("Body text.")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    headings = [sec.get("heading") for sec in content.get("sections") or []]
+    assert_true(content.get("title_info", {}).get("title_cn") == title, f"title style was not extracted: {content.get('title_info')}")
+    assert_true(title not in headings, f"title style leaked into body sections: {headings}")
+    assert_true("\u6458\u8981" in headings, f"abstract heading was lost after title extraction: {headings}")
+
+
+@case
+def content_parser_extracts_plain_title_before_abstract() -> None:
+    work = new_workdir("parser_plain_front_title")
+    docx = work / "plain_front_title.docx"
+    title = "\u9762\u5411\u7eff\u7535\u6d88\u7eb3\u7684\u591a\u6e90\u80fd\u6e90\u8c03\u5ea6\u4e0e\u7ecf\u6d4e\u6027\u8bc4\u4f30\u7814\u7a76"
+    doc = Document()
+    doc.add_paragraph(title)
+    doc.add_paragraph("\u6458\u8981\uff1a\u672c\u6587\u6458\u8981\u7528\u4e8e\u9a8c\u8bc1\u65e0\u663e\u5f0f\u5b57\u53f7\u7684\u524d\u7f6e\u9898\u540d\u3002")
+    doc.add_paragraph("\u5173\u952e\u8bcd\uff1a\u7eff\u7535\uff1b\u8c03\u5ea6")
+    doc.add_heading("\u7b2c1\u7ae0 \u7eea\u8bba", 1)
+    doc.add_paragraph("\u6b63\u6587\u6bb5\u843d\u3002")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    headings = [sec.get("heading") for sec in content.get("sections") or []]
+    assert_true(content.get("title_info", {}).get("title_cn") == title, f"plain front title was not extracted: {content.get('title_info')}")
+    assert_true(title not in headings, f"plain title leaked into body sections: {headings}")
+
+
+@case
+def content_parser_does_not_treat_chapter_heading_as_title() -> None:
+    work = new_workdir("parser_chapter_not_title")
+    docx = work / "chapter_not_title.docx"
+    heading = "\u7b2c\u4e00\u7ae0 \u7eea\u8bba\u4e0e\u7814\u7a76\u80cc\u666f"
+    doc = Document()
+    doc.add_heading(heading, 1)
+    doc.add_paragraph("\u8fd9\u662f\u6b63\u6587\u7b2c\u4e00\u6bb5\uff0c\u7528\u4e8e\u9a8c\u8bc1\u76f4\u63a5\u4ece\u7ae0\u8282\u5f00\u59cb\u7684\u6587\u6863\u3002")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    headings = [sec.get("heading") for sec in content.get("sections") or []]
+    assert_true(content.get("title_info", {}).get("title_cn") != heading, f"chapter heading was misdetected as title: {content.get('title_info')}")
+    assert_true(heading in headings, f"chapter heading was not preserved as a body section: {headings}")
+
+
+@case
 def content_parser_splits_chinese_enumerated_headings_after_keywords() -> None:
     work = new_workdir("parser_cn_enum")
     img = work / "dot.png"
@@ -1035,6 +1880,35 @@ def content_parser_skips_source_toc_and_records_placeholders() -> None:
 
 
 @case
+def content_parser_skips_source_toc_with_roman_page_numbers() -> None:
+    work = new_workdir("source_toc_roman_pages")
+    docx = work / "source_toc_roman_pages.docx"
+    doc = Document()
+    doc.add_paragraph("\u8bba\u6587\u9898\u76ee: Roman Page TOC")
+    doc.add_paragraph("\u76ee\u5f55")
+    doc.add_paragraph("\u6458\u8981........................................ I")
+    doc.add_paragraph("Abstract.................................... II")
+    doc.add_paragraph("1 \u7eea\u8bba..................................... 1")
+    doc.add_paragraph("2 \u7cfb\u7edf\u8bbe\u8ba1................................. 5")
+    doc.add_paragraph("\u53c2\u8003\u6587\u732e................................... 32")
+    doc.add_paragraph("1 \u7eea\u8bba")
+    doc.add_paragraph("This real body paragraph must not be collected as a reference.")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    headings = [sec.get("heading") for sec in content.get("sections") or []]
+    body_text = "\n".join(
+        p if isinstance(p, str) else str(p.get("text") or "")
+        for sec in content.get("sections") or []
+        for p in sec.get("paragraphs", [])
+    )
+    assert_true(content.get("_meta", {}).get("source_toc_skipped_paragraphs", 0) >= 5, "roman-page source TOC entries were not skipped")
+    assert_true(not content.get("references"), f"source TOC reference line activated reference collection: {content.get('references')}")
+    assert_true("1 \u7eea\u8bba" in headings, f"real body heading after roman TOC was lost: {headings}")
+    assert_true("real body paragraph" in body_text, f"real body after roman TOC was lost: {body_text}")
+
+
+@case
 def content_parser_exits_source_toc_without_page_break() -> None:
     work = new_workdir("source_toc_no_break")
     docx = work / "source_toc_no_break.docx"
@@ -1195,6 +2069,7 @@ def qa_reports_toc_pollution_placeholders_and_formula_fragments() -> None:
         assert_true(code in codes, f"QA did not report {code}")
     formula_issue = next(item for item in report["issues"] if item["code"] == "FORMULA_TEXT_FRAGMENTED")
     assert_true("contaminated formula text" in formula_issue.get("detail", ""), "QA did not explain narrative text inside a formula")
+    assert_true(formula_issue["severity"] == "warning", "fragmented formula text should be downgraded to warning")
     assert_true(report["passed"] is False, "semantic guard issues should fail QA")
 
 
@@ -1242,6 +2117,106 @@ def conformance_style_check_ignores_static_toc_lines() -> None:
     conf = check_conformance(str(result["work"]), mode="developer", output_docx_name="out.docx")
     codes = [item["code"] for item in conf["issues"]]
     assert_true("STYLE_MISMATCH" not in codes, f"conformance matched TOC lines instead of body headings: {conf['issues']}")
+    assert_true("docx_sections" in conf["counts"], "conformance report should name Word section count as docx_sections")
+    assert_true("sections" not in conf["counts"], "ambiguous conformance count key 'sections' should not be emitted")
+
+
+@case
+def script_generator_honors_body_page_break_before() -> None:
+    content = base_content([])
+    content["sections"] = [
+        {
+            "heading": "1 First",
+            "level": 1,
+            "role": "body",
+            "paragraphs": ["First body paragraph."],
+            "images": [],
+            "page_break_before": True,
+        },
+        {
+            "heading": "2 Second",
+            "level": 1,
+            "role": "body",
+            "paragraphs": ["Second body paragraph."],
+            "images": [],
+            "page_break_before": True,
+        },
+    ]
+    result = run_generated_case("body_page_break_before", content)
+    page_breaks = len(re.findall(r'<w:br[^>]+w:type="page"', result["xml"]))
+    assert_true(page_breaks >= 1, "body page_break_before was not rendered as a page break")
+
+
+@case
+def script_generator_renders_chinese_backmatter_headings() -> None:
+    content = base_content([])
+    content["sections"] = [
+        {
+            "heading": "1 Body",
+            "level": 1,
+            "role": "body",
+            "paragraphs": ["Body paragraph."],
+            "images": [],
+        },
+        {
+            "heading": "\u81f4\u8c22",
+            "level": 1,
+            "role": "acknowledgement",
+            "paragraphs": ["Thanks paragraph."],
+            "images": [],
+        },
+        {
+            "heading": "\u9644\u5f55",
+            "level": 1,
+            "role": "appendix",
+            "paragraphs": ["Appendix paragraph."],
+            "images": [],
+        },
+    ]
+    result = run_generated_case("backmatter_unicode_headings", content)
+    xml_compact = re.sub(r"\s+", "", result["xml"])
+    assert_true("\u81f4\u8c22" in xml_compact, "acknowledgement heading was not rendered as Chinese text")
+    assert_true("\u9644\u5f55" in xml_compact, "appendix heading was not rendered as Chinese text")
+    codes = [item["code"] for item in result["report"]["issues"]]
+    assert_true("CONTENT_HEADING_MISSING" not in codes, f"backmatter headings were still reported missing: {codes}")
+
+
+@case
+def script_generator_renders_backmatter_rich_items() -> None:
+    work = new_workdir("backmatter_item_assets")
+    img_dir = work / "figures"
+    img_dir.mkdir()
+    (img_dir / "dot.png").write_bytes(PNG_1X1)
+
+    content = base_content([])
+    content["_meta"]["images_dir"] = str(img_dir)
+    content["_meta"]["images_extracted"] = 1
+    content["_meta"]["tables_count"] = 1
+    content["sections"] = [
+        {
+            "heading": "1 Body",
+            "level": 1,
+            "role": "body",
+            "paragraphs": ["Body paragraph."],
+            "images": [],
+        },
+        {
+            "heading": "\u9644\u5f55",
+            "level": 1,
+            "role": "appendix",
+            "paragraphs": [
+                {"role": "table", "table_rows": [["A", "B"], ["1", "2"]]},
+                {"role": "formula", "source": "latex", "latex": "E=mc^2", "text": "E=mc^2", "numbered": False},
+                {"role": "image", "image": "dot.png"},
+            ],
+            "images": ["dot.png"],
+        },
+    ]
+    result = run_generated_case("backmatter_rich_items", content)
+    counts = result["manifest"]["counts"]
+    assert_true(counts["content_tables_rendered"] == 1, f"appendix table was not rendered: {counts}")
+    assert_true(counts["content_formulas_rendered"] == 1, f"appendix formula was not rendered: {counts}")
+    assert_true(counts["content_images_rendered"] == 1, f"appendix image was not rendered: {counts}")
 
 
 @case
@@ -1308,7 +2283,27 @@ def latex_omath_invisible_delimiters_hide_separators() -> None:
         sty = run.find("./m:rPr/m:sty", ns)
         styled_runs.append((text, sty.get(f"{{{ns['m']}}}val") if sty is not None else None))
     assert_true(("abcdef", "p") in styled_runs, f"merged \\mathrm runs lost upright style: {styled_runs}")
-    assert_true(("abc", "p") in styled_runs and ("def", "p") in styled_runs, f"mixed-style grouped runs lost \\mathrm style: {styled_runs}")
+    assert_true(("abc+def", "p") in styled_runs or (("abc", "p") in styled_runs and ("def", "p") in styled_runs), f"mixed-style grouped runs lost \\mathrm style: {styled_runs}")
+
+
+@case
+def latex_omath_keeps_literals_operators_and_brackets_upright() -> None:
+    xml = latex_to_omath(r"P(t)=\max(0,PRE(t)-P_{total}(t))+\frac{x_1}{2}+\{z\}", display=True)
+    root = etree.fromstring(xml.encode("utf-8"))
+    ns = {"m": "http://schemas.openxmlformats.org/officeDocument/2006/math"}
+    upright_chars = set("0123456789()[]{}=+-*/×÷<>≤≥≈≠,:;.%")
+    bad_runs = []
+    variable_runs = []
+    for run in root.findall(".//m:r", ns):
+        text = "".join(t.text or "" for t in run.findall("./m:t", ns))
+        sty = run.find("./m:rPr/m:sty", ns)
+        style = sty.get(f"{{{ns['m']}}}val") if sty is not None else None
+        if text in {"P", "t", "x"} and style is None:
+            variable_runs.append(text)
+        if any(ch in upright_chars for ch in text) and style != "p":
+            bad_runs.append((text, style))
+    assert_true(not bad_runs, f"formula literals/operators/brackets should be upright, got {bad_runs}")
+    assert_true({"P", "t", "x"}.issubset(set(variable_runs)), f"variables should keep default math style: {variable_runs}")
 
 
 @case
@@ -1371,6 +2366,295 @@ def english_appendix_heading_is_not_front_title() -> None:
     front = _front_matter_sections(cnt)
     assert_true(front.get("en_title") in ("", None), "English appendix heading became English title")
     assert_true(1 not in front.get("front_indices", set()), "English appendix was marked as front matter")
+
+
+@case
+def script_generator_section_order_preserves_content_while_sorting_subsections() -> None:
+    sections = [
+        {"heading": "第1章 Intro", "level": 1, "paragraphs": ["chapter"], "images": []},
+        {"heading": "1.2 Later", "level": 2, "paragraphs": ["later"], "images": []},
+        {"heading": "1.2.2 Detail B", "level": 3, "paragraphs": ["b"], "images": []},
+        {"heading": "1.2.1 Detail A", "level": 3, "paragraphs": ["a"], "images": []},
+        {"heading": "1.1 Earlier", "level": 2, "paragraphs": ["earlier"], "images": []},
+        {"heading": "第2章 Methods", "level": 1, "paragraphs": ["next"], "images": []},
+    ]
+    ordered = _normalize_numbered_section_order(sections)
+    headings = [sec["heading"] for sec in ordered]
+    assert_true(headings[:5] == ["第1章 Intro", "1.1 Earlier", "1.2 Later", "1.2.1 Detail A", "1.2.2 Detail B"], "numbered sections were not sorted safely")
+    assert_true(ordered[1]["paragraphs"] == ["earlier"], "section content moved away from its heading")
+    assert_true(headings[-1] == "第2章 Methods", "next numbered chapter was not preserved")
+
+
+@case
+def script_generator_template_rules_extract_page_header_and_flags() -> None:
+    fmt = {
+        "sections": [
+            {
+                "page_width_cm": 21.0,
+                "page_height_cm": 29.7,
+                "margin_top_cm": 2.5,
+                "margin_bottom_cm": 2.4,
+                "margin_left_cm": 2.8,
+                "margin_right_cm": 2.2,
+                "header": [
+                    {
+                        "text": "Thesis Header",
+                        "alignment": "DEFAULT",
+                        "runs": [{"text": "Thesis Header", "font": "Times New Roman", "size_pt": 9, "italic": True}],
+                    }
+                ],
+            }
+        ],
+        "paragraphs": [
+            {"text": "图1 系统结构"},
+            {"text": "中文摘要不分自然段，英文题目要求大写字母，公式居中并编号，英文参考文献左对齐，参考文献悬挂缩进2字符。"},
+        ],
+    }
+    page = _extract_page_and_header(fmt)
+    rules = _infer_template_rules(fmt)
+    assert_true(page["mt"] == 2.5 and page["mr"] == 2.2, "page margin extraction changed")
+    assert_true(page["header"]["align"] == "CENTER", "DEFAULT header alignment was not normalized")
+    assert_true(rules["cn_abstract_single_paragraph"] is True, "Chinese abstract rule was not detected")
+    assert_true(rules["formula_center"] is True and rules["formula_numbered"] is True, "formula rules were not detected")
+    assert_true(rules["reference_hanging_chars"] == 2.0, "reference hanging indent rule changed")
+
+
+@case
+def script_generator_style_profiles_apply_template_text_rules() -> None:
+    body_text = "这是一个足够长的中文正文样本，用于模拟模板正文段落的自然排版特征，确保样式推断不会只依赖说明文字。"
+    fmt = {
+        "style_profiles": {},
+        "paragraphs": [
+            {
+                "text": "论文正文使用宋体小四号，固定值28磅，首行缩进2字符，两端对齐。",
+                "runs": [{"text": "论文正文使用宋体小四号，固定值28磅，首行缩进2字符，两端对齐。", "font": "宋体", "size_pt": 12}],
+                "align": "LEFT",
+            },
+            {
+                "text": "第1章 一级标题黑体三号居中加粗",
+                "runs": [{"text": "第1章 一级标题黑体三号居中加粗", "font": "黑体", "size_pt": 16, "bold": True}],
+                "align": "CENTER",
+            },
+            {
+                "text": "图标题宋体五号居中",
+                "runs": [{"text": "图标题宋体五号居中", "font": "宋体", "size_pt": 10.5}],
+                "align": "CENTER",
+            },
+            {
+                "text": "参考文献中文使用宋体小四号，悬挂缩进2字符。",
+                "runs": [{"text": "参考文献中文使用宋体小四号，悬挂缩进2字符。", "font": "宋体", "size_pt": 12}],
+                "align": "LEFT",
+            },
+            {
+                "text": body_text,
+                "runs": [{"text": body_text, "font": "宋体", "size_pt": 12}],
+                "align": "JUSTIFY",
+                "ls": 1.5,
+                "indent": 0.74,
+            },
+        ],
+    }
+    profiles = _infer_style_profiles(fmt)
+    assert_true(profiles["body"]["font"] == "宋体", "body font rule was not applied")
+    assert_true(profiles["body"]["line_spacing_fixed_pt"] == 28.0, "fixed body line spacing rule was not applied")
+    assert_true(profiles["body"]["align"] == "JUSTIFY", "body alignment rule was not normalized")
+    assert_true(profiles["body"]["first_indent_cm"] > 0, "body first-line indent rule was not applied")
+    assert_true(profiles["h1"]["font"] == "黑体" and profiles["h1"]["align"] == "CENTER", "h1 style inference changed")
+    assert_true(profiles["figure_caption"]["size"] == 10.5 and profiles["figure_caption"]["align"] == "CENTER", "figure caption style rule changed")
+    assert_true(profiles["reference"]["font"] == "宋体", "reference style rule changed")
+
+
+@case
+def script_generator_runtime_base_fragment_is_injected() -> None:
+    assert_true("__BASE_RUNTIME__" not in RUNTIME_TEMPLATE, "base runtime placeholder leaked into generated template")
+    assert_true(
+        RUNTIME_TEMPLATE.lstrip().startswith("# -*- coding: utf-8 -*-"),
+        "generated script header should come from base runtime",
+    )
+    assert_true("DATA = json.loads(__DATA_BLOB__)" in RUNTIME_TEMPLATE, "base runtime data bootstrap was not injected")
+    assert_true("def apply_run_profile" in RUNTIME_TEMPLATE, "base run styling helper was not injected")
+    assert_true("def add_text" in RUNTIME_TEMPLATE, "base text helper was not injected")
+    assert_true("def setup_section" in RUNTIME_TEMPLATE, "base section setup helper was not injected")
+    assert_true("def force_cover_headerless" in RUNTIME_TEMPLATE, "base cover cleanup helper was not injected")
+    assert_true(
+        RUNTIME_TEMPLATE.index("def add_text") < RUNTIME_TEMPLATE.index("def render_cover_and_declarations"),
+        "base text helpers should be defined before cover rendering",
+    )
+    assert_true(
+        RUNTIME_TEMPLATE.index("def setup_section") < RUNTIME_TEMPLATE.index("def build_document"),
+        "base page helpers should be defined before build orchestration",
+    )
+
+
+@case
+def script_generator_runtime_content_helpers_fragment_is_injected() -> None:
+    assert_true(
+        "__CONTENT_HELPERS_RUNTIME__" not in RUNTIME_TEMPLATE,
+        "content helper runtime placeholder leaked into generated template",
+    )
+    assert_true("def is_front_section_index" in RUNTIME_TEMPLATE, "front-section predicate was not injected")
+    assert_true("def normalize_caption" in RUNTIME_TEMPLATE, "caption normalizer was not injected")
+    assert_true("def clean_text_artifacts" in RUNTIME_TEMPLATE, "text cleanup helper was not injected")
+    assert_true("def clean_formula_text" in RUNTIME_TEMPLATE, "formula cleanup helper was not injected")
+    assert_true("def add_caption" in RUNTIME_TEMPLATE, "caption renderer helper was not injected")
+    assert_true(RUNTIME_TEMPLATE.count("def clean_text_artifacts") == 1, "text cleanup helper should be injected exactly once")
+    assert_true(
+        RUNTIME_TEMPLATE.index("def clean_formula_text") < RUNTIME_TEMPLATE.index("def text_formula_to_latex"),
+        "formula cleanup should be defined before plain-text formula conversion",
+    )
+    assert_true(
+        RUNTIME_TEMPLATE.index("def add_caption") < RUNTIME_TEMPLATE.index("def render_table"),
+        "caption helper should be defined before table/image rendering",
+    )
+    assert_true(
+        RUNTIME_TEMPLATE.index("def is_front_section_index") < RUNTIME_TEMPLATE.index("def render_body"),
+        "front-section predicate should be defined before body rendering",
+    )
+
+
+@case
+def script_generator_runtime_formula_fragment_is_injected() -> None:
+    assert_true("__FORMULA_RUNTIME__" not in RUNTIME_TEMPLATE, "formula runtime placeholder leaked into generated template")
+    assert_true("def append_inline_formula" in RUNTIME_TEMPLATE, "inline formula runtime fragment was not injected")
+    assert_true("def add_rich_text_runs" in RUNTIME_TEMPLATE, "rich_text runtime fragment was not injected")
+
+
+@case
+def script_generator_runtime_formula_text_fragment_is_injected() -> None:
+    assert_true("__FORMULA_TEXT_RUNTIME__" not in RUNTIME_TEMPLATE, "formula text runtime placeholder leaked into generated template")
+    assert_true("def chapter_number_from_heading" in RUNTIME_TEMPLATE, "chapter-number helper was not injected")
+    assert_true("def text_formula_to_latex" in RUNTIME_TEMPLATE, "plain-text formula conversion helper was not injected")
+    assert_true("def split_formula_number" in RUNTIME_TEMPLATE, "formula-number parsing helper was not injected")
+    assert_true("def formula_has_number" in RUNTIME_TEMPLATE, "formula-number predicate was not injected")
+    assert_true(RUNTIME_TEMPLATE.count("def text_formula_to_latex") == 1, "plain-text formula conversion helper should be injected exactly once")
+    assert_true(
+        RUNTIME_TEMPLATE.index("def clean_formula_text") < RUNTIME_TEMPLATE.index("def text_formula_to_latex"),
+        "plain-text formula conversion should be defined after formula text cleanup",
+    )
+    assert_true(
+        RUNTIME_TEMPLATE.index("def text_formula_to_latex") < RUNTIME_TEMPLATE.index("def render_formula"),
+        "plain-text formula conversion should be defined before formula rendering",
+    )
+    assert_true(
+        RUNTIME_TEMPLATE.index("def chapter_number_from_heading") < RUNTIME_TEMPLATE.index("def render_body"),
+        "chapter-number helper should be defined before body rendering",
+    )
+
+
+@case
+def script_generator_runtime_formula_render_fragment_is_injected() -> None:
+    assert_true("__FORMULA_RENDER_RUNTIME__" not in RUNTIME_TEMPLATE, "formula render runtime placeholder leaked into generated template")
+    assert_true("def next_formula_label" in RUNTIME_TEMPLATE, "formula label counter helper was not injected")
+    assert_true("def render_plain_formula" in RUNTIME_TEMPLATE, "plain formula renderer was not injected")
+    assert_true("def render_formula" in RUNTIME_TEMPLATE, "formula renderer was not injected")
+    assert_true(RUNTIME_TEMPLATE.count("def render_formula") == 1, "formula renderer should be injected exactly once")
+    assert_true(
+        RUNTIME_TEMPLATE.index("def text_formula_to_latex") < RUNTIME_TEMPLATE.index("def render_formula"),
+        "formula renderer should be defined after plain-text formula conversion",
+    )
+    assert_true(
+        RUNTIME_TEMPLATE.index("def render_formula") < RUNTIME_TEMPLATE.index("def render_paragraph_item"),
+        "formula renderer should be defined before body paragraph dispatch",
+    )
+    assert_true(
+        RUNTIME_TEMPLATE.index("FORMULA_COUNTERS = {}") < RUNTIME_TEMPLATE.index("if __name__ == '__main__'"),
+        "formula counters should be initialized before the generated-script entrypoint runs",
+    )
+
+
+@case
+def script_generator_runtime_media_table_fragment_is_injected() -> None:
+    assert_true("__MEDIA_TABLE_RUNTIME__" not in RUNTIME_TEMPLATE, "media/table runtime placeholder leaked into generated template")
+    assert_true("def render_table" in RUNTIME_TEMPLATE, "table runtime fragment was not injected")
+    assert_true("def render_image" in RUNTIME_TEMPLATE, "image runtime fragment was not injected")
+    assert_true("def add_code_block" in RUNTIME_TEMPLATE, "code-block runtime fragment was not injected")
+
+
+@case
+def script_generator_runtime_references_fragment_is_injected() -> None:
+    assert_true("__REFERENCES_RUNTIME__" not in RUNTIME_TEMPLATE, "references runtime placeholder leaked into generated template")
+    assert_true("def render_reference_entries" in RUNTIME_TEMPLATE, "reference runtime fragment was not injected")
+    assert_true("def render_backmatter_section" in RUNTIME_TEMPLATE, "backmatter runtime fragment was not injected")
+    assert_true("def collect_structural_backmatter" in RUNTIME_TEMPLATE, "structural backmatter runtime fragment was not injected")
+
+
+@case
+def script_generator_runtime_toc_fragment_is_injected() -> None:
+    assert_true("__TOC_RUNTIME__" not in RUNTIME_TEMPLATE, "TOC runtime placeholder leaked into generated template")
+    assert_true("def collect_toc_entries" in RUNTIME_TEMPLATE, "TOC entry collection runtime fragment was not injected")
+    assert_true("def add_toc" in RUNTIME_TEMPLATE, "TOC rendering runtime fragment was not injected")
+    assert_true("def _infer_heading_pages_from_word_com" in RUNTIME_TEMPLATE, "Word COM TOC page-resolution fragment was not injected")
+
+
+@case
+def script_generator_runtime_build_fragment_is_injected() -> None:
+    assert_true("__BUILD_RUNTIME__" not in RUNTIME_TEMPLATE, "build runtime placeholder leaked into generated template")
+    assert_true("def reset_build_stats" in RUNTIME_TEMPLATE, "build stats runtime fragment was not injected")
+    assert_true("def write_build_manifest" in RUNTIME_TEMPLATE, "manifest writer runtime fragment was not injected")
+    assert_true("def build_document" in RUNTIME_TEMPLATE, "document build runtime fragment was not injected")
+    assert_true("def main" in RUNTIME_TEMPLATE, "generated-script main runtime fragment was not injected")
+
+
+@case
+def script_generator_runtime_cover_fragment_is_injected() -> None:
+    assert_true("__COVER_RUNTIME__" not in RUNTIME_TEMPLATE, "cover runtime placeholder leaked into generated template")
+    assert_true("def render_cover_and_declarations" in RUNTIME_TEMPLATE, "cover renderer runtime fragment was not injected")
+    assert_true("def render_cover_table" in RUNTIME_TEMPLATE, "cover table runtime fragment was not injected")
+    assert_true("def compute_cover_skip_indices" in RUNTIME_TEMPLATE, "cover spacer runtime fragment was not injected")
+    assert_true("def set_cover_cell_margins" in RUNTIME_TEMPLATE, "cover cell-margin helper should not collide with body table helper")
+    assert_true(
+        RUNTIME_TEMPLATE.index("def render_cover_and_declarations") < RUNTIME_TEMPLATE.index("def render_front_matter"),
+        "cover runtime should be defined before front matter rendering",
+    )
+    assert_true(
+        RUNTIME_TEMPLATE.index("def set_cell_borders") < RUNTIME_TEMPLATE.index("def add_code_block"),
+        "shared border helper should be defined before media/table runtime uses it",
+    )
+
+
+@case
+def script_generator_runtime_front_matter_fragment_is_injected() -> None:
+    assert_true("__FRONT_MATTER_RUNTIME__" not in RUNTIME_TEMPLATE, "front matter runtime placeholder leaked into generated template")
+    assert_true("def section_text" in RUNTIME_TEMPLATE, "front matter section_text helper was not injected")
+    assert_true("def add_keywords" in RUNTIME_TEMPLATE, "front matter keyword helper was not injected")
+    assert_true("def render_front_matter" in RUNTIME_TEMPLATE, "front matter renderer runtime fragment was not injected")
+    assert_true(RUNTIME_TEMPLATE.count("def render_front_matter") == 1, "front matter renderer should be injected exactly once")
+    assert_true(
+        RUNTIME_TEMPLATE.index("def add_rich_text_item") < RUNTIME_TEMPLATE.index("def render_front_matter"),
+        "front matter renderer should be defined after rich-text formula helpers",
+    )
+    assert_true(
+        RUNTIME_TEMPLATE.index("def add_toc") < RUNTIME_TEMPLATE.index("def render_front_matter"),
+        "front matter renderer should be defined after TOC helpers",
+    )
+    assert_true(
+        RUNTIME_TEMPLATE.index("def render_front_matter") < RUNTIME_TEMPLATE.index("def is_front_section_index"),
+        "front matter renderer should stay before body/front-index helpers",
+    )
+
+
+@case
+def script_generator_runtime_body_fragment_is_injected() -> None:
+    assert_true("__BODY_RUNTIME__" not in RUNTIME_TEMPLATE, "body runtime placeholder leaked into generated template")
+    assert_true("def render_paragraph_item" in RUNTIME_TEMPLATE, "body paragraph dispatcher runtime fragment was not injected")
+    assert_true("def render_body" in RUNTIME_TEMPLATE, "body renderer runtime fragment was not injected")
+    assert_true(RUNTIME_TEMPLATE.count("def render_body") == 1, "body renderer should be injected exactly once")
+    assert_true(
+        RUNTIME_TEMPLATE.index("def render_formula") < RUNTIME_TEMPLATE.index("def render_paragraph_item"),
+        "body renderer should be defined after formula rendering helpers",
+    )
+    assert_true(
+        RUNTIME_TEMPLATE.index("def render_table") < RUNTIME_TEMPLATE.index("def render_paragraph_item"),
+        "body renderer should be defined after table/image helpers",
+    )
+    assert_true(
+        RUNTIME_TEMPLATE.index("def render_reference_entries") < RUNTIME_TEMPLATE.index("def render_body"),
+        "body renderer should be defined after reference/backmatter helpers",
+    )
+    assert_true(
+        RUNTIME_TEMPLATE.index("def render_body") < RUNTIME_TEMPLATE.index("def build_document"),
+        "body renderer should be defined before document build orchestration",
+    )
 
 
 @case

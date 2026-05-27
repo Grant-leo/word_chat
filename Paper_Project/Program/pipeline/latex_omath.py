@@ -204,6 +204,27 @@ _MATRIX_BRACKETS = {
 #  OOXML BUILDER HELPERS
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _is_math_identifier_text(text):
+    """True for variable-like literal letters that should keep math italic."""
+    if not text:
+        return False
+    for ch in str(text):
+        if ('A' <= ch <= 'Z') or ('a' <= ch <= 'z') or ('\u0370' <= ch <= '\u03ff'):
+            continue
+        return False
+    return True
+
+
+def _make_literal_run(text):
+    """Create a run for literal LaTeX chars.
+
+    Raw identifiers keep Word's default math style; punctuation, digits,
+    brackets, and operators are forced upright for Word/WPS consistency.
+    """
+    style = None if _is_math_identifier_text(text) else 'plain'
+    return _make_run(text, style=style)
+
+
 def _make_run(text, style=None):
     """Create m:r element with text content.
     style: None=italic(math default), 'plain'=upright, 'bold'=bold,
@@ -489,7 +510,7 @@ class _LaTeXParser:
             if t['type'] == 'EOF' or t['type'] in ('RBRACE', 'AMPERSAND', 'NEWLINE'):
                 break
             if t['type'] == 'CHAR' and t['value'] in '+-=<>*' + chr(39) + ':':
-                left.append(_make_run(self.consume()['value']))
+                left.append(_make_run(self.consume()['value'], style='plain'))
                 left.extend(self._flatten(self._parse_sup_sub_seq()))
             elif t['type'] == 'SPACE':
                 self.consume()
@@ -575,13 +596,13 @@ class _LaTeXParser:
         if t['type'] == 'COMMAND':
             return self._parse_command()
         if t['type'] == 'CHAR':
-            return _make_run(self.consume()['value'])
+            return _make_literal_run(self.consume()['value'])
         if t['type'] == 'SPACE':
             self.consume()
             return None
         if t['type'] == 'BEGIN':
             return self._parse_matrix()
-        return _make_run(self.consume()['value'])
+        return _make_literal_run(self.consume()['value'])
 
     # ── command dispatcher ──
     def _parse_command(self):
@@ -681,7 +702,7 @@ class _LaTeXParser:
 
         # Arrows
         if name in _ARROWS:
-            return _make_run(_ARROWS[name])
+            return _make_run(_ARROWS[name], style='plain')
 
         # \tag{label} — formula numbering
         if name == 'tag':
@@ -689,13 +710,17 @@ class _LaTeXParser:
 
         # Symbols
         if name in _SYMBOLS:
-            return _make_run(_SYMBOLS[name])
+            return _make_run(_SYMBOLS[name], style='plain')
 
         # Spacing commands (ignored in OOXML)
         if name in (',', ';', ':', '!', 'quad', 'qquad', 'enspace', 'enskip', 'thinspace'):
             return None
         if name in ('limits', 'nolimits'):
             return None
+
+        # Escaped literal punctuation such as \{ and \% should stay upright.
+        if name in ('{', '}', '[', ']', '(', ')', '|', '%', '_', '#', '&'):
+            return _make_run(name, style='plain')
 
         # Unrecognized — emit as plain text
         return _make_run(name)
@@ -757,7 +782,7 @@ class _LaTeXParser:
             self.consume('SUPER')
             sup_el = self._ensure_single(self._parse_atom())
         # Build arrow base with limits
-        arrow_run = _make_run(chr_char)
+        arrow_run = _make_run(chr_char, style='plain')
         if sub_el and sup_el:
             return _make_supsub(arrow_run, sub_el, sup_el)
         elif sub_el:
@@ -770,10 +795,10 @@ class _LaTeXParser:
         """Handle \\pmod{n} → (mod n)."""
         arg = self._parse_arg()
         mod_text = _make_run('mod', style='plain')
-        space = _make_run(' ')
+        space = _make_run(' ', style='plain')
         num = self._ensure_element(arg)
-        lp = _make_run('(')
-        rp = _make_run(')')
+        lp = _make_run('(', style='plain')
+        rp = _make_run(')', style='plain')
         # Build: (mod n) as sibling elements
         return self._list_to_element([lp, mod_text, space, num, rp])
 
@@ -788,7 +813,7 @@ class _LaTeXParser:
         nxt = self.peek()
         if nxt['type'] == 'CHAR' and nxt.get('value') in _NOT_MAP:
             self.consume()
-            return _make_run(_NOT_MAP[nxt['value']])
+            return _make_run(_NOT_MAP[nxt['value']], style='plain')
         if nxt['type'] == 'COMMAND':
             nxt_name = nxt.get('value', '')[1:]
             if nxt_name in _SYMBOLS and _SYMBOLS[nxt_name] in _NOT_MAP.values():
@@ -796,8 +821,8 @@ class _LaTeXParser:
                 # Find the negated version
                 rev = {v: k for k, v in _NOT_MAP.items()}
                 self.consume()
-                return _make_run(rev.get(sym, sym))
-        return _make_run('¬')
+                return _make_run(rev.get(sym, sym), style='plain')
+        return _make_run('¬', style='plain')
 
     def _parse_substack(self):
         """Handle \\substack{a \\\\ b} — multi-line subscript content."""

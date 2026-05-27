@@ -23,6 +23,9 @@ If missing: `python -m pip install python-docx Pillow`.
 ### 1. Load Your Toolbox
 **Read `Paper_Project/基础操作.md`.** This file contains all OOXML code snippets: tables, cross-references, headers, pagination, formulas, footnotes. You will consult it for every modification. Do NOT guess OOXML — look it up here.
 
+### 1.5 Load Long-Term Memory
+Read `memory/PROJECT_MEMORY.md` and `memory/active_context.md` when they exist. These files are the disk-backed project memory and should guide long-running architecture work.
+
 ### 2. Check Files
 ```bash
 ls Templates/*.docx Inputs/*.docx Inputs/*.md 2>/dev/null
@@ -108,7 +111,8 @@ For reusable fixes, product behavior, parser changes, or when the requester is t
    - `qa_visual.py`: optional PDF export/render QA
    - `privacy.py`: report path sanitization helpers
    - `regression_suite.py`: synthetic engine regression suite
-   - `run_pipeline.py`: file selection, output directories, extraction orchestration
+   - `run_pipeline.py`: one-click entry and high-level orchestration
+   - `pipeline_runner/`: CLI, IO, run context, dependency loading, artifact writing, extraction verification, template phases, build execution, JSON contracts, QA orchestration, terminal reports, and completion summaries
 3. **Consult `基础操作.md`** — find the correct OOXML implementation
 4. **Edit the core script** — keep the change generic and template-driven
 5. **Re-run the whole pipeline** — `python run_pipeline.py --mode developer --template <模板文件名> --content <内容文件名>`
@@ -149,6 +153,8 @@ Example: template has no cross-references → generated script has no `B_ref()`.
 - Generated QA reports are routing-focused and block the pipeline on `error`; they still do not replace WPS/Word visual verification for final delivery.
 - QA also writes `qa_repair_plan.md/json` and `qa_fix_prompt.txt`; use these files as the first repair entry point before editing user-level or developer-level code.
 - `template_profile.json/md` is the reusable template decision layer. Do not add school-name logic when a profile capability/risk flag can describe the same need.
+- When the user says "更新记忆" or asks to save durable progress, update the disk memory under `memory/` and validate with `python scripts/project_memory.py validate`.
+- Do not write private test data, generated DOCX/PDF/PNG, customer content, API keys, or raw chat logs into memory.
 - `--qa-level visual` is the preferred delivery gate for developer/product checks. It requires Word COM for PDF export and Poppler tools (`pdfinfo`, `pdftotext`, `pdftoppm`) for page/text/sample checks; missing required render tools fail visual QA and make the pipeline exit nonzero.
 - Missing or remote Markdown images, and DOCX image extraction failures, must surface as QA errors rather than disappearing from `content.json`.
 - DOCX table-cell images must be surfaced in the content image stream; header/footer images from the content source are non-body content and must surface as `NON_BODY_IMAGE_UNSUPPORTED` unless product behavior explicitly changes.
@@ -173,12 +179,17 @@ Example: template has no cross-references → generated script has no `B_ref()`.
 
 ```
 run_pipeline.py              ← One-click entry
+memory/                      ← Disk-backed project memory: summaries + JSONL audit streams
+scripts/project_memory.py    ← Memory append/validation helper
 Paper_Project/Program/pipeline/
     format_extractor.py       ← Phase 1: template → format JSON
     content_parser.py         ← Phase 2: content → structured JSON
+    content_parser_modules/   ← content_parser submodules: placeholders, styles, text cleanup, front matter, caption flow, paragraph streams, body dispatch, source TOC, images, tables, formulas, headings, references, section building
     md_parser.py              ← MD parser (format + content from .md)
     template_profiler.py      ← template capability profile
     script_generator.py       ← Phase 3: JSON → build_generated.py
+    script_generator_modules/ ← script_generator submodules: sections/front matter, template rules, style profiles, and runtime template fragments
+    pipeline_runner/          ← run_pipeline orchestration helpers
     latex_omath.py            ← LaTeX→OOXML formula converter
     qa_checker.py             ← Generated-output QA report and fix-target routing
     qa_visual.py              ← optional PDF/render QA

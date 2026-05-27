@@ -575,7 +575,7 @@ def check_conformance(out_dir: str, mode: str = "user", output_docx_name: str = 
     counts["docx_tables"] = len(tables_xml)
 
     section_count, page_issues = _page_geometry_issues(root, req)
-    counts["sections"] = section_count
+    counts["docx_sections"] = section_count
     for detail in page_issues:
         add("PAGE_GEOMETRY_MISMATCH", "error", "Final DOCX page geometry does not match template requirements.", detail)
 

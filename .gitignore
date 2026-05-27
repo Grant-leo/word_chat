@@ -27,6 +27,10 @@ TestData/**
 !TestData/
 !TestData/*.txt
 
+# Local private agent memory
+memory/**
+scripts/project_memory.py
+
 # Python
 __pycache__/
 *.pyc
