@@ -5,6 +5,8 @@ import json
 
 from docx import Document
 from format_extractor import extract as extract_docx_format
+from qa_checker_modules.format_phase import run_format_checks
+from regression_suite_modules.generated_pdf import poppler_available, write_blank_pdf, write_text_pdf
 from regression_suite_modules.harness import assert_true, base_format, case, new_workdir
 from template_profiler import profile_format
 
@@ -38,4 +40,106 @@ def format_extractor_stops_cover_before_spaced_abstract_heading() -> None:
     )
     assert_true("Cover title" in cover_text, "cover text before abstract was not extracted")
     assert_true("摘" not in cover_text and "Template abstract sample" not in cover_text, "abstract page leaked into cover extraction")
+
+
+@case
+def pdf_instruction_template_extracts_profile() -> None:
+    if not poppler_available():
+        return
+    work = new_workdir("pdf_instruction_template")
+    pdf = work / "requirements.pdf"
+    write_text_pdf(
+        pdf,
+        [
+            ("Format requirements", 16, 72, 780),
+            ("Page A4 margins top 2.5 cm bottom 2.5 cm left 3.0 cm right 2.5 cm", 11, 72, 742),
+            ("Body font Times New Roman 12 pt justified line spacing 1.5", 11, 72, 718),
+            ("Heading 1 font SimHei 16 pt bold centered", 11, 72, 694),
+            ("Heading 2 font SimHei 14 pt bold left", 11, 72, 670),
+            ("References font Times New Roman 12 pt", 11, 72, 646),
+        ],
+    )
+
+    fmt, md = extract_docx_format(str(pdf))
+    pdf_meta = fmt.get("_meta", {}).get("pdf_template") or {}
+    profile = profile_format(fmt)
+    assert_true(pdf_meta.get("type") == "instruction_pdf", f"unexpected pdf type: {pdf_meta}")
+    assert_true(pdf_meta.get("errors") == [], f"instruction PDF should not report errors: {pdf_meta}")
+    assert_true(profile["source"]["source_ext"] == ".pdf", "template profile lost PDF source extension")
+    assert_true(profile["capabilities"]["has_heading_styles"], "instruction PDF should provide heading style profiles")
+    assert_true("PDF 模板格式提取" in md, "PDF extraction report title missing")
+
+
+@case
+def pdf_sparse_instruction_template_warns_limited_confidence() -> None:
+    if not poppler_available():
+        return
+    work = new_workdir("pdf_sparse_instruction_template")
+    pdf = work / "sparse_requirements.pdf"
+    write_text_pdf(
+        pdf,
+        [
+            ("Format requirements", 16, 72, 780),
+            ("Page A4 margin left 3.0 cm right 2.5 cm", 11, 72, 742),
+            ("Body font Times New Roman 12 pt justified line spacing 1.5", 11, 72, 718),
+        ],
+    )
+
+    fmt, _ = extract_docx_format(str(pdf))
+    pdf_meta = fmt.get("_meta", {}).get("pdf_template") or {}
+    warnings = pdf_meta.get("warnings") or []
+    assert_true(
+        any(str(item).startswith("PDF_TEMPLATE_INSTRUCTION_INCOMPLETE") for item in warnings),
+        f"sparse instruction PDF should warn about incomplete rules: {warnings}",
+    )
+
+
+@case
+def pdf_visual_template_extracts_lines_and_risk_profile() -> None:
+    if not poppler_available():
+        return
+    work = new_workdir("pdf_visual_template")
+    pdf = work / "visual_sample.pdf"
+    write_text_pdf(
+        pdf,
+        [
+            ("Synthetic Thesis Title", 20, 180, 780),
+            ("Abstract", 16, 260, 735),
+            ("This paper studies robust document generation from template samples.", 11, 72, 700),
+            ("1 Introduction", 15, 72, 650),
+            ("Template adaptation requires careful format extraction and QA.", 11, 72, 622),
+            ("Figure 1 System architecture", 10, 210, 585),
+            ("References", 15, 72, 540),
+            ("[1] Doe J. Synthetic reference for regression testing.", 11, 72, 512),
+        ],
+    )
+
+    fmt, _ = extract_docx_format(str(pdf))
+    pdf_meta = fmt.get("_meta", {}).get("pdf_template") or {}
+    profile = profile_format(fmt)
+    assert_true(pdf_meta.get("type") == "visual_sample_pdf", f"unexpected pdf type: {pdf_meta}")
+    assert_true(len(fmt.get("paragraphs") or []) >= 6, "visual PDF lines were not converted into paragraphs")
+    assert_true(profile["risk_flags"]["pdf_template_limited_confidence"] is True, "visual PDF risk flag missing")
+    assert_true(profile["capabilities"]["has_page_geometry"] is True, "visual PDF page geometry missing")
+
+
+@case
+def pdf_scanned_template_surfaces_qa_error() -> None:
+    if not poppler_available():
+        return
+    work = new_workdir("pdf_scanned_template")
+    pdf = work / "blank_scan.pdf"
+    write_blank_pdf(pdf)
+    fmt, _ = extract_docx_format(str(pdf))
+    format_path = work / "format.json"
+    format_path.write_text(json.dumps(fmt, ensure_ascii=False), encoding="utf-8")
+
+    issues = []
+
+    def add(code, level, message, detail=""):
+        issues.append({"code": code, "level": level, "message": message, "detail": detail})
+
+    run_format_checks({"format": str(format_path)}, {}, add)
+    codes = {issue["code"] for issue in issues}
+    assert_true("PDF_TEMPLATE_UNSUPPORTED" in codes, f"scanned PDF did not surface QA error: {issues}")
 

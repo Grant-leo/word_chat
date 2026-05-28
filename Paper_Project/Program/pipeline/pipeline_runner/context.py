@@ -49,8 +49,8 @@ def resolve_inputs(template_file, content_file, md_file, template_dir, inputs_di
             )
         )
 
-    template_path = os.path.join(template_dir, template_file)
-    content_path = os.path.join(inputs_dir, content_file)
+    template_path = template_file if os.path.isabs(template_file) else os.path.join(template_dir, template_file)
+    content_path = content_file if os.path.isabs(content_file) else os.path.join(inputs_dir, content_file)
     if not os.path.exists(template_path):
         return InputResolution(error=f"[ERROR] 模版文件不存在: {template_path}")
     if not os.path.exists(content_path):
@@ -59,9 +59,9 @@ def resolve_inputs(template_file, content_file, md_file, template_dir, inputs_di
         inputs=ResolvedInputs(
             template_path=template_path,
             content_path=content_path,
-            content_name=os.path.splitext(content_file)[0],
-            use_md_format=str(template_file).endswith(".md"),
-            use_md_content=str(content_file).endswith(".md"),
+            content_name=os.path.splitext(os.path.basename(content_file))[0],
+            use_md_format=str(template_file).lower().endswith(".md"),
+            use_md_content=str(content_file).lower().endswith(".md"),
         )
     )
 

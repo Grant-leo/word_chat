@@ -23,6 +23,7 @@ If missing: `python -m pip install python-docx Pillow lxml`.
 Dependency notes:
 - Normal pipeline and strict QA require Python 3.10+, `python-docx`, `Pillow`, and `lxml`.
 - Generated DOCX builds copy and use local engine modules; no extra Python package is needed for the public-template downloader because it uses stdlib `urllib`.
+- PDF template parsing requires Poppler command-line tools on `PATH`: `pdfinfo` and `pdftotext`. Scanned/textless PDFs should become QA errors, not silent defaults.
 - Automatic Word TOC/page-number updating is optional and uses Microsoft Word COM via `pywin32` (`python -m pip install pywin32`) when available; without it the pipeline keeps static visible TOC lines.
 - `--qa-level visual` requires Windows PowerShell plus Microsoft Word COM for PDF export, and Poppler command-line tools on `PATH`: `pdfinfo`, `pdftotext`, `pdftoppm`.
 - Optional WPS cross-render QA requires WPS COM (`KWPS.Application` or `WPS.Application`); missing WPS is a warning unless `--require-wps` is used.
@@ -35,9 +36,9 @@ Read `memory/PROJECT_MEMORY.md` and `memory/active_context.md` when they exist. 
 
 ### 2. Check Files
 ```bash
-ls Templates/*.docx Inputs/*.docx Inputs/*.md 2>/dev/null
+ls Templates/*.docx Templates/*.pdf Inputs/*.docx Inputs/*.md 2>/dev/null
 ```
-If no .docx or .md files, tell the user to put them in Templates/ and Inputs/.
+If no template/content files exist, tell the user to put `.docx` or `.pdf` templates in `Templates/`, and `.docx` or `.md` content in `Inputs/`.
 
 ### 3. Select Workflow Mode
 
@@ -52,6 +53,9 @@ If no mode is known and the user has not said they are the developer, use `user`
 ```bash
 # DOCX template + DOCX content
 python run_pipeline.py --mode user --template <模板文件名> --content <内容文件名>
+
+# PDF template + DOCX/MD content
+python run_pipeline.py --mode user --template <PDF模板文件名> --content <内容文件名>
 
 # DOCX template + MD content
 python run_pipeline.py --mode user --template <模板文件名> --content <md文件名>
@@ -71,6 +75,7 @@ Or interactive: `python run_pipeline.py`
 - Read `Outputs/<latest>/格式提取.md` — check paragraph counts, fonts, sizes
 - Read `Outputs/<latest>/内容提取.md` — check all sections present
 - Read `Outputs/<latest>/template_profile.md` — check template capabilities and risk flags
+- For PDF templates, check `template_profile.md` and `格式提取.md` for PDF type, confidence, warnings, and possible `PDF_TEMPLATE_UNSUPPORTED`
 - Read `Outputs/<latest>/qa_report.md` first; it names the active fix target for the current mode
 - If `--qa-level visual` was used, read `Outputs/<latest>/visual_report.md` and inspect sample PNGs under `visual_qa/samples/`
 - Confirm `Outputs/<latest>/最终论文.docx` exists
@@ -114,7 +119,7 @@ For reusable fixes, product behavior, parser changes, or when the requester is t
    - `latex_omath.py`: LaTeX/text formula to native OOXML Math conversion
    - `latex_omath_modules/`: formula converter tokenizer, parser, API helpers, symbol registries, and OOXML builders copied with generated scripts
    - `format_extractor.py`: stable template format extraction entry point
-   - `format_extractor_modules/`: extraction orchestration, OOXML metrics, style inheritance, semantic style profiles, cover assets, and cover table extraction
+   - `format_extractor_modules/`: extraction orchestration, PDF template parsing, OOXML metrics, style inheritance, semantic style profiles, cover assets, and cover table extraction
    - `content_parser.py`: content sections, figures, references, metadata extraction
    - `content_parser_modules/`: reusable content extraction helpers for extraction orchestration, placeholders, text cleanup, front matter, captions, OOXML streams, body dispatch, source TOC, images, tables, formula labels/OMML/text items/repair strategies, headings, references, and section building
    - `md_parser.py`: Markdown input parsing
@@ -172,6 +177,7 @@ Example: template has no cross-references → generated script has no `B_ref()`.
 - Generated QA reports are routing-focused and block the pipeline on `error`; they still do not replace WPS/Word visual verification for final delivery.
 - QA also writes `qa_repair_plan.md/json` and `qa_fix_prompt.txt`; use these files as the first repair entry point before editing user-level or developer-level code.
 - `template_profile.json/md` is the reusable template decision layer. Do not add school-name logic when a profile capability/risk flag can describe the same need.
+- PDF templates are best-effort format sources: instruction-style PDFs provide text rules, visual sample PDFs provide estimated geometry/styles, and scanned/textless PDFs must surface `PDF_TEMPLATE_UNSUPPORTED`.
 - When the user says "更新记忆" or asks to save durable progress, update the disk memory under `memory/` and validate with `python scripts/project_memory.py validate`.
 - Do not write private test data, generated DOCX/PDF/PNG, customer content, API keys, or raw chat logs into memory.
 - `--qa-level visual` is the preferred delivery gate for developer/product checks. It requires Word COM for PDF export and Poppler tools (`pdfinfo`, `pdftotext`, `pdftoppm`) for page/text/sample checks; missing required render tools fail visual QA and make the pipeline exit nonzero.
@@ -202,7 +208,7 @@ memory/                      ← Disk-backed project memory: summaries + JSONL a
 scripts/project_memory.py    ← Memory append/validation helper
 Paper_Project/Program/pipeline/
     format_extractor.py       ← Phase 1: template → format JSON
-    format_extractor_modules/ ← format_extractor submodules: OOXML metrics, style inheritance, style profiles, cover assets/tables
+    format_extractor_modules/ ← format_extractor submodules: PDF template parsing, OOXML metrics, style inheritance, style profiles, cover assets/tables
     content_parser.py         ← Phase 2: content → structured JSON
     content_parser_modules/   ← content_parser submodules: extraction orchestration, placeholders, styles, text cleanup, front matter, caption flow, paragraph streams, body dispatch, source TOC, images, tables, formula labels/OMML/text items/repair strategies, headings, references, section building
     md_parser.py              ← MD parser (format + content from .md)
@@ -234,7 +240,7 @@ build_comprehensive_doc.py    ← Reference: all features demo
 ## Workflow Diagram
 
 ```
-Templates/模版.docx ──→ format_extractor ──→ Outputs/format.json
+Templates/模版.docx/.pdf ─→ format_extractor ─→ Outputs/format.json
     or .md (# 格式说明)     or md_parser         Outputs/格式提取.md
 
 format.json ─────────→ template_profiler ─→ Outputs/template_profile.json

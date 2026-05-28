@@ -8,7 +8,7 @@ tracked engine.
 
 - `run_pipeline.py` at the repository root is the one-click CLI.
 - `content_parser.py` extracts structured paper content.
-- `format_extractor.py` extracts template style and layout.
+- `format_extractor.py` extracts DOCX/PDF template style and layout.
 - `template_profiler.py` builds template capability/risk profiles.
 - `script_generator.py` writes `Outputs/<run>/build_generated.py`.
 - `qa_checker.py`, `qa_conformance.py`, and `qa_visual.py` verify generated output.
@@ -37,7 +37,9 @@ CLI, output, verification, and QA details in a focused package:
 
 Current baseline as of 2026-05-28:
 
-- Synthetic regression after the latest architecture split: `113 passed, 0 failed`.
+- Synthetic regression after the latest architecture split: `118 passed, 0 failed`.
+- PDF template end-to-end strict QA: synthetic instruction PDF template + DOCX content passed.
+- PDF extreme stress gate: 9 cases covering uppercase extensions, visual samples, landscape pages, sparse instructions, scanned/corrupt/blank/too-short PDFs met expected outcomes.
 - End-to-end strict QA matrix: 5 complex content documents × 3 templates = `15/15` passed.
 - Structural QA and conformance QA completed with no errors in that matrix.
 
@@ -45,9 +47,15 @@ Current baseline as of 2026-05-28:
 
 `format_extractor_modules/` owns reusable template extraction rules behind
 `format_extractor.extract`: OOXML scalar conversion, paragraph metrics, style
-inheritance resolution, semantic style profiles, cover assets, and cover table
-layout extraction. `extractor.py` owns the extraction orchestration, keeping
-`format_extractor.py` as a thin stable entrypoint.
+inheritance resolution, PDF template parsing, semantic style profiles, cover
+assets, and cover table layout extraction. `extractor.py` owns the extraction
+orchestration, keeping `format_extractor.py` as a thin stable entrypoint.
+
+PDF templates are handled as best-effort format sources. Instruction-style PDFs
+are parsed as text rules, visual sample PDFs estimate page geometry and styles
+from Poppler text bounding boxes, and scanned/textless PDFs surface
+`PDF_TEMPLATE_UNSUPPORTED` through structural QA instead of silently falling
+back to defaults.
 
 `content_parser_modules/` owns reusable content extraction rules behind
 `content_parser.extract`: placeholders, style helpers, text cleanup, front
@@ -130,7 +138,7 @@ writing behind `template_profiler.py`. The public functions stay
 `regression_suite_modules/` owns reusable test harness helpers behind
 `regression_suite.py`: case registration, assertions, temporary workspace
 cleanup, base format/content fixtures, PNG fixtures, generated-DOCX smoke
-helpers, and concrete case groups for pipeline orchestration, content parsing,
+helpers, synthetic PDF fixtures, and concrete case groups for pipeline orchestration, content parsing,
 formula/OMML, Markdown, QA, script generation, template/format extraction, and
 operational privacy/visual/CLI gates. The suite entrypoint is now a thin
 registration runner.

@@ -1,6 +1,20 @@
 ﻿"""User-facing repair guide metadata for structural QA issues."""
 from __future__ import annotations
 REPAIR_GUIDES = {
+    "PDF_TEMPLATE_UNSUPPORTED": {
+        "title": "PDF 模板无法可靠提取",
+        "why": "该 PDF 没有可复制文字，或本机缺少 Poppler 的 pdfinfo/pdftotext，流水线无法从中提取可用格式信息。",
+        "user_action": "优先提供 DOCX 模板；如果只有 PDF，请提供文字说明版 PDF，或先用 OCR 把扫描件转成可复制文字后重新运行。",
+        "developer_action": "检查 `format_extractor_modules/pdf_template.py` 的 Poppler 探测、文本抽取和扫描件错误上报。",
+        "auto_level": "needs_user_file",
+    },
+    "PDF_TEMPLATE_LIMITED_CONFIDENCE": {
+        "title": "PDF 模板格式为估计结果",
+        "why": "精排 PDF 不含 Word 样式树，流水线只能根据页面尺寸、文字位置、字号和样本文本估计格式。",
+        "user_action": "生成后请重点检查页边距、标题层级、封面和页眉页脚；若要求严格，建议换成 DOCX 模板或补充文字说明模板。",
+        "developer_action": "检查 `template_profile.md` 和 `格式提取.md` 中的 PDF 置信度、bbox 词元数、页边距估计是否合理。",
+        "auto_level": "manual_review",
+    },
     "IMAGE_COUNT_MISMATCH": {
         "title": "图片没有全部进入最终论文",
         "why": "内容中识别到的图片数量大于最终 DOCX 里实际渲染的正文图片数量。",

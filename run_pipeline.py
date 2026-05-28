@@ -74,7 +74,7 @@ def run(
     """Core pipeline: takes filenames, runs all phases, returns output directory.
 
     If md_file is provided, uses MD file for BOTH format and content (single-file mode).
-    Otherwise routes by file extension: .docx uses existing extractors, .md uses md_parser.
+    Otherwise routes by file extension: .docx/.pdf use format/content extractors, .md uses md_parser.
     """
     mode = normalize_mode(mode)
     qa_level = normalize_qa_level(qa_level)

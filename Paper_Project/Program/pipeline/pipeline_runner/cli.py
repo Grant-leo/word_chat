@@ -9,9 +9,9 @@ from .io import choose_file, choose_mode, exit_from_result, normalize_mode, scan
 
 def build_arg_parser(default_golden_dir=os.path.join("TestData", "GoldenBaselines")):
     parser = argparse.ArgumentParser(description="Word 论文排版流水线")
-    parser.add_argument("--template", "-t", help="模版文件名 (位于 Templates/)")
-    parser.add_argument("--content", "-c", help="内容文件名 (位于 Inputs/)")
-    parser.add_argument("--md", help="单个 MD 文件（含格式+内容，纯 MD 模式）")
+    parser.add_argument("--template", "-t", help="模板文件名，位于 Templates/，支持 .docx/.pdf")
+    parser.add_argument("--content", "-c", help="内容文件名，位于 Inputs/，支持 .docx/.md")
+    parser.add_argument("--md", help="单个 MD 文件：格式+内容合一的纯 MD 模式")
     parser.add_argument(
         "--mode",
         choices=["auto", "user", "developer"],
@@ -74,11 +74,11 @@ def dispatch_cli(args, *, run_pipeline, template_dir, inputs_dir):
         template_file = args.template
         content_file = args.content
     else:
-        templates = scan_inputs(template_dir, exts=(".docx",))
+        templates = scan_inputs(template_dir, exts=(".docx", ".pdf"))
         contents = scan_inputs(inputs_dir, exts=(".docx", ".md"))
 
         if not templates:
-            print("\n[INFO] Templates/ 下没有 .docx 文件。")
+            print("\n[INFO] Templates/ 下没有 .docx 或 .pdf 模板文件。")
             print("  纯 MD 模式请用: python run_pipeline.py --md <文件名>")
             md_files = scan_inputs(inputs_dir, exts=(".md",))
             if md_files:
@@ -87,10 +87,10 @@ def dispatch_cli(args, *, run_pipeline, template_dir, inputs_dir):
                     print(f"    python run_pipeline.py --md {filename}")
             raise SystemExit(1)
         if not contents:
-            print("\n[ERROR] Inputs/ 下没有 .docx 或 .md 文件，请放入内容文件后重试。")
+            print("\n[ERROR] Inputs/ 下没有 .docx 或 .md 内容文件，请放入内容文件后重试。")
             raise SystemExit(1)
 
-        template_file = choose_file(templates, "选择模版")
+        template_file = choose_file(templates, "选择模板")
         content_file = choose_file(contents, "选择内容")
 
     exit_from_result(

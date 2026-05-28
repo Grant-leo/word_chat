@@ -114,12 +114,16 @@ def _risk_flags(fmt: Dict[str, Any], text_blob: str) -> Dict[str, Any]:
     all_nodes = list(_walk(fmt))
     floating = any("anchor" in str(node).lower() for node in all_nodes)
     textbox = any("textbox" in str(node).lower() or "txbx" in str(node).lower() for node in all_nodes)
+    pdf_meta = (fmt.get("_meta") or {}).get("pdf_template") or {}
     return {
         "complex_cover": len(cover) > 20,
         "uses_textbox": textbox,
         "uses_floating_images": floating,
         "many_sections": len(fmt.get("sections") or []) > 3,
         "many_template_tables": len(fmt.get("tables") or []) > 8,
+        "pdf_template": bool(pdf_meta),
+        "pdf_template_limited_confidence": bool(pdf_meta.get("warnings")) or pdf_meta.get("type") == "visual_sample_pdf",
+        "pdf_template_unsupported": bool(pdf_meta.get("errors")) or pdf_meta.get("type") == "scanned_or_unsupported_pdf",
         "mentions_formula_rules": bool(re.search(r"(鍏紡|formula)", text_blob, re.I)),
         "mentions_reference_rules": bool(re.search(r"(鍙傝€冩枃鐚畖references?)", text_blob, re.I)),
     }
@@ -128,7 +132,7 @@ def _risk_flags(fmt: Dict[str, Any], text_blob: str) -> Dict[str, Any]:
 def _safe_source_meta(meta: Dict[str, Any]) -> Dict[str, Any]:
     source = str(meta.get("source") or "")
     safe = {
-        "sha256": meta.get("sha256"),
+        "sha256": meta.get("sha256") or meta.get("source_hash"),
         "source_ext": os.path.splitext(source)[1].lower() if source else "",
         "paragraphs": meta.get("paragraphs"),
         "tables": meta.get("tables"),
@@ -142,6 +146,7 @@ def profile_format(fmt: Dict[str, Any], project_root: str | None = None) -> Dict
     text_blob = _text_blob(fmt)
     styles = fmt.get("style_profiles") or {}
     meta = fmt.get("_meta") or {}
+    pdf_meta = meta.get("pdf_template") or {}
     style_roles = {
         role: _profile_style(styles[role])
         for role in STYLE_ROLES
@@ -152,6 +157,15 @@ def profile_format(fmt: Dict[str, Any], project_root: str | None = None) -> Dict
         "schema_version": 1,
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "source": _safe_source_meta(meta),
+        "pdf_template": {
+            "type": pdf_meta.get("type"),
+            "confidence": pdf_meta.get("confidence"),
+            "page_count": pdf_meta.get("page_count"),
+            "text_chars": pdf_meta.get("text_chars"),
+            "warnings": list(pdf_meta.get("warnings") or []),
+            "errors": list(pdf_meta.get("errors") or []),
+            "backend": dict(pdf_meta.get("backend") or {}),
+        } if pdf_meta else {},
         "counts": {
             "paragraphs": len(fmt.get("paragraphs") or []),
             "tables": len(fmt.get("tables") or []),

@@ -13,6 +13,8 @@ OWNER_BY_CODE = {
     "CONTENT_EMPTY": "content_parser.py / md_parser.py",
     "STYLE_PROFILE_MISSING": "format_extractor.py / script_generator.py",
     "COVER_NOT_EXTRACTED": "format_extractor.py / script_generator.py",
+    "PDF_TEMPLATE_UNSUPPORTED": "format_extractor.py / format_extractor_modules/pdf_template.py",
+    "PDF_TEMPLATE_LIMITED_CONFIDENCE": "format_extractor.py / format_extractor_modules/pdf_template.py / template_profiler.py",
     "TITLE_MISSING": "content_parser.py / md_parser.py",
     "REFERENCES_MISSING": "content_parser.py / md_parser.py",
     "DOCX_XML_UNREADABLE": "script_generator.py",

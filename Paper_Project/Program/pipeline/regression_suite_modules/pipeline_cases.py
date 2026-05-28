@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import List
 
+from docx import Document
 from pipeline_runner.artifacts import build_content_markdown, write_content_artifacts, write_format_artifacts
 from pipeline_runner.build_phase import generate_and_build_docx_phase
 from pipeline_runner.cli import build_arg_parser, dispatch_cli
@@ -31,6 +32,7 @@ from pipeline_runner.summary import build_completion_summary
 from pipeline_runner.template_phase import write_template_profile_phase, write_template_requirements_phase
 from pipeline_runner.verification import VerificationError, _merge_content_results, double_verify
 
+from regression_suite_modules.generated_pdf import poppler_available, write_text_pdf
 from regression_suite_modules.harness import (
     PNG_1X1,
     assert_true,
@@ -42,6 +44,7 @@ from regression_suite_modules.harness import (
 )
 
 PIPELINE_DIR = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[4]
 
 @case
 def pipeline_contracts_accept_current_handoffs() -> None:
@@ -93,10 +96,11 @@ def pipeline_io_helpers_scan_inputs_and_normalize_modes() -> None:
     work = new_workdir("pipeline_io")
     (work / "paper.docx").write_text("x", encoding="utf-8")
     (work / "notes.md").write_text("x", encoding="utf-8")
+    (work / "template.PDF").write_text("x", encoding="utf-8")
     (work / "~$paper.docx").write_text("x", encoding="utf-8")
     (work / "ignore.txt").write_text("x", encoding="utf-8")
     assert_true(scan_inputs(str(work)) == ["notes.md", "paper.docx"], "scan_inputs should skip temp and unsupported files")
-    assert_true(scan_inputs(str(work), exts=(".docx",)) == ["paper.docx"], "scan_inputs should respect extension filters")
+    assert_true(scan_inputs(str(work), exts=(".docx", ".pdf")) == ["paper.docx", "template.PDF"], "scan_inputs should respect extension filters case-insensitively")
     assert_true(normalize_mode("developer") == "developer", "developer mode should be preserved")
     assert_true(normalize_mode("bad-mode") == "user", "unknown mode should fall back to user")
 
@@ -132,10 +136,10 @@ def pipeline_cli_dispatches_md_parameter_and_single_file_modes() -> None:
     inputs_dir = work / "Inputs"
     template_dir.mkdir()
     inputs_dir.mkdir()
-    (template_dir / "only.docx").write_bytes(b"")
+    (template_dir / "only.pdf").write_bytes(b"")
     (inputs_dir / "only.md").write_text("# Paper", encoding="utf-8")
     expect_exit_zero(parser.parse_args(["--mode", "user"]), template_dir=str(template_dir), inputs_dir=str(inputs_dir))
-    assert_true(calls[-1]["template"] == "only.docx" and calls[-1]["content"] == "only.md", "single-file interactive dispatch changed")
+    assert_true(calls[-1]["template"] == "only.pdf" and calls[-1]["content"] == "only.md", "single-file interactive dispatch changed")
 
 
 @case
@@ -147,12 +151,13 @@ def pipeline_context_resolves_inputs_outputs_and_workflow() -> None:
     template_dir.mkdir()
     inputs_dir.mkdir()
     outputs_dir.mkdir()
-    (template_dir / "template.docx").write_text("x", encoding="utf-8")
+    (template_dir / "template.PDF").write_text("x", encoding="utf-8")
     (inputs_dir / "paper.md").write_text("# Paper", encoding="utf-8")
 
-    resolution = resolve_inputs("template.docx", "paper.md", None, str(template_dir), str(inputs_dir))
+    resolution = resolve_inputs("template.PDF", "paper.md", None, str(template_dir), str(inputs_dir))
     assert_true(resolution.ok, f"expected inputs to resolve: {resolution.error}")
     assert_true(resolution.inputs.use_md_content is True, "markdown content flag was not set")
+    assert_true(resolution.inputs.use_md_format is False, "PDF template should use format_extractor, not md_parser")
     assert_true(resolution.inputs.content_name == "paper", "content stem was not preserved")
     assert_true(normalize_qa_level("bad-level") == "strict", "invalid QA level should fall back to strict")
 
@@ -175,6 +180,62 @@ def pipeline_context_resolves_inputs_outputs_and_workflow() -> None:
     assert_true(workflow["mode"] == "developer", "workflow mode was not written")
     assert_true(workflow["qa_level"] == "visual", "workflow QA level was not written")
     assert_true(workflow["require_wps"] is True, "workflow require_wps flag was not written")
+
+
+@case
+def pipeline_runs_pdf_template_end_to_end_strict() -> None:
+    if not poppler_available():
+        return
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    import run_pipeline as root_runner
+
+    work = new_workdir("pipeline_pdf_e2e")
+    template_dir = work / "Templates"
+    inputs_dir = work / "Inputs"
+    outputs_dir = work / "Outputs"
+    template_dir.mkdir()
+    inputs_dir.mkdir()
+    outputs_dir.mkdir()
+
+    write_text_pdf(
+        template_dir / "pdf_template.pdf",
+        [
+            ("Format requirements", 16, 72, 780),
+            ("Page A4 margins top 2.5 cm bottom 2.5 cm left 3.0 cm right 2.5 cm", 11, 72, 742),
+            ("Body font Times New Roman 12 pt justified line spacing 1.5", 11, 72, 718),
+            ("Heading 1 font SimHei 16 pt bold centered", 11, 72, 694),
+            ("Heading 2 font SimHei 14 pt bold left", 11, 72, 670),
+            ("References font Times New Roman 12 pt hanging indent", 11, 72, 646),
+        ],
+    )
+
+    content_doc = Document()
+    content_doc.add_heading("PDF Template End-to-End Demo", level=0)
+    content_doc.add_paragraph("Abstract")
+    content_doc.add_paragraph("This synthetic document verifies that a PDF template can drive the reusable Word pipeline.")
+    content_doc.add_heading("1 Introduction", level=1)
+    content_doc.add_paragraph("The body includes enough text for extraction, generation, and strict QA to exercise the normal handoff.")
+    content_doc.add_heading("1.1 Method", level=2)
+    content_doc.add_paragraph("The method section checks heading hierarchy and paragraph rendering.")
+    content_doc.add_paragraph("References")
+    content_doc.add_paragraph("[1] Synthetic Author. PDF template regression case. 2026.")
+    content_doc.save(inputs_dir / "paper.docx")
+
+    old_dirs = (root_runner.TEMPLATE_DIR, root_runner.INPUTS_DIR, root_runner.OUTPUTS_DIR)
+    try:
+        root_runner.TEMPLATE_DIR = str(template_dir)
+        root_runner.INPUTS_DIR = str(inputs_dir)
+        root_runner.OUTPUTS_DIR = str(outputs_dir)
+        result = root_runner.run("pdf_template.pdf", "paper.docx", mode="developer", qa_level="strict")
+    finally:
+        root_runner.TEMPLATE_DIR, root_runner.INPUTS_DIR, root_runner.OUTPUTS_DIR = old_dirs
+
+    assert_true(result, "PDF template end-to-end pipeline returned no output directory")
+    result_dir = Path(result)
+    assert_true((result_dir / "最终论文.docx").exists(), "PDF template E2E did not build final DOCX")
+    qa = json.loads((result_dir / "qa_report.json").read_text(encoding="utf-8"))
+    assert_true(qa.get("passed") is True, f"PDF template E2E strict QA failed: {qa.get('issues')}")
 
 
 @case

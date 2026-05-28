@@ -11,20 +11,35 @@ from .profiles import profile_format
 def report_to_markdown(profile: Dict[str, Any]) -> str:
     cap = profile.get("capabilities") or {}
     risks = profile.get("risk_flags") or {}
+    pdf = profile.get("pdf_template") or {}
     lines = [
-        "# 妯℃澘鐢诲儚",
+        "# 模板能力画像",
         "",
-        f"- 娈佃惤: `{profile.get('counts', {}).get('paragraphs', 0)}`",
-        f"- 琛ㄦ牸: `{profile.get('counts', {}).get('tables', 0)}`",
-        f"- 鑺? `{profile.get('counts', {}).get('sections', 0)}`",
-        f"- 灏侀潰鍏冪礌: `{profile.get('counts', {}).get('cover_elements', 0)}`",
+        f"- 段落: `{profile.get('counts', {}).get('paragraphs', 0)}`",
+        f"- 表格: `{profile.get('counts', {}).get('tables', 0)}`",
+        f"- 节: `{profile.get('counts', {}).get('sections', 0)}`",
+        f"- 封面元素: `{profile.get('counts', {}).get('cover_elements', 0)}`",
         "",
-        "## 鑳藉姏",
+        "## 能力",
         "",
     ]
     for key in sorted(cap):
         lines.append(f"- `{key}`: {cap[key]}")
-    lines.extend(["", "## 椋庨櫓鏍囪", ""])
+    if pdf:
+        lines.extend([
+            "",
+            "## PDF 模板",
+            "",
+            f"- 类型: `{pdf.get('type')}`",
+            f"- 置信度: `{pdf.get('confidence')}`",
+            f"- 页数: `{pdf.get('page_count')}`",
+            f"- 可提取文本字符数: `{pdf.get('text_chars')}`",
+        ])
+        if pdf.get("warnings"):
+            lines.append(f"- 警告: `{'; '.join(map(str, pdf.get('warnings') or []))}`")
+        if pdf.get("errors"):
+            lines.append(f"- 错误: `{'; '.join(map(str, pdf.get('errors') or []))}`")
+    lines.extend(["", "## 风险标记", ""])
     for key in sorted(risks):
         lines.append(f"- `{key}`: {risks[key]}")
     lines.append("")

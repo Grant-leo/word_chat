@@ -9,15 +9,23 @@ from docx import Document
 try:
     from format_extractor_modules.cover import extract_cover as _extract_cover
     from format_extractor_modules.ooxml import ALIGN_MAP, paragraph_metrics as _paragraph_metrics
+    from format_extractor_modules.pdf_template import extract_pdf_template as _extract_pdf_template
     from format_extractor_modules.style_profiles import build_style_profiles as _build_style_profiles
     from format_extractor_modules.style_resolver import StyleResolver
 except ImportError:  # pragma: no cover - package-style imports
     from .cover import extract_cover as _extract_cover
     from .ooxml import ALIGN_MAP, paragraph_metrics as _paragraph_metrics
+    from .pdf_template import extract_pdf_template as _extract_pdf_template
     from .style_profiles import build_style_profiles as _build_style_profiles
     from .style_resolver import StyleResolver
 
 def extract(docx_path):
+    if str(docx_path).lower().endswith(".pdf"):
+        return _extract_pdf_template(docx_path)
+    return extract_docx_template(docx_path)
+
+
+def extract_docx_template(docx_path):
     """Extract all template formatting. Returns (format_dict, markdown_report)."""
     doc = Document(docx_path)
     resolver = StyleResolver(doc)

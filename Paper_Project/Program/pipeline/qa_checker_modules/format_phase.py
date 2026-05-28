@@ -20,8 +20,32 @@ def run_format_checks(paths: Dict[str, str], counts: Dict[str, Any], add: AddIss
             counts["format_sections"] = len(fmt.get("sections") or [])
             counts["cover_elements"] = len(fmt.get("cover") or [])
             counts["style_profiles"] = len(fmt.get("style_profiles") or {})
-            source = str((fmt.get("_meta") or {}).get("source") or "")
+            meta = fmt.get("_meta") or {}
+            source = str(meta.get("source") or "")
             is_md_format = source.lower().endswith(".md")
+            pdf_meta = meta.get("pdf_template") or {}
+            is_pdf_format = bool(pdf_meta) or source.lower().endswith(".pdf")
+            if pdf_meta:
+                counts["pdf_template_type"] = pdf_meta.get("type")
+                counts["pdf_template_confidence"] = pdf_meta.get("confidence", 0)
+                counts["pdf_template_text_chars"] = pdf_meta.get("text_chars", 0)
+                pdf_errors = pdf_meta.get("errors") or []
+                pdf_warnings = pdf_meta.get("warnings") or []
+                if pdf_meta.get("type") == "scanned_or_unsupported_pdf" or pdf_errors:
+                    detail = "; ".join(str(item) for item in pdf_errors) or "PDF 模板没有可提取文字。"
+                    add(
+                        "PDF_TEMPLATE_UNSUPPORTED",
+                        "error",
+                        "PDF 模板无法可靠提取格式。",
+                        detail,
+                    )
+                if pdf_meta.get("type") == "visual_sample_pdf" or pdf_warnings:
+                    add(
+                        "PDF_TEMPLATE_LIMITED_CONFIDENCE",
+                        "warning",
+                        "PDF 模板只能估计格式，不能像 DOCX 一样读取完整样式树。",
+                        "; ".join(str(item) for item in pdf_warnings[:5]),
+                    )
             if not fmt.get("sections"):
                 add("FORMAT_EMPTY", "error", "格式提取结果没有 section。")
             if not fmt.get("paragraphs"):
@@ -30,7 +54,7 @@ def run_format_checks(paths: Dict[str, str], counts: Dict[str, Any], add: AddIss
             missing = sorted(expected - set((fmt.get("style_profiles") or {}).keys()))
             if missing and not is_md_format:
                 add("STYLE_PROFILE_MISSING", "warning", "关键样式 profile 不完整。", ", ".join(missing))
-            if not fmt.get("cover") and not is_md_format:
+            if not fmt.get("cover") and not is_md_format and not is_pdf_format:
                 add("COVER_NOT_EXTRACTED", "warning", "没有提取到封面结构；纯 MD 或无封面模板时可以忽略。")
         except Exception as exc:
             add("MISSING_FORMAT_JSON", "error", "format.json 无法读取。", str(exc))

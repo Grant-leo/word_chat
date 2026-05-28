@@ -39,6 +39,7 @@ Dependency notes:
 
 - Normal pipeline and strict QA require Python 3.10+, `python-docx`, `Pillow`, and `lxml`.
 - Generated DOCX builds copy and use local engine modules; the public-template downloader uses stdlib `urllib`, so no `requests` package is required.
+- PDF template parsing requires Poppler command-line tools on `PATH`: `pdfinfo` and `pdftotext`. Scanned/textless PDFs should become QA errors, not silent defaults.
 - Automatic Word TOC/page-number updating is optional and uses Microsoft Word COM through `pywin32` (`python -m pip install pywin32`) when available; without it, static visible TOC lines remain.
 - `--qa-level visual` requires Windows PowerShell plus Microsoft Word COM for PDF export, and Poppler command-line tools on `PATH`: `pdfinfo`, `pdftotext`, `pdftoppm`.
 - Optional WPS cross-render QA requires WPS COM (`KWPS.Application` or `WPS.Application`); missing WPS is a warning unless `--require-wps` is used.
@@ -72,11 +73,12 @@ it for ordinary users, do not create it for them unless asked, and do not commit
 Check that the user has files in the local folders:
 
 ```bash
-python -c "from pathlib import Path; print('Templates:', [p.name for p in Path('Templates').glob('*.docx')]); print('Inputs:', [p.name for p in Path('Inputs').glob('*.docx')] + [p.name for p in Path('Inputs').glob('*.md')])"
+python -c "from pathlib import Path; print('Templates:', [p.name for p in Path('Templates').glob('*.docx')] + [p.name for p in Path('Templates').glob('*.pdf')]); print('Inputs:', [p.name for p in Path('Inputs').glob('*.docx')] + [p.name for p in Path('Inputs').glob('*.md')])"
 ```
 
-If no template or content exists, tell the user to put template files under
-`Templates/` and content files under `Inputs/`.
+If no template or content exists, tell the user to put `.docx` or `.pdf`
+template files under `Templates/` and `.docx` or `.md` content files under
+`Inputs/`.
 
 ### 3. Select Workflow Mode
 
@@ -95,6 +97,9 @@ python run_pipeline.py --mode user --template <模板文件名> --content <内�
 
 # DOCX template + Markdown content
 python run_pipeline.py --mode user --template <模板文件名> --content <md文件名>
+
+# PDF template + DOCX/Markdown content
+python run_pipeline.py --mode user --template <PDF模板文件名> --content <内容文件名>
 
 # Pure Markdown mode: format + content in one .md
 python run_pipeline.py --mode user --md <md文件名>
@@ -119,6 +124,7 @@ Open the newest `Outputs/<run>/` directory and inspect:
 - `格式提取.md`: template format extraction summary.
 - `内容提取.md`: content extraction summary.
 - `template_profile.md`: template capability and risk flags.
+- For PDF templates, check PDF type, confidence, warnings, and any `PDF_TEMPLATE_UNSUPPORTED` issue in `template_profile.md`, `格式提取.md`, and `qa_report.md`.
 - `template_requirements.md`: machine-checkable template/content requirements, when strict/visual QA is available.
 - `qa_report.md`: first repair entry point; it names the active fix target.
 - `qa_repair_plan.md` / `qa_repair_plan.json`: step-by-step repair plan.
@@ -206,8 +212,8 @@ python run_pipeline.py --mode developer --qa-level visual --template <模板文�
 
 - `content_parser.py`: stable public content extraction entrypoint.
 - `content_parser_modules/`: reusable content extraction rules: extraction orchestration, placeholders, styles, text cleanup, front matter, captions, paragraph streams, body dispatch, source TOC, images, tables, formula label cleanup, source OMML extraction, text formula items, split-layout repair strategies, headings, references, and section building.
-- `format_extractor.py`: stable template format extraction entry point.
-- `format_extractor_modules/`: OOXML metrics, style inheritance, semantic style profiles, cover assets, and cover table extraction.
+- `format_extractor.py`: stable DOCX/PDF template format extraction entry point.
+- `format_extractor_modules/`: PDF template parsing, OOXML metrics, style inheritance, semantic style profiles, cover assets, and cover table extraction.
 - `md_parser.py`: Markdown format/content parsing.
 - `md_parser_modules/`: Markdown parser helpers for content extraction orchestration, format extraction, inline/display math tokens, image path resolution, table parsing, and text cleanup.
 - `template_profiler.py`: stable template capability/risk profile entry point.
@@ -288,6 +294,7 @@ When a user wants a document-specific feature:
 - `template_profile.json/md` is the reusable template decision layer. Use profile capabilities/risk flags instead of school-name logic.
 - QA reports are routing-focused and block on `error`; they do not replace Word/WPS visual verification for final delivery.
 - QA also writes `qa_repair_plan.md/json` and `qa_fix_prompt.txt`; use these files first when repairing.
+- PDF templates are best-effort format sources: instruction-style PDFs provide text rules, visual sample PDFs provide estimated geometry/styles, and scanned/textless PDFs must surface `PDF_TEMPLATE_UNSUPPORTED`.
 - `--qa-level visual` is the preferred delivery gate for developer/product checks. It requires Word COM for PDF export and Poppler tools (`pdfinfo`, `pdftotext`, `pdftoppm`) for page/text/sample checks. Missing required render tools fail visual QA.
 - Missing or remote Markdown images, and DOCX image extraction failures, must surface as QA errors rather than disappearing from `content.json`.
 - DOCX table-cell images must surface in the content image stream.
@@ -370,7 +377,7 @@ Outputs/                                 <- generated runs, ignored except place
 ## Workflow Diagram
 
 ```text
-Templates/模板.docx or .md
+Templates/模板.docx/.pdf or .md
         |
         v
 format_extractor / md_parser

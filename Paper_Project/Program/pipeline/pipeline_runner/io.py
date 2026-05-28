@@ -11,7 +11,7 @@ def scan_inputs(folder, exts=(".docx", ".md")):
     files = [
         f
         for f in os.listdir(folder)
-        if any(f.endswith(e) for e in exts) and not f.startswith("~$")
+        if any(f.lower().endswith(e.lower()) for e in exts) and not f.startswith("~$")
     ]
     return sorted(files)
 

@@ -1,6 +1,6 @@
 # Word 论文自动排版流水线
 
-把「模板 DOCX」和「内容 DOCX / Markdown」分开处理：模板提供格式，内容提供章节、段落、图片、表格、公式和参考文献，流水线自动生成排版后的 `最终论文.docx`。
+把「模板 DOCX/PDF」和「内容 DOCX / Markdown」分开处理：模板提供格式，内容提供章节、段落、图片、表格、公式和参考文献，流水线自动生成排版后的 `最终论文.docx`。
 
 ## 适合做什么
 
@@ -17,16 +17,16 @@
 
 先放文件：
 
-- 模板 DOCX 放入 `Templates/`
+- 模板 DOCX 或 PDF 放入 `Templates/`
 - 内容 DOCX 或 Markdown 放入 `Inputs/`
 
 然后复制这段给 Agent：
 
 ```text
 请读取本项目的 AGENTS.md、README.md 和 Paper_Project/基础操作.md。
-我已经把论文模板放在 Templates/，把论文内容放在 Inputs/。
+我已经把论文模板放在 Templates/，把论文内容放在 Inputs/。模板可能是 DOCX，也可能是 PDF。
 请先检查 Python 依赖是否齐全：python-docx、Pillow、lxml；缺失时请帮我安装。
-请帮我检查文件是否齐全，选择合适的模板和内容，以普通用户模式运行论文排版流水线。
+请帮我检查文件是否齐全，选择合适的模板和内容，以普通用户模式运行论文排版流水线。若模板是 PDF，请读取 template_profile.md 和 qa_report.md 说明 PDF 提取置信度与风险。
 运行完成后，请读取最新 Outputs 目录里的 qa_report.md、qa_repair_plan.md、template_profile.md、格式提取.md、内容提取.md，并告诉我：
 1. 最终论文 docx 在哪里；
 2. QA 是否通过；
@@ -90,7 +90,7 @@ Outputs/日期_内容名/
 ## 流水线概览
 
 ```text
-Templates/模板.docx ──→ format_extractor ──→ format.json
+Templates/模板.docx/.pdf ─→ format_extractor ─→ format.json
                          template_profiler ─→ template_profile.json
 
 Inputs/内容.docx/.md ─→ content_parser/md_parser ─→ content.json
@@ -103,7 +103,7 @@ build_generated.py ─────────→ 最终论文.docx
 核心入口：
 
 - `run_pipeline.py`：一键运行入口。
-- `format_extractor.py`：提取模板格式。
+- `format_extractor.py`：提取 DOCX/PDF 模板格式；PDF 会区分文字说明模板、精排样张模板、扫描/不可解析模板。
 - `content_parser.py`：提取 DOCX 内容。
 - `md_parser.py`：解析 Markdown 内容和格式说明。
 - `script_generator.py`：生成构建脚本。
@@ -120,9 +120,10 @@ build_generated.py ─────────→ 最终论文.docx
 - DOCX 中的文本公式会尽量识别并重建为可编辑公式。
 - 图片会复制到本次输出目录的 `figures/`，不会污染 `Inputs/`。
 - 缺图、图片抽取失败、公式丢失、表格数量不匹配、占位符残留会进入 QA 报告。
+- PDF 模板需要 Poppler 的 `pdfinfo`、`pdftotext`；扫描件或不可复制文字会进入 QA error，并提示用户提供 DOCX、文字说明 PDF 或 OCR 后重跑。
 - `--qa-level visual` 会尝试用 Word/WPS 导出 PDF，并做页数、纸张、文本和抽样 PNG 检查。
 
-基础依赖：Python 3.10+、`python-docx`、`Pillow`、`lxml`。自动目录页码可选依赖 `pywin32`；视觉 QA 还需要 Word/WPS COM 和 Poppler 工具 `pdfinfo`、`pdftotext`、`pdftoppm`。
+基础依赖：Python 3.10+、`python-docx`、`Pillow`、`lxml`。PDF 模板解析需要 Poppler 的 `pdfinfo`、`pdftotext`；自动目录页码可选依赖 `pywin32`；视觉 QA 还需要 Word/WPS COM 和 Poppler 工具 `pdfinfo`、`pdftotext`、`pdftoppm`。
 
 最终交付前仍建议用 WPS/Word 打开 `最终论文.docx` 做视觉核对。
 
@@ -143,7 +144,9 @@ build_generated.py ─────────→ 最终论文.docx
 
 截至 2026-05-28：
 
-- 合成回归：`113 passed, 0 failed`
+- 合成回归：`118 passed, 0 failed`
+- PDF 模板端到端 strict QA：合成文字说明 PDF 模板 + DOCX 内容，`passed`
+- PDF 极端压力测试：9 个场景覆盖大写扩展名、精排样张、横向页面、稀疏说明、扫描/损坏/空白/过短 PDF，`9/9` 符合预期
 - 端到端 strict QA：5 个复杂测试文本 × 3 个模板，`15/15 passed`
 - 矩阵结果：`0` QA error，`0` QA warning，`0` conformance error，`0` conformance warning
 
@@ -156,13 +159,13 @@ build_generated.py ─────────→ 最终论文.docx
 
 ## English Quick Start
 
-This project generates a formatted Word paper from a DOCX template plus DOCX/Markdown content. The recommended workflow is to use a VSCode Agent instead of typing commands manually.
+This project generates a formatted Word paper from a DOCX/PDF template plus DOCX/Markdown content. The recommended workflow is to use a VSCode Agent instead of typing commands manually.
 
 Put the template in `Templates/`, put the content file in `Inputs/`, then send this to your Agent:
 
 ```text
 Please read AGENTS.md, README.md, and Paper_Project/基础操作.md.
-I have placed the Word template in Templates/ and the paper content in Inputs/.
+I have placed the template in Templates/ and the paper content in Inputs/. The template may be DOCX or PDF.
 Please check the files, run the paper formatting pipeline in user mode, then inspect the latest Outputs folder.
 Report where the final DOCX is, whether QA passed, and what to fix next if QA failed.
 ```
