@@ -26,14 +26,22 @@ Do not guess low-level OOXML patterns. Look them up in `Paper_Project/基础操�
 
 ```bash
 python --version
-python -c "import docx; from PIL import Image; print('OK')"
+python -c "import docx, lxml; from PIL import Image; print('OK')"
 ```
 
 If missing:
 
 ```bash
-python -m pip install python-docx Pillow
+python -m pip install python-docx Pillow lxml
 ```
+
+Dependency notes:
+
+- Normal pipeline and strict QA require Python 3.10+, `python-docx`, `Pillow`, and `lxml`.
+- Generated DOCX builds copy and use local engine modules; the public-template downloader uses stdlib `urllib`, so no `requests` package is required.
+- Automatic Word TOC/page-number updating is optional and uses Microsoft Word COM through `pywin32` (`python -m pip install pywin32`) when available; without it, static visible TOC lines remain.
+- `--qa-level visual` requires Windows PowerShell plus Microsoft Word COM for PDF export, and Poppler command-line tools on `PATH`: `pdfinfo`, `pdftotext`, `pdftoppm`.
+- Optional WPS cross-render QA requires WPS COM (`KWPS.Application` or `WPS.Application`); missing WPS is a warning unless `--require-wps` is used.
 
 ### 1. Load The Toolbox
 

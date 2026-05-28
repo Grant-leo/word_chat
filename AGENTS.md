@@ -16,9 +16,16 @@ You are an AI assistant for the Word paper typesetting pipeline. Your core workf
 ### 0. Environment Check
 ```bash
 python --version
-python -c "import docx; from PIL import Image; print('OK')"
+python -c "import docx, lxml; from PIL import Image; print('OK')"
 ```
-If missing: `python -m pip install python-docx Pillow`.
+If missing: `python -m pip install python-docx Pillow lxml`.
+
+Dependency notes:
+- Normal pipeline and strict QA require Python 3.10+, `python-docx`, `Pillow`, and `lxml`.
+- Generated DOCX builds copy and use local engine modules; no extra Python package is needed for the public-template downloader because it uses stdlib `urllib`.
+- Automatic Word TOC/page-number updating is optional and uses Microsoft Word COM via `pywin32` (`python -m pip install pywin32`) when available; without it the pipeline keeps static visible TOC lines.
+- `--qa-level visual` requires Windows PowerShell plus Microsoft Word COM for PDF export, and Poppler command-line tools on `PATH`: `pdfinfo`, `pdftotext`, `pdftoppm`.
+- Optional WPS cross-render QA requires WPS COM (`KWPS.Application` or `WPS.Application`); missing WPS is a warning unless `--require-wps` is used.
 
 ### 1. Load Your Toolbox
 **Read `Paper_Project/基础操作.md`.** This file contains all OOXML code snippets: tables, cross-references, headers, pagination, formulas, footnotes. You will consult it for every modification. Do NOT guess OOXML — look it up here.

@@ -23,6 +23,7 @@
 ```text
 请读取本项目的 AGENTS.md、README.md 和 Paper_Project/基础操作.md。
 我已经把论文模板放在 Templates/，把论文内容放在 Inputs/。
+请先检查 Python 依赖是否齐全：python-docx、Pillow、lxml；缺失时请帮我安装。
 请帮我检查文件是否齐全，选择合适的模板和内容，以普通用户模式运行论文排版流水线。
 运行完成后，请读取最新 Outputs 目录里的 qa_report.md、qa_repair_plan.md、template_profile.md、格式提取.md、内容提取.md，并告诉我：
 1. 最终论文 docx 在哪里；
@@ -42,7 +43,9 @@
 
 ```text
 请按开发者模式验证当前流水线。
+先检查基础依赖 python-docx、Pillow、lxml。
 先运行合成回归，再选择 Templates/ 和 Inputs/ 中合适的测试文件运行 strict QA。
+如果要跑 visual QA，请确认 Word/WPS COM 和 Poppler 工具 pdfinfo、pdftotext、pdftoppm 可用。
 只修改 Paper_Project/Program/pipeline/ 下的核心引擎脚本和必要文档。
 不要提交 Inputs、Outputs、Templates、TestData、memory 或任何生成的 DOCX/PDF/PNG。
 ```
@@ -116,6 +119,8 @@ build_generated.py ─────────→ 最终论文.docx
 - 图片会复制到本次输出目录的 `figures/`，不会污染 `Inputs/`。
 - 缺图、图片抽取失败、公式丢失、表格数量不匹配、占位符残留会进入 QA 报告。
 - `--qa-level visual` 会尝试用 Word/WPS 导出 PDF，并做页数、纸张、文本和抽样 PNG 检查。
+
+基础依赖：Python 3.10+、`python-docx`、`Pillow`、`lxml`。自动目录页码可选依赖 `pywin32`；视觉 QA 还需要 Word/WPS COM 和 Poppler 工具 `pdfinfo`、`pdftotext`、`pdftoppm`。
 
 最终交付前仍建议用 WPS/Word 打开 `最终论文.docx` 做视觉核对。
 
