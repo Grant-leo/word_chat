@@ -1,599 +1,167 @@
 # Word 论文自动排版流水线
 
-<p align="center">
-  <a href="#chinese"><strong>中文</strong></a> &nbsp;|&nbsp;
-  <a href="#english"><strong>English</strong></a>
-</p>
+把「模板 DOCX」和「内容 DOCX / Markdown」分开处理：模板提供格式，内容提供章节、段落、图片、表格、公式和参考文献，流水线自动生成排版后的 `最终论文.docx`。
 
----
+## 适合做什么
 
-<a id="chinese"></a>
-
-从模版 docx + 文本资料 docx（或 Markdown）一键生成格式规范的论文 docx。
-
-## 核心思路
-
-**格式与内容分离**。模版提供字体/字号/行距/边距，文本资料提供章节/段落/图片/参考文献。流水线自动提取两者，生成 python-docx 构建脚本，最终输出排好版的 docx。
-
-## 推荐配套插件
-
-### [DOCX Live Preview](https://github.com/Grant-leo/docx-livepreview) — VSCode 中像素级一致的 DOCX 预览
-
-在 VSCode 中编辑 docx 时，**其他预览插件显示的格式与 WPS 实际渲染不一致**——字体偏移、表格错位、公式变形。你不得不在 VSCode 和 WPS 之间来回切换，严重打断排版效率。
-
-DOCX Live Preview **直接调用 WPS 引擎渲染**，所见即所得——与 WPS 显示完全一致。专为本项目打造，强烈建议安装。
-
-**安装方式：** VSCode 扩展商店搜索 `DOCX Live Preview` 直接安装；或从 [Releases](https://github.com/Grant-leo/docx-livepreview/releases) 下载 `.vsix`，`Ctrl+Shift+P` → `Extensions: Install from VSIX...`
+- 用学校、期刊或自定义模板快速排版论文。
+- 从无格式/弱格式内容中提取正文、图表、公式和参考文献。
+- 生成可检查、可微调、可追踪的 Word 输出。
+- 开发者可以把通用修复沉淀到核心引擎，而不是反复改一次性脚本。
 
 ## 快速开始
 
-```bash
-# 1. 安装依赖
-python -m pip install python-docx Pillow
+默认你已经在 VSCode 中安装了 Agent 插件。普通用户不需要手动记命令，只需要把模板和内容放好，然后把下面的提示词发给 Agent。
 
-# 2. 放入文件
-#    模版 docx → Templates/
-#    内容 docx 或 .md → Inputs/
+先放文件：
 
-# 3. 交互模式（终端用户）
-python run_pipeline.py
-# → 自动扫描文件，编号列表供选择
+- 模板 DOCX 放入 `Templates/`
+- 内容 DOCX 或 Markdown 放入 `Inputs/`
 
-# 4. 参数模式 — DOCX 模板 + DOCX 内容
-python run_pipeline.py --template 模版.docx --content 论文.docx
+然后复制这段给 Agent：
 
-# 5. 参数模式 — DOCX 模板 + Markdown 内容
-python run_pipeline.py --template 模版.docx --content 论文.md
-
-# 6. 纯 MD 模式（格式说明 + 内容都在一个 .md 文件里）
-python run_pipeline.py --md 论文.md
-
-# 7. 指定工作模式
-#    user: 只修本次输出目录的 build_generated.py
-#    developer: 只修核心引擎脚本并重跑完整流水线
-python run_pipeline.py --mode user
-python run_pipeline.py --mode developer --template 模版.docx --content 论文.docx
-
-# 8. 产品级检查：结构 QA + Word COM 导出 PDF + 抽样渲染
-python run_pipeline.py --mode developer --qa-level visual --template 模版.docx --content 论文.docx
+```text
+请读取本项目的 AGENTS.md、README.md 和 Paper_Project/基础操作.md。
+我已经把论文模板放在 Templates/，把论文内容放在 Inputs/。
+请帮我检查文件是否齐全，选择合适的模板和内容，以普通用户模式运行论文排版流水线。
+运行完成后，请读取最新 Outputs 目录里的 qa_report.md、qa_repair_plan.md、template_profile.md、格式提取.md、内容提取.md，并告诉我：
+1. 最终论文 docx 在哪里；
+2. QA 是否通过；
+3. 如果没有通过，下一步应该怎么修。
 ```
 
-每次运行生成独立目录 `Outputs/{日期}_{内容名}/`，互不覆盖；同一天同名内容会自动追加 `_2`、`_3` 等后缀。
+如果 QA 报错，继续把这段发给 Agent：
 
-## 当前实现要点
-
-- `Inputs/`、`Outputs/`、`Templates/` 中的实际论文、模板和生成产物默认视为本地隐私数据，已通过 `.gitignore` 排除；不要提交论文原文、模板文件、生成的 docx/PDF/PNG。
-- `build_generated.py` 是用户侧的对话微调层：普通用户只需要和 AI 对话修改当前输出目录里的生成脚本，再运行它得到本次最终稿。
-- `Paper_Project/Program/pipeline/` 是开发者维护层：通用能力、Bug 修复、格式规则升级应改核心引擎脚本，再重新运行流水线。
-- `memory/` 是磁盘长期记忆层：记录关键架构决策、阶段进展、验证结果、风险和下一步；当用户说“更新记忆”时由本地 `update-memory` skill 规范化更新。
-- `run_pipeline.py` 支持 `--mode user|developer|auto`：交互模式会询问身份，参数模式默认普通用户；每次输出都会写入 `workflow_mode.json`。
-- 流水线生成后自动运行 `qa_checker.py`，输出 `qa_report.json` / `qa_report.md`，并生成 `qa_repair_plan.md/json` 与 `qa_fix_prompt.txt`。QA 不自动改代码，但会把每个问题路由到用户侧或开发者侧的下一步修复动作；检测到 `error` 时会让流水线以失败退出，避免把未通过结果当成成功。
-- 流水线会生成 `template_profile.json` / `template_profile.md`，把模板能力归纳为封面、目录、标题、图表题、参考文献、公式、页眉页脚和风险标记，不依赖学校名或私有文件名。
-- `--qa-level visual` 会在结构 QA 后运行 `qa_visual.py`：调用 Word COM 导出 PDF，使用 Poppler 工具抽取页数/纸张/文本并渲染抽样 PNG，输出 `visual_report.json` / `visual_report.md`；缺少必要渲染工具时 visual QA 会判定未通过并阻断流水线。
-- 内容文档中的段落图片和表格单元格图片会提取到本次输出目录的 `figures/`，避免污染 `Inputs/` 或覆盖其他任务的图片；Markdown 图片路径按 `.md` 文件所在目录解析，支持相对路径。缺失、远程 Markdown 图片、DOCX 图片抽取失败都会进入 QA 错误报告，不会静默丢失。内容源里的页眉/页脚图片不会被当作正文迁移，会以 `NON_BODY_IMAGE_UNSUPPORTED` 明确提示用户移动到正文或删除装饰图。
-- 内容文档中的普通文本公式会由 `content_parser.py` 识别为公式项，Markdown 的 inline/display math 会由 `md_parser.py` 提取为公式项，再由 `script_generator.py` 调用 `latex_omath.py` 生成原生 OOXML Math；行内公式保留在当前段落，显示公式使用 WPS/Word 可编辑的 `m:oMathPara`，不是图片或纯文本。单美元 `$...$` 只有在内容确实像公式时才会切分，`$100$` 这类金额/纯数字不会误转，`$$...$$` 会按显示公式处理。对源 DOCX 中被拆行的求和、分式求和、max/min 目标函数会做保守重组；最终 DOCX 若残留原始 `$...$` / `$$...$$` 分隔符，会由 QA 作为 `LATEX_DELIMITER_TEXT` 报错。
-- 对已经排版过的源 DOCX，`content_parser.py` 会前瞻识别并跳过源文档静态目录，包括无页码目录项和混入重复公式/页码碎片的目录块；真实使用 Heading/标题样式的“目录”章节会保留，即使它后面跟着分页。未填写的 `[报名序号]` 等占位符会尽量从内容流中过滤；疑似污染/碎裂公式会降级为普通正文；疑似低分辨率文字/公式图片碎片会按原始尺寸保留，避免被放大成巨大模糊图。`qa_checker.py` 仍会用 `UNFILLED_PLACEHOLDER_TEXT`、`FORMULA_TEXT_FRAGMENTED`、`LOW_RES_IMAGE_FRAGMENT` 等 warning 提醒用户回源核对，最终 DOCX 若仍残留占位符则用 `PLACEHOLDER_TEXT_LEFT` 阻断。
-- 目录默认生成静态目录行；在 Windows + Word COM 可用时，会自动读取正文标题页码并写入目录页码，不再依赖手动取消 TOC 注释。
-- 正文图片按正文文本宽度适配；封面图片按模板提取的宽高插入，避免校徽、Logo 被段落行高裁切。
-
-### Markdown 文件格式
-
-纯 MD 模式下，一个 `.md` 文件同时承载格式说明和论文内容：
-
-```markdown
-# 格式说明
-
-一级标题：黑体，小三号(15pt)，加粗，居中，段前12pt。
-正文：Times New Roman，小四号(12pt)，两端对齐，1.5倍行距。
-页面：A4，上2.5cm，下2.4cm，左2.8cm，右2.2cm。
-
----
-
-# 论文标题
-
-## Abstract
-
-正文内容...
-
-## 1. Introduction
-
-内联公式：$E = mc^2$
-
-显示公式：
-$$
-\int_0^\infty e^{-x^2} dx = \frac{\sqrt{\pi}}{2}
-$$
-
-图片：![fig1](./images/chart.png)
-
-## References
-
-[1] Author. Title [J]. Journal, Year.
+```text
+请读取最新 Outputs 目录里的 qa_report.md 和 qa_repair_plan.md。
+如果这是一次性排版问题，请只修改该输出目录里的 build_generated.py，然后重新生成最终论文并再次运行 QA。
+如果这是可复用的引擎问题，请先说明原因，不要直接改核心脚本。
 ```
 
-也可用 YAML frontmatter 替代自然语言格式说明：
+开发者做核心引擎验证时，可以把这段发给 Agent：
 
-```yaml
----
-body_font: Times New Roman
-body_size: 12
-body_cjk_font: 宋体
-heading1_size: 15
-heading1_font: 黑体
-page_width_cm: 21.0
----
+```text
+请按开发者模式验证当前流水线。
+先运行合成回归，再选择 Templates/ 和 Inputs/ 中合适的测试文件运行 strict QA。
+只修改 Paper_Project/Program/pipeline/ 下的核心引擎脚本和必要文档。
+不要提交 Inputs、Outputs、Templates、TestData、memory 或任何生成的 DOCX/PDF/PNG。
 ```
 
-如果完全不写格式说明，流水线使用默认值：A4、Times New Roman 12pt、1.5 倍行距。
+## 输出在哪里
 
-## 架构
+每次运行都会生成独立目录：
 
-核心引擎 + 一个生成脚本 + 两个知识库：
-
-```
-┌──────────────────┐        ┌──────────────────┐
-│                  │        │                  │
-│  格式提取器       │──┐     │  构建脚本生成     │
-│  内容解析器       │  │     │                  │
-│  脚本生成器       │  │传参  │  零硬编码        │──→ 最终论文
-│                  │──┘     │                  │
-│  （开发维护层）   │        │  用户微调层       │
-│                  │        │                  │
-└──────────────────┘        └──────────────────┘
-
- 知识库
- ├── CLAUDE.md      ← AI 工作流
- └── 基础操作.md     ← AI 工具箱（所有 OOXML 代码片段）
+```text
+Outputs/日期_内容名/
+├── 最终论文.docx
+├── build_generated.py
+├── qa_report.md / qa_report.json
+├── qa_repair_plan.md / qa_repair_plan.json
+├── template_profile.md / template_profile.json
+├── 格式提取.md
+├── 内容提取.md
+├── build_manifest.json
+├── figures/
+└── assets/
 ```
 
-- **核心引擎**：开发者长期维护入口。所有可复用修复都应落在 `pipeline/` 脚本中，通过 template/content JSON 传参
-- **md_parser.py**：Markdown 解析器，从 `.md` 文件同时提取格式说明和论文内容
-- **content_parser_modules/**：`content_parser.py` 的子模块目录，已承接占位符、样式、文本清洗、封面/题名抽取、图表题注流、段落 OOXML 流、正文元素分发、源目录过滤、图片抽取、表格抽取、公式抽取/修复、标题识别、参考文献收集和章节构建/后处理；入口仍保持 `content_parser.extract`
-- **script_generator_modules/**：`script_generator.py` 的子模块目录，已承接生成器侧 section/front matter 编排、章节顺序归一化、模板页面与布局规则推断、样式 profile 推断、共享运行时底座、文本清理/题注/前后置判断、封面重建、摘要/关键词/前置页渲染、正文段落/章节渲染、文本公式转换、公式渲染、公式/rich_text、表格/图片/代码块、参考文献/致谢/附录、目录/页码解析、构建/manifest 运行时模板片段；入口仍保持 `script_generator.generate`
-- **pipeline_runner/**：`run_pipeline.py` 的编排辅助包，集中承接 CLI/文件扫描、运行上下文、可选依赖、handoff 产物写入、提取验证、模板阶段、构建执行、JSON 契约、QA、终端报告和完成摘要；入口层保持薄而清晰
-- **template_profiler.py**：模板画像器，把低层 `format.json` 归纳为可决策的模板能力和风险标记
-- **latex_omath.py**：独立 LaTeX→OOXML 公式转换器；既支持手写 LaTeX，也承接 `content_parser.py` 从文本公式归一化出的 LaTeX
-- **formula_semantics.py**：公式语义判别层，区分正文数量/单位、行内公式、显示公式和公式碎片问题，避免把正常中文段落整段转成公式
-- **comment_utils.py**：Word 批注系统，`comment="导师: ..."` 即可添加批注
-- **qa_visual.py**：可选 PDF 渲染 QA，检查页数、纸张、目录文本并抽样渲染页面 PNG
-- **public_template_suite.py**：公共模板兼容性套件，下载公开模板到本地忽略目录，用合成内容跑结构/视觉 QA；只提交套件代码，不提交下载模板和运行输出
-- **privacy.py**：报告脱敏辅助，避免对外报告暴露绝对路径
-- **regression_suite.py**：开发者合成回归测试，覆盖公式语义、行内/显示公式、混合段落、MD 表格/代码、manifest 计数、表格单元格图片、页眉页脚图片告警、原始 LaTeX 分隔符残留和 QA 失败路径
-- **build_generated.py**：每次运行生成的用户微调脚本。用户通过 AI 改它即可完成当前文档的排版调整；长期修复由开发者回写核心引擎
-- **基础操作.md**：持续维护的代码片段库——测试越多越完善，AI 能改的功能越多
-- **模板缺的功能**（如交叉引用）→ 引擎不会生成 → 用户提出 → AI 查基础操作.md → 先改当前 `build_generated.py` 完成本次文档；需要产品化时再由开发者沉淀到核心引擎
+最常看的文件：
 
-## 输出结构
+- `最终论文.docx`：生成结果。
+- `qa_report.md`：是否有图片、公式、表格、占位符、内容缺失等问题。
+- `qa_repair_plan.md`：下一步该修哪里，适合直接交给 AI 继续处理。
+- `build_generated.py`：本次文档的用户级微调脚本。
+- `template_profile.md`：模板能力和风险画像。
 
-每次运行生成独立目录，互不覆盖：
+## 两种工作模式
 
-```
-Outputs/
-├── 2026-05-06_我的论文/
-│   ├── 格式提取.md          ← 核对模版格式
-│   ├── 内容提取.md          ← 核对文本内容
-│   ├── format.json
-│   ├── content.json
-│   ├── template_profile.md  ← 模板能力画像
-│   ├── workflow_mode.json  ← 本轮用户/开发者模式
-│   ├── build_manifest.json ← 本轮正文图片/表格/公式渲染数量
-│   ├── qa_report.md        ← 自动 QA 检测报告
-│   ├── visual_report.md     ← PDF 渲染 QA（--qa-level visual）
-│   ├── visual_qa/           ← 本地 PDF/抽样 PNG（不提交）
-│   ├── figures/             ← 本次内容文档提取的图片
-│   ├── assets/              ← 本次模板提取的封面/Logo 资源
-│   ├── build_generated.py   ← 生成脚本（用户可通过 AI 微调）
-│   └── 最终论文.docx
-├── 2026-05-06_我的论文_2/
-│   └── ...
+| 模式 | 适合谁 | 修改哪里 |
+|---|---|---|
+| `user` | 普通用户微调当前文档 | `Outputs/<本次输出>/build_generated.py` |
+| `developer` | 修复可复用引擎能力 | `Paper_Project/Program/pipeline/` |
+
+原则很简单：一次性排版问题改 `build_generated.py`；所有可复用能力、解析规则、QA 规则都沉淀到核心引擎。
+
+## 流水线概览
+
+```text
+Templates/模板.docx ──→ format_extractor ──→ format.json
+                         template_profiler ─→ template_profile.json
+
+Inputs/内容.docx/.md ─→ content_parser/md_parser ─→ content.json
+
+format.json + content.json ─→ script_generator ─→ build_generated.py
+build_generated.py ─────────→ 最终论文.docx
+最终论文.docx ─────────────→ qa_checker / qa_conformance / qa_visual
 ```
 
-## 环境
+核心入口：
 
-- Python 3.10+
-- `python -m pip install python-docx Pillow`
+- `run_pipeline.py`：一键运行入口。
+- `format_extractor.py`：提取模板格式。
+- `content_parser.py`：提取 DOCX 内容。
+- `md_parser.py`：解析 Markdown 内容和格式说明。
+- `script_generator.py`：生成构建脚本。
+- `latex_omath.py`：LaTeX / 文本公式转原生 Word 公式。
+- `qa_checker.py`：结构 QA。
+- `qa_conformance.py`：严格 DOCX/XML 合规检查。
+- `qa_visual.py`：可选 PDF/PNG 视觉检查。
 
-## 流水线六阶段
+更细的模块布局见 [pipeline README](Paper_Project/Program/pipeline/README.md)。
 
-```
-Templates/模版.docx ──→ [Phase 1] format_extractor ──→ format.json
-    或 .md (# 格式说明)      或 md_parser              格式提取.md
+## 公式、图片和 QA
 
-format.json ─────────→ [Phase 2] template_profiler ─→ template_profile.json
+- Markdown 的 `$...$` / `$$...$$` 会转成 Word 原生 OOXML Math。
+- DOCX 中的文本公式会尽量识别并重建为可编辑公式。
+- 图片会复制到本次输出目录的 `figures/`，不会污染 `Inputs/`。
+- 缺图、图片抽取失败、公式丢失、表格数量不匹配、占位符残留会进入 QA 报告。
+- `--qa-level visual` 会尝试用 Word/WPS 导出 PDF，并做页数、纸张、文本和抽样 PNG 检查。
 
-Inputs/内容.docx/.md ──→ [Phase 3] content_parser ──→ content.json
-                       或 md_parser                 内容提取.md
+最终交付前仍建议用 WPS/Word 打开 `最终论文.docx` 做视觉核对。
 
-format.json ──┬──→ [Phase 4] script_generator ──→ build_generated.py
-content.json ─┘
+## 仓库规则
 
-build_generated.py ──→ [Phase 5] python 运行 ──→ 最终论文.docx
-最终论文.docx ──→ [Phase 6] qa_checker ──→ qa_report.json / qa_report.md
-                    可选 qa_visual ───────→ visual_report.json / visual_report.md
-```
+这些是本地隐私数据，不提交：
 
-每个阶段内建验证：格式提取独立运行两次并在不一致时第三轮仲裁；内容提取会隔离运行目录，先做结构/图片/参考文献摘要比对，无法形成多数一致但章节结构稳定时，最多 5 轮合并可恢复的图片、公式、表格和参考文献，仍无法收敛才报 `VerificationError`。
+- `Inputs/`
+- `Outputs/`
+- `Templates/`
+- `TestData/`
+- `memory/`
+- 生成的 DOCX / PDF / PNG / QA 渲染图
 
-当前验证基线（2026-05-27）：合成回归 `112 passed, 0 failed`；5 个复杂测试文本 × 3 个模板的端到端 strict QA 矩阵 `15/15` 通过，结构 QA 和 conformance QA 均无 error。
+提交时只提交核心脚本和公共文档。
 
-## 微调排版
+## 当前验证基线
 
-```bash
-# 用户侧：让 AI 修改当前输出目录的生成脚本，然后重跑生成脚本
-python run_pipeline.py --mode user
-python Outputs/<目录>/build_generated.py
-```
+截至 2026-05-28：
 
-`Outputs/<目录>/build_generated.py` 是用户侧微调入口，适合处理当前这篇文档的一次性排版要求。下一次重新运行完整流水线会覆盖它。
+- 合成回归：`113 passed, 0 failed`
+- 端到端 strict QA：5 个复杂测试文本 × 3 个模板，`15/15 passed`
+- 矩阵结果：`0` QA error，`0` QA warning，`0` conformance error，`0` conformance warning
 
-开发者维护通用规则时，修改核心引擎后重跑流水线：
+## 进一步文档
 
-```bash
-python Paper_Project/Program/pipeline/regression_suite.py
-python run_pipeline.py --mode developer --template 模版.docx --content 论文.docx
-```
+- [AGENTS.md](AGENTS.md)：AI 助手工作流。
+- [CLAUDE.md](CLAUDE.md)：Claude/Codex 操作说明。
+- [Paper_Project/基础操作.md](Paper_Project/基础操作.md)：OOXML 和 python-docx 操作速查。
+- [Paper_Project/Program/pipeline/README.md](Paper_Project/Program/pipeline/README.md)：核心引擎模块结构。
 
-| 意图 | 用户侧微调 | 开发者侧沉淀 |
-|------|------------|--------------|
-| 当前文档的正文/标题/参考文献样式 | `build_generated.py` | `script_generator.py` |
-| 当前文档的图片、表格、目录细节 | `build_generated.py` | `script_generator.py` / `content_parser.py` |
-| 内容识别、章节、图片抽取规则 | 不建议用户处理 | `content_parser.py` |
-| 模板格式、封面结构、页眉页脚抽取 | 不建议用户处理 | `format_extractor.py` |
-| Markdown 输入规则 | 不建议用户处理 | `md_parser.py` |
-| 输出目录、文件选择、双验证流程 | 不建议用户处理 | `run_pipeline.py` |
-| 生成后 QA 检测规则 | 不建议用户处理 | `qa_checker.py` |
-| PDF 渲染 QA 和视觉抽样 | 不建议用户处理 | `qa_visual.py` |
-| 模板能力画像 | 不建议用户处理 | `template_profiler.py` |
+## English Quick Start
 
-## 项目结构
+This project generates a formatted Word paper from a DOCX template plus DOCX/Markdown content. The recommended workflow is to use a VSCode Agent instead of typing commands manually.
 
-```
-├── run_pipeline.py              ← 一键入口
-├── CLAUDE.md                    ← AI 工作流（Claude Code 自动加载）
-├── .claude/settings.local.json  ← 本地 Claude 权限配置（忽略提交）
-├── .gitignore
-├── memory/                      ← 磁盘长期记忆（Markdown 摘要 + JSONL 事件）
-├── scripts/project_memory.py    ← 记忆追加与校验工具
-├── Templates/模版放这里.txt
-├── Inputs/文本资料放这里.txt
-├── Outputs/                     ← 每次运行生成独立子目录（忽略提交）
-└── Paper_Project/
-    ├── 基础操作.md               ← AI 工具箱（所有 OOXML 代码片段）
-    └── Program/
-        ├── pipeline/
-        │   ├── format_extractor.py   ← Phase 1: 模版 → 格式 JSON
-        │   ├── content_parser.py     ← Phase 2: 内容 → 结构化 JSON
-        │   ├── content_parser_modules/ ← content_parser 子模块（占位符/样式/文本清洗/封面题名/题注流/段落流/正文分发/源目录/图片/表格/公式/标题/参考文献/章节）
-        │   ├── md_parser.py          ← MD 解析（格式 + 内容）
-        │   ├── script_generator.py   ← Phase 3: JSON → 生成脚本
-        │   ├── script_generator_modules/ ← script_generator 子模块（章节编排/模板规则/样式推断/运行时片段）
-        │   ├── pipeline_runner/      ← run_pipeline 编排辅助包
-        │   │   ├── artifacts.py      ← format/content handoff 产物写入
-        │   │   ├── build_phase.py    ← 生成脚本/构建 docx 阶段
-        │   │   ├── cli.py            ← CLI 参数/交互分发
-        │   │   ├── contracts.py      ← JSON handoff 结构契约
-        │   │   ├── context.py        ← 路径/输出目录/workflow 上下文
-        │   │   ├── dependencies.py   ← 可选依赖加载
-        │   │   ├── execution.py      ← 生成脚本子进程执行
-        │   │   ├── io.py             ← 文件扫描/交互/模式辅助
-        │   │   ├── qa.py             ← QA 阶段编排
-        │   │   ├── reports.py        ← 终端报告辅助
-        │   │   ├── summary.py        ← 完成摘要输出
-        │   │   ├── template_phase.py ← 模板画像/约束阶段
-        │   │   └── verification.py   ← 提取器双验证/仲裁
-        │   ├── latex_omath.py        ← LaTeX/文本公式→OOXML 公式转换器
-        │   ├── qa_checker.py         ← 输出结构 QA 检测与修复目标报告
-        │   ├── qa_visual.py          ← 可选 PDF 渲染 QA
-        │   ├── public_template_suite.py ← 公共模板兼容性测试套件
-        │   ├── privacy.py            ← 报告脱敏辅助
-        │   ├── comment_utils.py      ← Word 批注系统
-        │   └── regression_suite.py   ← 开发者合成回归测试
-        ├── build_acta_manuscript.py  ← 参考：Acta Materialia 期刊格式
-        ├── build_comprehensive_doc.py ← 参考：全功能演示
-        └── master.py                 ← 参考：编排器骨架
+Put the template in `Templates/`, put the content file in `Inputs/`, then send this to your Agent:
+
+```text
+Please read AGENTS.md, README.md, and Paper_Project/基础操作.md.
+I have placed the Word template in Templates/ and the paper content in Inputs/.
+Please check the files, run the paper formatting pipeline in user mode, then inspect the latest Outputs folder.
+Report where the final DOCX is, whether QA passed, and what to fix next if QA failed.
 ```
 
-## 功能
+Outputs are written to `Outputs/<date_content>/`. Use `qa_report.md` and `qa_repair_plan.md` to inspect issues.
 
-- **Markdown 内容支持**：`.md` 文件可直接作为内容输入，内置 `# 格式说明` 或 YAML frontmatter 描述排版参数
-- **Markdown 相对图片**：`![图](media/a.png)` 按 `.md` 文件目录解析并复制到本次输出目录，适合把图片和正文放在同一资料文件夹
-- 页面设置 (A4 + 四边距)
-- 封面（字体/空行/表格全从模版提取，零硬编码）
-- 三级标题自动检测（正文说明 > OOXML 直读）
-- 三线表（OOXML 直写，顶粗线 / 表头细线 / 底粗线）
-- 交叉引用（正文 [N] 蓝色上标 → 参考文献 w:anchor 跳转）
-- 参考文献 [N] 格式，悬挂缩进，自动去重前缀
-- 中文字体：自动检测 CJK 字体，设置 w:eastAsia 防止回退
-- A4 自动分页（双 cpl：拉丁文 + CJK 各自度量）
-- 页眉页脚（PAGE 域代码动态页码）
-- 图片居中 + Fig. 图注
-- **LaTeX 公式转换**：`latex_to_omath(r"\frac{a}{b}")` — 像写 .tex 一样直写 LaTeX → 原生 Word 方程
-  支持分式/根式/求和/积分/矩阵/cases/希腊字母/符号/箭头/重音/函数/极限/定界符/括号/框（42+ 构造）
-- **文本公式重建**：内容 docx 中的普通文本工程公式会被识别、转换为 LaTeX，再以 `m:oMathPara` 插入，WPS/Word 中可继续编辑公式。
-- **Markdown 公式保真**：摘要和正文里的 `$...$` / `$$...$$` 会转为原生 OOXML Math；生成前的空段落清理会保留纯公式段落，避免公式被误删。
-- **WPS 原生公式兼容**：`latex_omath.py` 为每个 `m:r` 保留 `m:rPr`，并合并 `\text{}` / `\mathrm{}` 的连续文本 run，避免公式显示成 `M|b|p|s` 一类分隔伪影。
-- **公式编号**：`\tag{1.1}`, `\begin{equation}`, `\begin{align}` 自动编号
-- **双线体/手写体**：`\mathbb{R}`, `\mathcal{F}` 等数学字体
-- **Word 批注**：`body("text", comment="导师: 请确认")` → 生成原生 Word 批注
-- **目录 (TOC)**：默认生成静态目录；Word COM 可用时自动解析标题页码并写入目录
-- **QA 检测报告 + 修复计划**：生成后自动检查关键输出、样式 profile、目录、图片、公式和 LaTeX 错误，并按用户/开发者模式标注修复目标，额外输出可复制给 AI 的 `qa_fix_prompt.txt`。
-- **DOCX 图片边界检测**：正文段落图片和表格单元格图片进入正文图片流；页眉页脚图片明确报 `NON_BODY_IMAGE_UNSUPPORTED`，防止用户以为图片已迁移。
-- 传统公式工具：`formula_build_matrix()` 传参构建，`formula_text/remove/replace` 对话修改
-- 双验证提取（独立运行两次交叉比对，不一致第三轮仲裁）
+## License
 
----
-
-<a id="english"></a>
-
-Automated academic paper formatting pipeline — from template docx + content docx to a beautifully formatted paper.
-
-## Core Idea
-
-**Separate formatting from content.** Templates define fonts, sizes, line spacing, and margins. Content documents provide chapters, paragraphs, images, and references. The pipeline extracts both, generates a python-docx build script, and outputs a fully formatted docx.
-
-## Recommended Companion Plugin
-
-### [DOCX Live Preview](https://github.com/Grant-leo/docx-livepreview) — Pixel-Perfect DOCX Preview in VSCode
-
-When editing docx in VSCode, **other preview extensions render differently from WPS** — shifted fonts, misaligned tables, broken equations. You end up switching back and forth between VSCode and WPS, killing your flow.
-
-DOCX Live Preview **uses WPS as its rendering engine** — what you see is exactly what WPS outputs. Built specifically for this project. Strongly recommended.
-
-**Install:** Search `DOCX Live Preview` in the VSCode Extensions panel (`Ctrl+Shift+X`), or download `.vsix` from [Releases](https://github.com/Grant-leo/docx-livepreview/releases) → `Ctrl+Shift+P` → `Extensions: Install from VSIX...`
-
-## Quick Start
-
-```bash
-# 1. Install dependencies
-python -m pip install python-docx Pillow
-
-# 2. Place your files
-#    Template docx → Templates/
-#    Content docx or .md → Inputs/
-
-# 3. Interactive mode
-python run_pipeline.py
-# → Auto-scan files, numbered list for selection
-
-# 4. CLI — DOCX template + DOCX content
-python run_pipeline.py --template template.docx --content paper.docx
-
-# 5. CLI — DOCX template + Markdown content
-python run_pipeline.py --template template.docx --content paper.md
-
-# 6. Pure MD mode (format + content in one .md file)
-python run_pipeline.py --md paper.md
-
-# 7. Workflow mode
-#    user: edit only the generated build_generated.py for this run
-#    developer: edit only core pipeline engines and rerun the full pipeline
-python run_pipeline.py --mode user
-python run_pipeline.py --mode developer --template template.docx --content paper.docx
-
-# 8. Product-grade check: structure QA + PDF export + sample render
-python run_pipeline.py --mode developer --qa-level visual --template template.docx --content paper.docx
-```
-
-Each run produces an independent directory `Outputs/{date}_{content_name}/`, never overwriting previous results. If the same content name is run again on the same day, the folder gets `_2`, `_3`, etc.
-
-## Current Behavior
-
-- Real paper content, templates, and generated artifacts under `Inputs/`, `Outputs/`, and `Templates/` are treated as local private data and ignored by Git. Do not commit paper content, templates, generated docx/PDF/PNG files, or QA renders.
-- `build_generated.py` is the user-facing AI fine-tuning layer: regular users can ask AI to edit the generated script in the current output folder, then run it for the current document.
-- `Paper_Project/Program/pipeline/` is the developer maintenance layer: reusable features, bug fixes, and rule upgrades belong in the core engine scripts, followed by a fresh pipeline run.
-- `memory/` is the disk-backed long-term memory layer for durable architecture decisions, progress, validation results, risks, and next actions. The local `update-memory` skill updates it when the user says "更新记忆" or "update memory".
-- `run_pipeline.py` supports `--mode user|developer|auto`: interactive runs ask for the identity, non-interactive runs default to user mode, and each output folder records `workflow_mode.json`.
-- After generation, `qa_checker.py` writes `qa_report.json` and `qa_report.md`, plus `qa_repair_plan.md/json` and `qa_fix_prompt.txt`. QA does not edit code automatically, but it routes every issue to the user-side or developer-side next repair action; any `error` makes the pipeline fail so unverified output is not treated as successful.
-- Each run writes `template_profile.json` / `template_profile.md`, a template capability profile covering cover, TOC, headings, captions, references, formulas, headers/footers, and risk flags without school-name or private-filename rules.
-- `--qa-level visual` runs `qa_visual.py` after structural QA: it exports PDF through Word COM, uses Poppler tools to inspect page count/size/text, renders sample PNG pages, and writes `visual_report.json` / `visual_report.md`; missing required render tools fail visual QA and block the pipeline.
-- Paragraph images and table-cell images from the content document are extracted into the current output directory's `figures/` folder, so `Inputs/` is not polluted and runs do not overwrite each other's images. Markdown image paths are resolved relative to the `.md` file, so colocated `media/` folders work; missing or remote Markdown images and DOCX image extraction failures are reported as QA errors instead of disappearing silently. Header/footer images in the content source are not migrated as body content; QA reports `NON_BODY_IMAGE_UNSUPPORTED` so users can move real content images into the body or remove decorative source images.
-- Plain-text formulas in content documents are recognized by `content_parser.py`; Markdown inline/display math is extracted by `md_parser.py`; both paths are normalized by `script_generator.py` and rendered through `latex_omath.py` as native OOXML Math. Inline formulas stay in the paragraph, and display formulas use editable WPS/Word `m:oMathPara`, not screenshots or plain text. Single-dollar `$...$` spans are accepted only when the content is semantically math-like, so `$100$` is not misclassified, and `$$...$$` remains display math. Split source-DOCX sum, fraction-plus-sum, and max/min objective layouts are conservatively repaired. If raw `$...$` / `$$...$$` delimiters remain in the final DOCX, QA reports `LATEX_DELIMITER_TEXT`.
-- For already-typeset source DOCX files, `content_parser.py` looks ahead to skip static source TOC blocks, including unpaged TOC entries and TOC blocks polluted by repeated formula/page fragments, while preserving real "Contents" sections that use explicit Heading styles even when followed by a page break. Unfilled placeholders such as `[报名序号]` are filtered out of the content stream when possible; unsafe contaminated/split formulas are downgraded to ordinary body text; likely low-resolution text/formula image shards are kept at their native size instead of being upscaled. `qa_checker.py` still surfaces these cases as warnings, and blocks only when unsafe residue remains in the final DOCX, such as `PLACEHOLDER_TEXT_LEFT`.
-- TOC output is static by default; when Windows Word COM is available, the pipeline reads heading page numbers from Word and writes them into the visible TOC.
-- Body images fit the full text width. Cover images use the template-extracted width and height, preventing logos and seals from being clipped by paragraph line height.
-
-## Architecture
-
-Core engines + one generated script + two knowledge bases:
-
-```
-+---------------------------+       +---------------------------+
-| format_extractor.py       |       |                           |
-| content_parser.py         |       |   build_generated.py      |
-| script_generator.py       |params |                           |
-|                           |------>|   zero hardcoding         |---> final .docx
-| (developer layer)         |       |                           |
-+---------------------------+       |   user fine-tuning layer  |
-                                    |   + 基础操作.md            |
-                                    +---------------------------+
-
- Knowledge Base
- +-- CLAUDE.md       <- AI workflow instructions
- +-- 基础操作.md      <- AI toolbox (all OOXML code snippets)
-```
-
-- **Core engines**: the developer maintenance surface. Reusable fixes belong in `pipeline/` scripts and stay parameterized via template/content JSON
-- **md_parser.py**: Markdown parser — extracts both format specs and content from `.md` files
-- **content_parser_modules/**: submodules behind `content_parser.py`; placeholder, style, text-cleanup, front-matter, caption-flow, paragraph-stream, body dispatch, source-TOC, image extraction, table extraction, formula extraction/repair, heading detection, reference collection, and section construction/post-processing rules live here while the public entry point stays `content_parser.extract`
-- **script_generator_modules/**: submodules behind `script_generator.py`; generator-side section/front-matter planning, numbered section ordering, template page extraction, layout-rule inference, style-profile inference, shared base runtime, text cleanup/caption/front-back predicates, cover reconstruction, abstract/keywords/front-matter rendering, body paragraph/section rendering, plain-text formula conversion, formula rendering, formula/rich-text, table/image/code-block, references/backmatter, TOC/page-resolution, and build/manifest runtime-template fragments live here while the public entry point stays `script_generator.generate`
-- **pipeline_runner/**: orchestration helper package for `run_pipeline.py`; it centralizes CLI/filesystem helpers, run context, optional dependencies, handoff artifacts, extraction verification, template phases, build execution, JSON contracts, QA orchestration, terminal reporting, and completion summaries while keeping the root entrypoint thin
-- **template_profiler.py**: template profiler — derives reusable capabilities and risk flags from `format.json`
-- **latex_omath.py**: standalone LaTeX→OOXML formula converter; it supports handwritten LaTeX and LaTeX normalized from plain-text formulas extracted by `content_parser.py`
-- **formula_semantics.py**: deterministic formula semantics layer for quantities/units, inline math, display math, and fragmented formula problems
-- **comment_utils.py**: Word comment system — `comment="advisor: ..."` adds native Word comments
-- **qa_visual.py**: optional PDF/render QA for page count, paper size, TOC text, and sample PNG rendering
-- **public_template_suite.py**: public-template compatibility suite; downloads public templates into ignored local folders and runs synthetic structure/visual QA without committing templates or outputs
-- **privacy.py**: report-sanitization helper to avoid leaking absolute machine paths
-- **regression_suite.py**: developer synthetic regression suite covering formula semantics, inline/display formulas, mixed paragraphs, MD tables/code, manifest counts, table-cell images, non-body image warnings, raw LaTeX delimiter leftovers, and QA failure paths
-- **build_generated.py**: generated user fine-tuning script. Users can ask AI to edit it for the current document; developers move reusable fixes back into the core engines
-- **基础操作.md**: continuously maintained code snippet library — the more it's tested, the more AI can do
-- **Missing template features** (e.g. cross-references) → engine won't generate → user requests → AI checks 基础操作.md → edits the current `build_generated.py`; developers can later productize the pattern in the core engine
-
-## Output Structure
-
-Each run produces an independent directory:
-
-```
-Outputs/
-├── 2026-05-06_my_paper/
-│   ├── 格式提取.md          ← verify template formats
-│   ├── 内容提取.md          ← verify content
-│   ├── format.json
-│   ├── content.json
-│   ├── template_profile.md  ← template capability profile
-│   ├── workflow_mode.json  ← user/developer mode for this run
-│   ├── build_manifest.json ← rendered body image/table/formula counts
-│   ├── qa_report.md        ← generated QA report
-│   ├── visual_report.md     ← PDF/render QA (--qa-level visual)
-│   ├── visual_qa/           ← local PDF and sample PNGs (ignored)
-│   ├── figures/             ← images extracted for this run
-│   ├── assets/              ← template assets for this run
-│   ├── build_generated.py   ← generated script, AI-tunable for this document
-│   └── final_paper.docx
-├── 2026-05-06_my_paper_2/
-│   └── ...
-```
-
-## Environment
-
-- Python 3.10+
-- `python -m pip install python-docx Pillow`
-
-## Pipeline Stages
-
-```
-Templates/template.docx → [Phase 1] format_extractor → format.json
-                                                         format_report.md
-
-format.json ─────────→ [Phase 2] template_profiler ─→ template_profile.json
-
-Inputs/content.docx ──→ [Phase 3] content_parser ──→ content.json
-                    (images → Outputs/<run>/figures/) content_report.md
-
-format.json ──┬──→ [Phase 4] script_generator ──→ build_generated.py
-content.json ─┘
-
-build_generated.py ──→ [Phase 5] python execution ──→ final_paper.docx
-final_paper.docx ──→ [Phase 6] qa_checker ──→ qa_report.json / qa_report.md
-                    optional qa_visual ─────→ visual_report.json / visual_report.md
-```
-
-Each stage has built-in verification. Format extraction runs twice and uses a third arbitration run on mismatch. Content extraction uses isolated run folders and compares structural/image/reference digests; when no majority forms but section structure is stable, it performs up to five runs and merges recoverable images, formulas, tables, and references before raising `VerificationError`.
-
-Current validation baseline (2026-05-27): synthetic regression `112 passed, 0 failed`; a 5-content × 3-template end-to-end strict QA matrix passed `15/15`, with no structural QA or conformance QA errors.
-
-## Fine-Tuning
-
-```bash
-# User-level: ask AI to edit the generated script, then re-run it
-python run_pipeline.py --mode user
-python Outputs/<directory>/build_generated.py
-```
-
-`Outputs/<directory>/build_generated.py` is the user-facing fine-tuning entry point for the current document. A full pipeline run regenerates it.
-
-For reusable behavior, developers update the core engine and run the whole pipeline again:
-
-```bash
-python Paper_Project/Program/pipeline/regression_suite.py
-python run_pipeline.py --mode developer --template template.docx --content paper.docx
-```
-
-| Intent | User-level tuning | Developer productization |
-|--------|-------------------|--------------------------|
-| Current document body, heading, reference styles | `build_generated.py` | `script_generator.py` |
-| Current document images, tables, TOC details | `build_generated.py` | `script_generator.py` / `content_parser.py` |
-| Content recognition, sections, image extraction rules | not expected from users | `content_parser.py` |
-| Template formatting, cover, headers/footers extraction | not expected from users | `format_extractor.py` |
-| Markdown input rules | not expected from users | `md_parser.py` |
-| Output folders, file selection, verification flow | not expected from users | `run_pipeline.py` |
-| Generated-output QA rules | not expected from users | `qa_checker.py` |
-| PDF/render QA | not expected from users | `qa_visual.py` |
-| Template capability profiling | not expected from users | `template_profiler.py` |
-
-## Project Structure
-
-```
-├── run_pipeline.py              ← one-click entry point
-├── CLAUDE.md                    ← AI workflow (auto-loaded by Claude Code)
-├── .claude/settings.local.json  ← local Claude permissions (ignored)
-├── .gitignore
-├── memory/                      ← disk-backed long-term memory
-├── scripts/project_memory.py    ← memory append/validation helper
-├── Templates/                   ← place template docx here
-├── Inputs/                      ← place content docx here
-├── Outputs/                     ← independent sub-directory per run (ignored)
-└── Paper_Project/
-    ├── 基础操作.md               ← AI toolbox (all OOXML code snippets)
-    └── Program/
-        ├── pipeline/
-        │   ├── format_extractor.py   ← Phase 1: template → format JSON
-        │   ├── content_parser.py     ← Phase 2: content → structured JSON
-        │   ├── content_parser_modules/ ← content parser submodules
-        │   ├── md_parser.py          ← MD parser (format + content)
-        │   ├── template_profiler.py  ← template capability profile
-        │   ├── script_generator.py   ← Phase 3: JSON → build script
-        │   ├── script_generator_modules/ ← script generator submodules
-        │   ├── pipeline_runner/      ← run_pipeline orchestration helper package
-        │   │   ├── artifacts.py      ← format/content handoff artifact writing
-        │   │   ├── build_phase.py    ← build-script/docx phase
-        │   │   ├── cli.py            ← CLI parser/dispatch
-        │   │   ├── contracts.py      ← JSON handoff contracts
-        │   │   ├── context.py        ← path/output/workflow context
-        │   │   ├── dependencies.py   ← optional dependency loading
-        │   │   ├── execution.py      ← generated-script subprocess execution
-        │   │   ├── io.py             ← scanning/interactive/mode helpers
-        │   │   ├── qa.py             ← QA phase orchestration
-        │   │   ├── reports.py        ← terminal report helpers
-        │   │   ├── summary.py        ← completion summary
-        │   │   ├── template_phase.py ← template profile/requirements phase
-        │   │   └── verification.py   ← extractor verification/arbitration
-        │   ├── latex_omath.py        ← LaTeX/plain-text formula → OOXML converter
-        │   ├── qa_checker.py         ← output QA report and fix-target routing
-        │   ├── qa_visual.py          ← optional PDF/render QA
-        │   ├── public_template_suite.py ← public-template compatibility suite
-        │   ├── privacy.py            ← report path sanitization
-        │   ├── comment_utils.py      ← Word comment system
-        │   └── regression_suite.py   ← developer synthetic regression tests
-        ├── build_acta_manuscript.py  ← reference: Acta Materialia journal format
-        ├── build_comprehensive_doc.py ← reference: full feature demo
-        └── master.py                 ← reference: orchestrator skeleton
-```
-
-## Features
-
-- **Markdown content support**: `.md` files as content input, with built-in `# 格式说明` section or YAML frontmatter for format specification
-- **Markdown relative images**: `![figure](media/a.png)` resolves from the `.md` file directory and is copied into the current output folder
-- Page setup (A4 + four margins)
-- Cover page (fonts/spacing/tables extracted from template, zero hardcoding)
-- Three-level heading auto-detection (content description > OOXML direct read)
-- Three-line tables (OOXML direct write: top thick / header thin / bottom thick)
-- Cross-references (body [N] blue superscript → reference w:anchor jump)
-- Reference [N] format, hanging indent, auto dedup prefix
-- CJK fonts: auto-detect and set w:eastAsia to prevent fallback
-- A4 auto pagination (dual cpl: Latin + CJK measured separately)
-- Headers & footers (PAGE field code for dynamic page numbers)
-- Image centering + Fig. captions
-- **LaTeX formula conversion**: `latex_to_omath(r"\frac{a}{b}")` — write LaTeX directly → native Word equations
-  Supports fractions/radicals/sums/integrals/matrices/cases/Greek/symbols/arrows/accents/functions/limits/delimiters/brackets/boxes (42+ constructs)
-- **Plain-text formula reconstruction**: engineering formulas in source docx paragraphs are detected, normalized to LaTeX, and inserted as editable `m:oMathPara` equations.
-- **Markdown equation preservation**: `$...$` and `$$...$$` in abstracts and body sections render as native OOXML Math; cleanup preserves math-only paragraphs instead of deleting them as empty text.
-- **WPS-native equation compatibility**: `latex_omath.py` keeps `m:rPr` on every math run and merges contiguous `\text{}` / `\mathrm{}` text runs to avoid delimiter artifacts such as `M|b|p|s`.
-- **Formula numbering**: `\tag{1.1}`, `\begin{equation}`, `\begin{align}` auto-numbering
-- **Math fonts**: `\mathbb{R}`, `\mathcal{F}` etc.
-- **Word comments**: `body("text", comment="advisor: please confirm")` → native Word comments
-- **TOC**: static visible TOC by default; Word COM can resolve and write heading page numbers automatically
-- **QA reports + repair plans**: after generation, checks key artifacts, style profiles, TOC, images, formulas, and LaTeX errors, then routes fixes by user/developer mode and writes `qa_fix_prompt.txt` for follow-up repair.
-- **DOCX image boundary detection**: paragraph images and table-cell images enter the body image stream; header/footer images report `NON_BODY_IMAGE_UNSUPPORTED` so users know they were not migrated.
-- Traditional formula tools: `formula_build_matrix()` parameterized construction
-- Dual verification extraction (two independent runs cross-compared, third arbitration on mismatch)
-
----
-
-## 许可 / License
-
-Copyright © 2025 Youwei Zhang
-
-本软件仅供个人学习和研究使用。**未经作者明确书面授权，禁止将本软件用于任何商业目的**，包括但不限于：将本软件或衍生作品作为商业产品、付费服务、SaaS 平台的一部分进行销售、出租、许可或分发。如需商业使用授权，请联系作者。
-
-This software is provided for personal learning and research purposes only. **Commercial use is prohibited without explicit written authorization from the author.**
+See the repository license file if present.

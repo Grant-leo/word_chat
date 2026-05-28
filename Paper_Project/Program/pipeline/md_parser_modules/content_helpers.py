@@ -1,0 +1,283 @@
+"""Markdown content parsing helpers."""
+from __future__ import annotations
+
+import os
+import re
+import shutil
+from typing import Any, Dict, List, Tuple
+
+
+_RE_REF_HEADING = re.compile(r'(?i)^references?\b|^参考文献|^引用文献')
+_RE_BACKMATTER_HEADING = re.compile(r'(?i)^append(?:ix|ices)\b|^acknowledg(?:e)?ments?\b|^acknowledgment\b|^附\s*录|^致\s*谢')
+
+
+def _is_format_section_heading(line: str) -> bool:
+    return bool(re.match(r'^#{1,3}\s+[格式排版要求说明]', line))
+
+
+def _skip_format_section(lines: List[str]) -> List[str]:
+    """Skip YAML frontmatter and # 格式 section. Returns remaining lines."""
+    if lines and lines[0].strip() == '---':
+        for i in range(1, len(lines)):
+            if lines[i].strip() == '---':
+                lines = lines[i + 1:]
+                break
+    while lines and not lines[0].strip():
+        lines = lines[1:]
+    if lines and _is_format_section_heading(lines[0]):
+        for i in range(1, len(lines)):
+            stripped = lines[i].strip()
+            if stripped == '---' or (re.match(r'^#{1,3}\s+', stripped)
+                                     and not _is_format_section_heading(stripped)):
+                lines = lines[i + (1 if stripped == '---' else 0):]
+                break
+        else:
+            lines = []
+    return lines
+
+
+def _detect_title(lines: List[str]) -> Tuple[str, int]:
+    """Find first # heading as document title."""
+    for i, line in enumerate(lines):
+        m = re.match(r'^#\s+(.+)', line)
+        if m:
+            return m.group(1).strip(), i
+    return '', 0
+
+
+def _process_inline_math(text: str) -> List[Tuple[str, bool]]:
+    """Split text by $...$ spans. Returns list of (text, is_math) tuples."""
+    parts: List[Tuple[str, bool]] = []
+    pos = 0
+    while pos < len(text):
+        dollar = text.find('$', pos)
+        if dollar == -1:
+            parts.append((text[pos:], False))
+            break
+        if dollar > 0 and text[dollar - 1] == '\\':
+            parts.append((text[pos:dollar - 1] + '$', False))
+            pos = dollar + 1
+            continue
+        if dollar + 1 < len(text) and text[dollar + 1] == '$':
+            parts.append((text[pos:dollar], False))
+            end = text.find('$$', dollar + 2)
+            if end == -1:
+                parts.append((text[dollar + 2:], True))
+                pos = len(text)
+            else:
+                parts.append((text[dollar + 2:end], True))
+                pos = end + 2
+            continue
+        parts.append((text[pos:dollar], False))
+        end = text.find('$', dollar + 1)
+        if end == -1:
+            parts.append((text[dollar + 1:], True))
+            pos = len(text)
+        else:
+            parts.append((text[dollar + 1:end], True))
+            pos = end + 1
+    return parts
+
+
+def _split_image_tokens_from_text(text: str, fig_dir: str, prefix: str, base_dir: str = '') -> Tuple[List[Dict[str, Any]], List[str], List[Dict[str, str]]]:
+    """Split Markdown image references into ordered text/image tokens."""
+    imgs: List[str] = []
+    missing: List[Dict[str, str]] = []
+    tokens: List[Dict[str, Any]] = []
+    pos = 0
+
+    for m in re.finditer(r'!\[([^\]]*)\]\((.+?)\)', text):
+        if m.start() > pos:
+            tokens.append({'type': 'text', 'text': text[pos:m.start()]})
+        alt = m.group(1).strip()
+        src = m.group(2).strip().strip('"').strip("'")
+        if re.match(r'^[a-z]+://', src, re.I):
+            missing.append({'source': src, 'alt': alt, 'reason': 'remote'})
+            tokens.append({'type': 'missing_image', 'source': src, 'alt': alt, 'reason': 'remote'})
+            pos = m.end()
+            continue
+        fname = os.path.basename(src)
+        if not fname:
+            missing.append({'source': src, 'alt': alt, 'reason': 'empty_filename'})
+            tokens.append({'type': 'missing_image', 'source': src, 'alt': alt, 'reason': 'empty_filename'})
+            pos = m.end()
+            continue
+        name, ext = os.path.splitext(fname)
+        if not ext:
+            ext = '.png'
+        existing = [f for f in os.listdir(fig_dir) if f.startswith(prefix)]
+        seq = len(existing) + 1
+        dest = os.path.join(fig_dir, f'{prefix}_{seq:03d}{ext}')
+        candidates = [src]
+        if not os.path.isabs(src):
+            if base_dir:
+                candidates.insert(0, os.path.join(base_dir, src))
+            candidates.append(os.path.abspath(src))
+        src_path = next((p for p in candidates if os.path.exists(p)), None)
+        if src_path:
+            shutil.copy2(src_path, dest)
+            copied = os.path.basename(dest)
+            imgs.append(copied)
+            tokens.append({'type': 'image', 'image': copied})
+        else:
+            missing.append({'source': src, 'alt': alt, 'reason': 'not_found'})
+            tokens.append({'type': 'missing_image', 'source': src, 'alt': alt, 'reason': 'not_found'})
+        pos = m.end()
+
+    if pos < len(text):
+        tokens.append({'type': 'text', 'text': text[pos:]})
+    if not tokens:
+        tokens.append({'type': 'text', 'text': text})
+    return tokens, imgs, missing
+
+
+def _looks_like_formula_text(text: str) -> bool:
+    t = str(text or '').strip()
+    if not t or len(t) > 180 or t.endswith(('。', '！', '？')):
+        return False
+    if not re.search(r'[=＝≈≤≥<>]', t) or not re.search(r'\d', t):
+        return False
+    return len(re.findall(r'[=＝+\-*/×÷%≈≤≥<>]', t)) >= 2
+
+
+def _latex_escape_text(text: str) -> str:
+    return str(text or '').replace('\\', r'\backslash ').replace('{', r'\{').replace('}', r'\}')
+
+
+def _latex_from_formula_text(text: str) -> str:
+    return r'\text{' + _latex_escape_text(str(text or '').strip()) + '}'
+
+
+def _parse_text_paragraph(text: str) -> Any:
+    """Parse a paragraph text fragment into a content.json paragraph entry."""
+    stripped = text.strip()
+    if stripped.startswith('$$') and stripped.endswith('$$'):
+        latex = stripped[2:-2].strip()
+        return {'role': 'formula', 'text': '', 'latex': latex, 'math': [{'type': 'display', 'latex': latex}]}
+
+    if '$' not in text:
+        clean = _strip_md_formatting(text)
+        if _looks_like_formula_text(clean):
+            return {'role': 'formula', 'text': clean, 'latex': _latex_from_formula_text(clean)}
+        return clean if clean else None
+
+    parts = _process_inline_math(text)
+    plain_parts = []
+    math_items = []
+    runs = []
+    for content, is_math in parts:
+        if is_math:
+            latex = content.strip()
+            item = {'type': 'inline', 'latex': latex, 'text': latex}
+            math_items.append(item)
+            runs.append({'type': 'math', 'text': latex, 'math': [item]})
+        else:
+            clean = _strip_md_formatting(content, preserve_edges=True)
+            if clean.strip():
+                plain_parts.append(clean)
+                runs.append({'type': 'text', 'text': clean})
+
+    plain_text = ' '.join(plain_parts).strip()
+    if not plain_text:
+        plain_text = ''
+
+    if math_items:
+        display_text = ''.join(str(r.get('text') or '') for r in runs).strip()
+        return {'role': 'rich_text', 'text': display_text or plain_text, 'runs': runs, 'math': math_items}
+    return plain_text if plain_text else None
+
+
+def _parse_paragraph_items(text: str, fig_dir: str, prefix: str, base_dir: str = '') -> Tuple[List[Any], List[str], List[Dict[str, str]]]:
+    """Parse a Markdown paragraph into ordered content items and image names."""
+    tokens, images, missing = _split_image_tokens_from_text(text, fig_dir, prefix, base_dir=base_dir)
+    items = []
+    for tok in tokens:
+        if tok.get('type') == 'image':
+            items.append({'role': 'image', 'image': tok.get('image')})
+            continue
+        if tok.get('type') == 'missing_image':
+            label = tok.get('alt') or tok.get('source') or 'missing image'
+            items.append({'role': 'missing_image', 'text': label, 'source': tok.get('source'), 'reason': tok.get('reason')})
+            continue
+        fragment = tok.get('text') or ''
+        if not fragment.strip():
+            continue
+        para = _parse_text_paragraph(fragment)
+        if para:
+            items.append(para)
+    return items, images, missing
+
+
+def _strip_md_formatting(text: str, preserve_edges: bool = False) -> str:
+    """Strip markdown formatting: **bold**, *italic*, `code`, [links](url), > quote, etc."""
+    raw = str(text or '')
+    has_leading = bool(re.match(r'^\s+', raw))
+    has_trailing = bool(re.search(r'\s+$', raw))
+    text = raw
+    text = re.sub(r'!\[.*?\]\(.+?\)', '', text)
+    text = re.sub(r'\[([^\]]*)\]\(.+?\)', r'\1', text)
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'__(.+?)__', r'\1', text)
+    text = re.sub(r'\*(.+?)\*', r'\1', text)
+    text = re.sub(r'_(.+?)_', r'\1', text)
+    text = re.sub(r'`([^`]+)`', r'\1', text)
+    text = re.sub(r'^>\s?', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^[\s]*[-*+]\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^[\s]*\d+[.)]\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'\s+', ' ', text)
+    if preserve_edges:
+        core = text.strip()
+        if not core:
+            return ''
+        return (' ' if has_leading else '') + core + (' ' if has_trailing else '')
+    return text.strip()
+
+
+def _is_markdown_table_separator(line: str) -> bool:
+    """Return True for a Markdown table separator row such as | --- | :---: |."""
+    text = str(line or '').strip()
+    if '|' not in text:
+        return False
+    text = text.strip('|').strip()
+    if not text:
+        return False
+    cells = [c.strip() for c in text.split('|')]
+    return bool(cells) and all(re.fullmatch(r':?-{3,}:?', c or '') for c in cells)
+
+
+def _split_markdown_table_row(line: str) -> List[str]:
+    text = str(line or '').strip()
+    if '|' not in text:
+        return []
+    text = text.strip()
+    if text.startswith('|'):
+        text = text[1:]
+    if text.endswith('|'):
+        text = text[:-1]
+    return [_strip_md_formatting(c.strip()) for c in text.split('|')]
+
+
+def _parse_markdown_table(lines: List[str], start: int) -> Tuple[List[List[str]], int]:
+    """Parse a GitHub-style Markdown table. Returns (rows, next_index)."""
+    if start + 1 >= len(lines):
+        return [], start
+    header = _split_markdown_table_row(lines[start])
+    if not header or not _is_markdown_table_separator(lines[start + 1]):
+        return [], start
+
+    rows = [header]
+    i = start + 2
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if not stripped or stripped.startswith('#') or '|' not in stripped:
+            break
+        row = _split_markdown_table_row(lines[i])
+        if row:
+            if len(row) < len(header):
+                row += [''] * (len(header) - len(row))
+            elif len(row) > len(header):
+                row = row[:len(header) - 1] + [' | '.join(row[len(header) - 1:])]
+            rows.append(row)
+        i += 1
+    return rows if len(rows) > 1 else [], i
+

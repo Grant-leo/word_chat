@@ -197,20 +197,30 @@ python run_pipeline.py --mode developer --qa-level visual --template <模板文�
 ## Core Ownership Map
 
 - `content_parser.py`: stable public content extraction entrypoint.
-- `content_parser_modules/`: reusable content extraction rules: placeholders, styles, text cleanup, front matter, captions, paragraph streams, body dispatch, source TOC, images, tables, formulas, headings, references, and section building.
-- `format_extractor.py`: template/cover/header/footer/style extraction.
+- `content_parser_modules/`: reusable content extraction rules: extraction orchestration, placeholders, styles, text cleanup, front matter, captions, paragraph streams, body dispatch, source TOC, images, tables, formula label cleanup, source OMML extraction, text formula items, split-layout repair strategies, headings, references, and section building.
+- `format_extractor.py`: stable template format extraction entry point.
+- `format_extractor_modules/`: OOXML metrics, style inheritance, semantic style profiles, cover assets, and cover table extraction.
 - `md_parser.py`: Markdown format/content parsing.
-- `template_profiler.py`: template capability and risk profile generation.
+- `md_parser_modules/`: Markdown parser helpers for content extraction orchestration, format extraction, inline/display math tokens, image path resolution, table parsing, and text cleanup.
+- `template_profiler.py`: stable template capability/risk profile entry point.
+- `template_profiler_modules/`: template profile construction and report writing.
 - `script_generator.py`: stable public script generation entrypoint.
-- `script_generator_modules/`: generator planning and generated-script runtime fragments: sections, template rules, style profiles, base runtime, cover/front matter/body rendering, formula text conversion, formula rendering, media/tables/code, references/backmatter, TOC, and build manifest orchestration.
+- `script_generator_modules/`: generator planning and generated-script runtime fragments: generator orchestration, runtime template assembly, sections, template rules, style profiles, base runtime, cover/front matter/body rendering, formula text conversion, formula rendering, media/tables/code, references/backmatter, TOC, and build manifest orchestration.
 - `latex_omath.py`: LaTeX/text formula to native Word OOXML Math conversion.
+- `latex_omath_modules/`: formula converter tokenizer, parser, API helpers, symbol registries, and OOXML builders copied with generated build scripts.
 - `qa_checker.py`: structural QA report, issue routing, repair-plan output.
+- `qa_checker_modules/`: structural QA phase checks, issue registry, JSON/DOCX/content metrics and samples, repair-plan generation, and Markdown/JSON report writers.
 - `qa_conformance.py`: strict DOCX/XML/template-content conformance checks and template requirements.
+- `qa_conformance_modules/`: strict QA orchestration, OOXML helpers, content/style checks, DOCX XML checks, template requirement generation, and conformance report writers.
 - `qa_visual.py`: Word COM/PDF/render visual QA.
+- `qa_visual_modules/`: visual QA orchestration, export, Poppler/render, image stats, golden baseline, and report helpers.
 - `privacy.py`: report path sanitization helpers.
 - `comment_utils.py`: Word comment injection system.
+- `comment_utils_modules/`: comment_utils implementation for OOXML comments, relationships, and content types.
 - `public_template_suite.py`: public-template compatibility suite; downloads/runs stay local.
+- `public_template_suite_modules/`: shared paths, storage/download helpers, execution runners, Markdown reports, default public template metadata, synthetic non-private scenarios, and generated test image assets.
 - `regression_suite.py`: synthetic engine regression suite.
+- `regression_suite_modules/`: regression harness, assertions, temp workspace cleanup, base fixtures, generated-DOCX helpers, and grouped pipeline/content/formula/Markdown/QA/generator/template/operational cases.
 
 ### Runner Helper Modules
 
@@ -317,20 +327,30 @@ Do not use `git add .` blindly. Prefer explicit paths.
 run_pipeline.py              <- one-click entry
 Paper_Project/Program/pipeline/
     format_extractor.py
+    format_extractor_modules/
     content_parser.py
     content_parser_modules/
     md_parser.py
+    md_parser_modules/
     template_profiler.py
+    template_profiler_modules/
     script_generator.py
     script_generator_modules/
     latex_omath.py
     qa_checker.py
+    qa_checker_modules/
     qa_conformance.py
+    qa_conformance_modules/
     qa_visual.py
+    qa_visual_modules/
+    latex_omath_modules/
     privacy.py
     public_template_suite.py
+    public_template_suite_modules/
     regression_suite.py
+    regression_suite_modules/
     comment_utils.py
+    comment_utils_modules/
     pipeline_runner/
 Paper_Project/Program/pipeline/README.md <- engine layout map
 Paper_Project/基础操作.md                <- OOXML toolbox

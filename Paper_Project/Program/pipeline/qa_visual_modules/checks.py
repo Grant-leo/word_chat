@@ -1,0 +1,130 @@
+"""Visual QA orchestration for generated DOCX outputs."""
+from __future__ import annotations
+
+import os
+import shutil
+from datetime import datetime
+from typing import Any, Dict, List
+
+try:
+    from privacy import sanitize_value
+except Exception:  # pragma: no cover
+    def sanitize_value(value: Any, project_root: str | None = None) -> Any:
+        return value
+
+try:
+    from qa_visual_modules.exporters import _export_pdf, _export_wps_pdf
+    from qa_visual_modules.golden import _compare_or_update_golden
+    from qa_visual_modules.image_stats import _image_stats
+    from qa_visual_modules.pdf_tools import _find_page, _pdf_pages_text, _pdfinfo, _render_all_pages, _render_samples, _sample_pages
+except ImportError:  # pragma: no cover - package-style imports
+    from .exporters import _export_pdf, _export_wps_pdf
+    from .golden import _compare_or_update_golden
+    from .image_stats import _image_stats
+    from .pdf_tools import _find_page, _pdf_pages_text, _pdfinfo, _render_all_pages, _render_samples, _sample_pages
+
+def _issue(code: str, severity: str, message: str, detail: str = "") -> Dict[str, Any]:
+    return {"code": code, "severity": severity, "message": message, "detail": detail}
+
+
+def check_visual(
+    out_dir: str,
+    output_docx_name: str = "最终论文.docx",
+    project_root: str | None = None,
+    render_all_pages: bool = True,
+    require_wps: bool = False,
+    golden_dir: str | None = None,
+    update_golden: bool = False,
+) -> Dict[str, Any]:
+    out_dir = os.path.abspath(out_dir)
+    docx_path = os.path.join(out_dir, output_docx_name)
+    visual_dir = os.path.join(out_dir, "visual_qa")
+    os.makedirs(visual_dir, exist_ok=True)
+
+    issues: List[Dict[str, Any]] = []
+    counts: Dict[str, Any] = {}
+    artifacts: Dict[str, Any] = {}
+
+    if not os.path.exists(docx_path):
+        issues.append(_issue("MISSING_DOCX", "error", "Cannot run visual QA because final DOCX is missing.", docx_path))
+    else:
+        try:
+            pdf_path = _export_pdf(docx_path, visual_dir)
+            artifacts["pdf"] = pdf_path
+            info = _pdfinfo(pdf_path)
+            counts.update({k: v for k, v in info.items() if k in {"pages", "page_width_pt", "page_height_pt"}})
+            if not info.get("available"):
+                issues.append(_issue("PDFINFO_UNAVAILABLE", "error", "pdfinfo is not available; visual QA cannot verify page count or paper size."))
+            elif info.get("error"):
+                issues.append(_issue("PDFINFO_FAILED", "error", "pdfinfo failed.", str(info.get("error"))))
+            if int(info.get("pages") or 0) <= 0:
+                issues.append(_issue("PDF_PAGE_COUNT_INVALID", "error", "Rendered PDF has no pages."))
+
+            text_tool_available = shutil.which("pdftotext") is not None
+            pages_text = _pdf_pages_text(pdf_path, visual_dir)
+            counts["text_pages"] = len([p for p in pages_text if p.strip()])
+            if not text_tool_available:
+                issues.append(_issue("PDFTOTEXT_UNAVAILABLE", "error", "pdftotext is not available; visual QA cannot verify rendered text."))
+            elif not pages_text:
+                issues.append(_issue("PDFTOTEXT_FAILED", "error", "pdftotext did not produce readable page text."))
+            blank_pages = [idx + 1 for idx, page in enumerate(pages_text) if not page.strip()]
+            if len(blank_pages) > max(2, int(info.get("pages") or 0) // 8):
+                issues.append(_issue("MANY_BLANK_PAGES", "warning", "Rendered PDF has many text-empty pages.", ",".join(map(str, blank_pages[:12]))))
+            if pages_text and not _find_page(pages_text, [r"目录", r"contents"]) and int(info.get("pages") or 0) >= 6:
+                issues.append(_issue("TOC_TEXT_NOT_FOUND", "warning", "Rendered PDF text does not expose a TOC page."))
+
+            page_count = int(info.get("pages") or 0)
+            samples = _sample_pages(page_count, pages_text)
+            rendered = _render_samples(pdf_path, visual_dir, samples)
+            artifacts["samples"] = rendered
+            counts["sample_pages"] = samples
+            counts["sample_images"] = len(rendered)
+            if samples and len(rendered) < len(samples):
+                issues.append(_issue("SAMPLE_RENDER_FAILED", "error", "Could not render all PDF sample PNGs; install pdftoppm/Poppler."))
+            image_stats: Dict[str, Any] = {"page_hashes": [], "blank_pages": []}
+            if render_all_pages and page_count > 0:
+                all_pages = _render_all_pages(pdf_path, visual_dir, page_count)
+                artifacts["all_pages"] = all_pages
+                counts["all_page_images"] = len(all_pages)
+                if len(all_pages) != page_count:
+                    issues.append(_issue("ALL_PAGE_RENDER_FAILED", "error", "Could not render every PDF page to PNG.", f"pages={page_count} rendered={len(all_pages)}"))
+                image_stats = _image_stats(all_pages)
+                counts["blank_page_images"] = len(image_stats.get("blank_pages") or [])
+                counts["image_hashes"] = len(image_stats.get("page_hashes") or [])
+                if image_stats.get("unreadable_pages"):
+                    issues.append(_issue("PAGE_IMAGE_UNREADABLE", "error", "Some rendered page PNGs could not be inspected.", ",".join(map(str, image_stats.get("unreadable_pages")[:12]))))
+                if len(image_stats.get("blank_pages") or []) > max(2, page_count // 8):
+                    issues.append(_issue("MANY_BLANK_PAGE_IMAGES", "warning", "Rendered all-page PNG set contains many blank-looking pages.", ",".join(map(str, image_stats.get("blank_pages")[:12]))))
+            golden = _compare_or_update_golden(out_dir, counts, pages_text, image_stats, golden_dir, update_golden)
+            artifacts["golden_baseline"] = golden
+            if golden.get("status") == "mismatch":
+                issues.append(_issue("GOLDEN_BASELINE_MISMATCH", "error", "Rendered output differs from the golden baseline.", " / ".join(golden.get("issues") or [])))
+            elif golden.get("enabled") and golden.get("status") == "missing":
+                issues.append(_issue("GOLDEN_BASELINE_MISSING", "warning", "Golden baseline was requested but no baseline exists."))
+            try:
+                wps_pdf = _export_wps_pdf(docx_path, visual_dir)
+                artifacts["wps_pdf"] = wps_pdf
+                wps_info = _pdfinfo(wps_pdf)
+                counts["wps_pages"] = wps_info.get("pages")
+                counts["wps_page_width_pt"] = wps_info.get("page_width_pt")
+                counts["wps_page_height_pt"] = wps_info.get("page_height_pt")
+                if page_count and wps_info.get("pages") and int(wps_info.get("pages")) != page_count:
+                    issues.append(_issue("WPS_PAGE_COUNT_MISMATCH", "error", "WPS-rendered PDF page count differs from Word-rendered PDF.", f"word={page_count} wps={wps_info.get('pages')}"))
+            except Exception as exc:
+                severity = "error" if require_wps else "warning"
+                issues.append(_issue("WPS_EXPORT_UNAVAILABLE", severity, "WPS PDF export could not be completed.", str(exc)))
+        except Exception as exc:
+            issues.append(_issue("PDF_EXPORT_FAILED", "error", "DOCX could not be exported to PDF for visual QA.", str(exc)))
+
+    passed = not any(i.get("severity") == "error" for i in issues)
+    return {
+        "schema_version": 1,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "passed": passed,
+        "output_dir_name": os.path.basename(out_dir),
+        "counts": counts,
+        "issues": issues,
+        "artifacts": sanitize_value(artifacts, project_root),
+    }
+
+

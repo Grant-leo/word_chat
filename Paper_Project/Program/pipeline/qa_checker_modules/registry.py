@@ -1,0 +1,48 @@
+﻿"""QA issue registry and repair-guide metadata."""
+from __future__ import annotations
+
+
+VALID_MODES = {"user", "developer"}
+
+OWNER_BY_CODE = {
+    "MISSING_DOCX": "script_generator.py",
+    "MISSING_BUILD_SCRIPT": "script_generator.py",
+    "MISSING_FORMAT_JSON": "format_extractor.py / md_parser.py",
+    "MISSING_CONTENT_JSON": "content_parser.py / md_parser.py",
+    "FORMAT_EMPTY": "format_extractor.py / md_parser.py",
+    "CONTENT_EMPTY": "content_parser.py / md_parser.py",
+    "STYLE_PROFILE_MISSING": "format_extractor.py / script_generator.py",
+    "COVER_NOT_EXTRACTED": "format_extractor.py / script_generator.py",
+    "TITLE_MISSING": "content_parser.py / md_parser.py",
+    "REFERENCES_MISSING": "content_parser.py / md_parser.py",
+    "DOCX_XML_UNREADABLE": "script_generator.py",
+    "LATEX_ERROR_TEXT": "latex_omath.py / script_generator.py",
+    "LATEX_DELIMITER_TEXT": "content_parser.py / script_generator.py / latex_omath.py",
+    "FORMULA_PIPE_ARTIFACT": "latex_omath.py",
+    "FORMULA_COUNT_MISMATCH": "content_parser.py / md_parser.py / script_generator.py / latex_omath.py",
+    "FORMULA_NOT_NATIVE": "content_parser.py / script_generator.py / latex_omath.py",
+    "IMAGE_NOT_RENDERED": "content_parser.py / script_generator.py",
+    "IMAGE_COUNT_MISMATCH": "content_parser.py / script_generator.py",
+    "CONTENT_IMAGE_MISSING": "md_parser.py / content_parser.py",
+    "IMAGE_EXTRACT_FAILED": "content_parser.py",
+    "NON_BODY_IMAGE_UNSUPPORTED": "content_parser.py / script_generator.py",
+    "LOW_RES_IMAGE_FRAGMENT": "content_parser.py / script_generator.py / qa_checker.py",
+    "TABLE_COUNT_MISMATCH": "content_parser.py / md_parser.py / script_generator.py",
+    "BUILD_MANIFEST_MISSING": "script_generator.py",
+    "DOCX_TEXT_TOO_SHORT": "content_parser.py / md_parser.py / script_generator.py",
+    "CONTENT_HEADING_MISSING": "content_parser.py / md_parser.py / script_generator.py",
+    "CONTENT_TOC_POLLUTION": "content_parser.py / script_generator.py / qa_checker.py",
+    "DUPLICATE_FRONT_MATTER_HEADING": "format_extractor.py / script_generator.py / qa_checker.py",
+    "UNFILLED_PLACEHOLDER_TEXT": "content_parser.py / script_generator.py / qa_checker.py",
+    "FORMULA_NUMBER_CONFLICT": "content_parser.py / script_generator.py / qa_checker.py",
+    "FORMULA_TEXT_FRAGMENTED": "content_parser.py / script_generator.py / latex_omath.py",
+    "PLACEHOLDER_TEXT_LEFT": "script_generator.py / qa_checker.py",
+    "WORD_FIELD_ERROR": "script_generator.py",
+    "TOC_MISSING": "script_generator.py",
+    "WORKFLOW_MODE_INVALID": "run_pipeline.py",
+}
+try:
+    from qa_checker_modules.repair_guides import REPAIR_GUIDES
+except ImportError:  # pragma: no cover - package-style imports
+    from .repair_guides import REPAIR_GUIDES
+

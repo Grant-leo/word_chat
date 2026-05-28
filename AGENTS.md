@@ -102,15 +102,27 @@ For reusable fixes, product behavior, parser changes, or when the requester is t
 
 1. **Read the latest output** (`qa_report.md`, `格式提取.md`, `内容提取.md`, and when useful `build_generated.py`) to locate the mismatch
 2. **Identify the owning core script**
-   - `script_generator.py`: DOCX rendering, cover, TOC, styles, tables, images, references
+   - `script_generator.py`: stable script-generation entry point
+   - `script_generator_modules/`: generator orchestration, runtime template assembly, DOCX rendering fragments, cover, TOC, styles, tables, images, formulas, references
    - `latex_omath.py`: LaTeX/text formula to native OOXML Math conversion
-   - `format_extractor.py`: template/cover/header/footer/style extraction
+   - `latex_omath_modules/`: formula converter tokenizer, parser, API helpers, symbol registries, and OOXML builders copied with generated scripts
+   - `format_extractor.py`: stable template format extraction entry point
+   - `format_extractor_modules/`: extraction orchestration, OOXML metrics, style inheritance, semantic style profiles, cover assets, and cover table extraction
    - `content_parser.py`: content sections, figures, references, metadata extraction
+   - `content_parser_modules/`: reusable content extraction helpers for extraction orchestration, placeholders, text cleanup, front matter, captions, OOXML streams, body dispatch, source TOC, images, tables, formula labels/OMML/text items/repair strategies, headings, references, and section building
    - `md_parser.py`: Markdown input parsing
-   - `template_profiler.py`: template capability/risk profile generation
+   - `md_parser_modules/`: Markdown parser helpers for content orchestration, format extraction, math tokens, image path resolution, tables, and text cleanup
+   - `template_profiler.py`: stable template profile entry point
+   - `template_profiler_modules/`: template capability/risk profile construction and report writing
    - `qa_visual.py`: optional PDF export/render QA
+   - `qa_checker_modules/`: structural QA phase orchestration, issue registry, JSON/DOCX/content metrics, sample detectors, repair-plan generation, and report writers
+   - `qa_conformance_modules/`: strict QA orchestration, OOXML helpers, content/style checks, DOCX XML checks, template requirements, and report writers
+   - `qa_visual_modules/`: visual QA orchestration, export, Poppler/render, image stats, golden baseline, and report helpers
+   - `public_template_suite.py`: public-template compatibility suite entry point
+   - `public_template_suite_modules/`: paths, storage, runner, reporting, default public template metadata, synthetic scenarios, and generated test image assets
    - `privacy.py`: report path sanitization helpers
    - `regression_suite.py`: synthetic engine regression suite
+   - `regression_suite_modules/`: regression harness, assertions, temp workspace cleanup, base fixtures, generated-DOCX helpers, and concrete case groups
    - `run_pipeline.py`: one-click entry and high-level orchestration
    - `pipeline_runner/`: CLI, IO, run context, dependency loading, artifact writing, extraction verification, template phases, build execution, JSON contracts, QA orchestration, terminal reports, and completion summaries
 3. **Consult `基础操作.md`** — find the correct OOXML implementation
@@ -183,20 +195,30 @@ memory/                      ← Disk-backed project memory: summaries + JSONL a
 scripts/project_memory.py    ← Memory append/validation helper
 Paper_Project/Program/pipeline/
     format_extractor.py       ← Phase 1: template → format JSON
+    format_extractor_modules/ ← format_extractor submodules: OOXML metrics, style inheritance, style profiles, cover assets/tables
     content_parser.py         ← Phase 2: content → structured JSON
-    content_parser_modules/   ← content_parser submodules: placeholders, styles, text cleanup, front matter, caption flow, paragraph streams, body dispatch, source TOC, images, tables, formulas, headings, references, section building
+    content_parser_modules/   ← content_parser submodules: extraction orchestration, placeholders, styles, text cleanup, front matter, caption flow, paragraph streams, body dispatch, source TOC, images, tables, formula labels/OMML/text items/repair strategies, headings, references, section building
     md_parser.py              ← MD parser (format + content from .md)
-    template_profiler.py      ← template capability profile
+    md_parser_modules/        ← md_parser submodules: content extraction orchestration, format extraction, math tokens, image paths, tables, text cleanup
+    template_profiler.py      ← template capability profile entry point
+    template_profiler_modules/← template profile construction and report writers
     script_generator.py       ← Phase 3: JSON → build_generated.py
-    script_generator_modules/ ← script_generator submodules: sections/front matter, template rules, style profiles, and runtime template fragments
+    script_generator_modules/ ← script_generator submodules: generator orchestration, runtime assembly, sections/front matter, template rules, style profiles, and runtime template fragments
     pipeline_runner/          ← run_pipeline orchestration helpers
+    qa_checker_modules/       ← qa_checker submodules: phase checks, issue registry, metrics, repair plans, report writers
+    qa_conformance_modules/   ← qa_conformance submodules: OOXML helpers, content/style checks, DOCX XML checks, requirements, reports
+    qa_visual_modules/        ← qa_visual submodules: export, PDF/render, image stats, golden, reports
     latex_omath.py            ← LaTeX→OOXML formula converter
+    latex_omath_modules/      ← latex_omath submodules: tokenizer, parser, API helpers, symbol registries and OOXML builders
     qa_checker.py             ← Generated-output QA report and fix-target routing
     qa_visual.py              ← optional PDF/render QA
     privacy.py                ← path sanitization helpers
     public_template_suite.py  ← public-template compatibility suite; downloads/runs stay local
+    public_template_suite_modules/ ← public-template paths, storage, runner, reporting, scenarios, and asset helpers
     regression_suite.py       ← synthetic regression tests
+    regression_suite_modules/ ← regression harness, fixtures, and grouped case modules
     comment_utils.py          ← Word comment injection system
+    comment_utils_modules/    ← comment_utils implementation: OOXML comments, rels, content types
 Paper_Project/基础操作.md     ← ★ YOUR TOOLBOX: all OOXML code snippets
 build_acta_manuscript.py      ← Reference: Acta journal paper
 build_comprehensive_doc.py    ← Reference: all features demo
