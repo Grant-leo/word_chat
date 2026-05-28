@@ -5,7 +5,7 @@ import re
 
 from qa_conformance import check_conformance
 from regression_suite_modules.generated_docx import run_generated_case
-from regression_suite_modules.harness import PNG_1X1, assert_true, base_content, case, new_workdir
+from regression_suite_modules.harness import PNG_1X1, assert_true, base_content, base_format, case, new_workdir
 from script_generator import (
     RUNTIME_TEMPLATE,
     _extract_page_and_header,
@@ -38,6 +38,46 @@ def conformance_style_check_ignores_static_toc_lines() -> None:
     assert_true("STYLE_MISMATCH" not in codes, f"conformance matched TOC lines instead of body headings: {conf['issues']}")
     assert_true("docx_sections" in conf["counts"], "conformance report should name Word section count as docx_sections")
     assert_true("sections" not in conf["counts"], "ambiguous conformance count key 'sections' should not be emitted")
+
+
+@case
+def conformance_reference_labels_keep_template_cjk_font() -> None:
+    content = base_content(["Body paragraph before references."])
+    content["references"] = ["[1] 作者1. 中文参考文献与自动排版测试[J]. 综合研究评论, 2026."]
+    result = run_generated_case("reference_cjk_font", content)
+    conf = check_conformance(str(result["work"]), mode="developer", output_docx_name="out.docx")
+    codes = [item["code"] for item in conf["issues"]]
+    assert_true("STYLE_MISMATCH" not in codes, f"reference label triggered CJK font mismatch: {conf['issues']}")
+
+
+@case
+def script_generator_keeps_figure_reference_prose_as_body() -> None:
+    fmt = base_format()
+    fmt["style_profiles"] = {
+        "body": {
+            "font": "宋体",
+            "size": 12.0,
+            "align": "JUSTIFY",
+            "line_spacing_fixed_pt": 28.0,
+            "first_indent_cm": 0.74,
+            "space_before_pt": 0.0,
+            "space_after_pt": 0.0,
+        },
+        "figure_caption": {
+            "font": "宋体",
+            "size": 10.5,
+            "align": "CENTER",
+            "line_spacing_fixed_pt": 28.0,
+            "first_indent_cm": 0.0,
+            "space_before_pt": 6.0,
+            "space_after_pt": 6.0,
+        },
+    }
+    content = base_content(["图 1 展示了从数据到决策的机器学习研究流程。"])
+    result = run_generated_case("figure_reference_prose_body", content, fmt=fmt)
+    conf = check_conformance(str(result["work"]), mode="developer", output_docx_name="out.docx")
+    codes = [item["code"] for item in conf["issues"]]
+    assert_true("STYLE_MISMATCH" not in codes, f"figure reference prose was rendered as caption: {conf['issues']}")
 
 
 @case
@@ -273,10 +313,17 @@ def script_generator_runtime_base_fragment_is_injected() -> None:
         "generated script header should come from base runtime",
     )
     assert_true("DATA = json.loads(__DATA_BLOB__)" in RUNTIME_TEMPLATE, "base runtime data bootstrap was not injected")
+    assert_true("sys.dont_write_bytecode = True" in RUNTIME_TEMPLATE, "generated scripts should suppress __pycache__ clutter")
+    assert_true(
+        RUNTIME_TEMPLATE.index("sys.dont_write_bytecode = True") < RUNTIME_TEMPLATE.index("from latex_omath import latex_to_omath"),
+        "bytecode suppression must run before local latex_omath imports",
+    )
     assert_true("def apply_run_profile" in RUNTIME_TEMPLATE, "base run styling helper was not injected")
     assert_true("def add_text" in RUNTIME_TEMPLATE, "base text helper was not injected")
     assert_true("def setup_section" in RUNTIME_TEMPLATE, "base section setup helper was not injected")
     assert_true("def force_cover_headerless" in RUNTIME_TEMPLATE, "base cover cleanup helper was not injected")
+    assert_true("def is_figure_caption_text" in RUNTIME_TEMPLATE, "caption prose classifier was not injected")
+    assert_true("elif is_figure_caption_text(text):" in RUNTIME_TEMPLATE, "body renderer should use the safe caption classifier")
     assert_true(
         RUNTIME_TEMPLATE.index("def add_text") < RUNTIME_TEMPLATE.index("def render_cover_and_declarations"),
         "base text helpers should be defined before cover rendering",

@@ -13,6 +13,7 @@ try:
     from qa_checker_modules.format_phase import run_format_checks
     from qa_checker_modules.report_phase import build_report
     from qa_checker_modules.registry import OWNER_BY_CODE, VALID_MODES
+    from qa_checker_modules.repair_guides import REPAIR_GUIDES
 except ImportError:  # pragma: no cover - package-style imports
     from .artifact_phase import (
         build_output_paths,
@@ -23,18 +24,43 @@ except ImportError:  # pragma: no cover - package-style imports
     from .format_phase import run_format_checks
     from .report_phase import build_report
     from .registry import OWNER_BY_CODE, VALID_MODES
+    from .repair_guides import REPAIR_GUIDES
+
+
+USER_INPUT_AUTO_LEVELS = {
+    "needs_user_file",
+    "needs_user_input",
+    "needs_user_confirmation",
+    "optional_user_input",
+}
+USER_INPUT_CODES = {
+    "CONTENT_EMPTY",
+    "CONTENT_IMAGE_MISSING",
+    "IMAGE_EXTRACT_FAILED",
+    "MISSING_CONTENT_JSON",
+    "MISSING_FORMAT_JSON",
+    "PDF_TEMPLATE_UNSUPPORTED",
+}
+
+
+def _user_owner_for_code(code: str) -> str:
+    auto_level = str((REPAIR_GUIDES.get(code) or {}).get("auto_level") or "")
+    if code in USER_INPUT_CODES or auto_level in USER_INPUT_AUTO_LEVELS:
+        return "User input/template file"
+    return "Outputs/<run>/build_generated.py"
 
 
 def _issue(code: str, severity: str, message: str, mode: str, detail: str = "") -> Dict[str, Any]:
     owner_dev = OWNER_BY_CODE.get(code, "script_generator.py")
+    owner_user = _user_owner_for_code(code)
     return {
         "code": code,
         "severity": severity,
         "message": message,
         "detail": detail,
-        "owner_user": "Outputs/<run>/build_generated.py",
+        "owner_user": owner_user,
         "owner_developer": owner_dev,
-        "active_owner": "Outputs/<run>/build_generated.py" if mode == "user" else owner_dev,
+        "active_owner": owner_user if mode == "user" else owner_dev,
     }
 
 

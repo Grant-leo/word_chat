@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from typing import List
+from typing import Any, Dict, List
 
 from docx import Document
 from pipeline_runner.artifacts import build_content_markdown, write_content_artifacts, write_format_artifacts
@@ -28,6 +28,7 @@ from pipeline_runner.dependencies import load_optional_dependencies
 from pipeline_runner.execution import ScriptExecutionResult, run_generated_script
 from pipeline_runner.io import normalize_mode, scan_inputs
 from pipeline_runner.qa import QADependencies, run_qa_phases
+from pipeline_runner.repair_loop import run_repair_loop
 from pipeline_runner.summary import build_completion_summary
 from pipeline_runner.template_phase import write_template_profile_phase, write_template_requirements_phase
 from pipeline_runner.verification import VerificationError, _merge_content_results, double_verify
@@ -45,6 +46,91 @@ from regression_suite_modules.harness import (
 
 PIPELINE_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = Path(__file__).resolve().parents[4]
+
+
+def _write_repair_loop_fixture(work: Path, *, final_docx: str = "final.docx") -> Path:
+    work.mkdir(exist_ok=True)
+    (work / "format.json").write_text(json.dumps(base_format(), ensure_ascii=False, indent=2), encoding="utf-8")
+    (work / "content.json").write_text(
+        json.dumps(base_content(["This body paragraph should remain in the final document."]), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    write_workflow_mode(
+        str(work),
+        mode="user",
+        template_path="template.docx",
+        content_path="content.docx",
+        run_qa=True,
+        qa_level="basic",
+        golden_dir=None,
+        update_golden=False,
+        require_wps=False,
+        auto_repair=True,
+        repair_max_rounds=5,
+        repair_stop_no_improve=2,
+    )
+    build_script = f"""from docx import Document
+import json
+import os
+
+BASE = os.path.dirname(__file__)
+OUT = os.path.join(BASE, {final_docx!r})
+
+def main():
+    doc = Document()
+    doc.add_paragraph('1 Introduction')
+    doc.add_paragraph('This body paragraph should remain in the final document.')
+    doc.add_paragraph('TODO')
+    doc.save(OUT)
+    with open(os.path.join(BASE, 'build_manifest.json'), 'w', encoding='utf-8') as handle:
+        json.dump({{'schema_version': 1, 'counts': {{'content_images_rendered': 0, 'content_tables_rendered': 0, 'content_formulas_rendered': 0}}}}, handle)
+
+if __name__ == '__main__':
+    main()
+"""
+    path = work / "build_generated.py"
+    path.write_text(build_script, encoding="utf-8")
+    return path
+
+
+def _fake_repair_report(out_dir: str, *, code: str, severity: str = "error", message: str = "synthetic") -> Dict[str, Any]:
+    from qa_checker_modules.repair import build_repair_plan
+    from qa_checker_modules.reports import write_reports
+
+    report = {
+        "schema_version": 1,
+        "mode": "user",
+        "passed": severity != "error",
+        "counts": {},
+        "issues": [{"code": code, "severity": severity, "message": message, "detail": ""}],
+        "next_action": "repair",
+        "output_dir_name": Path(out_dir).name,
+    }
+    report["repair_plan"] = build_repair_plan(report, out_dir)
+    write_reports(report, out_dir)
+    return report
+
+
+def _write_conformance_report(out_dir: str, *, passed: bool) -> Dict[str, Any]:
+    issues = [] if passed else [
+        {
+            "code": "STYLE_MISMATCH",
+            "severity": "error",
+            "message": "Some final DOCX paragraphs do not match template role styles.",
+            "detail": "reference `[1] 作者1.`: eastAsia font Times New Roman != 宋体",
+        }
+    ]
+    report = {
+        "schema_version": 1,
+        "mode": "user",
+        "passed": passed,
+        "counts": {},
+        "issues": issues,
+        "next_action": "Fix Outputs/<run>/build_generated.py and rerun it.",
+    }
+    Path(out_dir, "conformance_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    return report
+
 
 @case
 def pipeline_contracts_accept_current_handoffs() -> None:
@@ -131,6 +217,10 @@ def pipeline_cli_dispatches_md_parameter_and_single_file_modes() -> None:
     assert_true(calls[-1]["template"] == "t.docx" and calls[-1]["content"] == "c.docx", "parameter mode files changed")
     assert_true(calls[-1]["mode"] == "user", "non-interactive auto mode should default to user")
 
+    expect_exit_zero(parser.parse_args(["--template", "t.docx", "--content", "c.docx", "--auto-repair", "--no-qa", "--repair-max-rounds", "4"]))
+    assert_true(calls[-1]["run_qa"] is True and calls[-1]["auto_repair"] is True, "auto repair should force QA on")
+    assert_true(calls[-1]["repair_max_rounds"] == 4, "auto repair max rounds option was not passed")
+
     work = new_workdir("pipeline_cli")
     template_dir = work / "Templates"
     inputs_dir = work / "Inputs"
@@ -180,6 +270,310 @@ def pipeline_context_resolves_inputs_outputs_and_workflow() -> None:
     assert_true(workflow["mode"] == "developer", "workflow mode was not written")
     assert_true(workflow["qa_level"] == "visual", "workflow QA level was not written")
     assert_true(workflow["require_wps"] is True, "workflow require_wps flag was not written")
+    assert_true(workflow["auto_repair"] is False, "workflow auto_repair default changed")
+
+
+@case
+def pipeline_auto_repair_patches_build_script_and_reruns_qa() -> None:
+    from qa_checker import check_and_write as qa_check_and_write
+
+    work = new_workdir("pipeline_auto_repair_placeholder")
+    private_dir = work / "Inputs"
+    private_dir.mkdir()
+    private_file = private_dir / "private.docx"
+    private_file.write_bytes(b"private-user-content")
+    private_before = private_file.read_bytes()
+    core_file = PIPELINE_DIR / "pipeline_runner" / "qa.py"
+    core_before = core_file.read_bytes()
+
+    build_path = _write_repair_loop_fixture(work)
+    first_build = run_generated_script(str(build_path), str(work), python_executable=sys.executable)
+    assert_true(first_build.returncode == 0, f"synthetic build failed: {first_build.stderr}")
+
+    deps = QADependencies(
+        qa_check_and_write=qa_check_and_write,
+        conformance_check_and_write=None,
+        visual_check_and_write=None,
+        optional_import_detail=lambda name: "",
+    )
+    result = run_repair_loop(
+        str(work),
+        mode="user",
+        output_docx_name="final.docx",
+        qa_level="basic",
+        project_root=str(REPO_ROOT),
+        max_rounds=3,
+        stop_no_improve=2,
+        deps=deps,
+        run_generated_script=run_generated_script,
+        python_executable=sys.executable,
+    )
+
+    assert_true(result.ok, f"auto repair did not converge: {result.status}")
+    assert_true((work / "repair_loop_report.json").exists(), "repair loop JSON report missing")
+    assert_true((work / "repair_loop_report.md").exists(), "repair loop markdown report missing")
+    assert_true("AUTO_REPAIR_PLACEHOLDER_CLEANUP_V1" in build_path.read_text(encoding="utf-8"), "build script was not patched")
+    import zipfile
+
+    with zipfile.ZipFile(work / "final.docx") as zf:
+        xml = zf.read("word/document.xml").decode("utf-8", errors="replace")
+    assert_true("TODO" not in xml, "placeholder text remained after auto repair")
+    qa = json.loads((work / "qa_report.json").read_text(encoding="utf-8"))
+    assert_true(qa.get("passed") is True, f"QA was not rerun to passing state: {qa.get('issues')}")
+    loop_report = json.loads((work / "repair_loop_report.json").read_text(encoding="utf-8"))
+    assert_true(loop_report["rounds_run"] >= 1, "repair loop did not record a repair round")
+    assert_true(private_file.read_bytes() == private_before, "auto repair modified a private input file")
+    assert_true(core_file.read_bytes() == core_before, "auto repair modified a core engine file")
+
+
+@case
+def pipeline_auto_repair_patches_reference_east_asia_mismatch() -> None:
+    work = new_workdir("pipeline_auto_repair_reference_font")
+    build_path = _write_repair_loop_fixture(work)
+    build_path.write_text(
+        build_path.read_text(encoding="utf-8")
+        + """
+def add_reference_mixed_runs(p, text, prof):
+    # Chinese parts use the role's CJK font; Latin/numeric punctuation uses Times New Roman.
+    for seg in re.findall(r'[\\u4e00-\\u9fff]+|[^\\u4e00-\\u9fff]+', text):
+        r = p.add_run(seg)
+        if has_cjk(seg):
+            apply_run_profile(r, prof, seg, force_latin='Times New Roman')
+        else:
+            p_latin = dict(prof); p_latin['font'] = 'Times New Roman'
+            apply_run_profile(r, p_latin, seg, force_latin='Times New Roman')
+""",
+        encoding="utf-8",
+    )
+    first_build = run_generated_script(str(build_path), str(work), python_executable=sys.executable)
+    assert_true(first_build.returncode == 0, f"synthetic build failed: {first_build.stderr}")
+
+    def fake_qa(out_dir, mode="user", output_docx_name="final.docx"):
+        return _fake_repair_report(out_dir, code="NO_ISSUE", severity="info")
+
+    def fake_conformance(out_dir, mode="user", output_docx_name="final.docx", project_root=""):
+        patched = "AUTO_REPAIR_REFERENCE_EAST_ASIA_FONT_V1" in Path(out_dir, "build_generated.py").read_text(encoding="utf-8")
+        return _write_conformance_report(out_dir, passed=patched)
+
+    deps = QADependencies(
+        qa_check_and_write=fake_qa,
+        conformance_check_and_write=fake_conformance,
+        visual_check_and_write=None,
+        optional_import_detail=lambda name: "",
+    )
+    result = run_repair_loop(
+        str(work),
+        mode="user",
+        output_docx_name="final.docx",
+        qa_level="strict",
+        project_root=str(REPO_ROOT),
+        max_rounds=3,
+        stop_no_improve=2,
+        deps=deps,
+        run_generated_script=run_generated_script,
+        python_executable=sys.executable,
+    )
+    assert_true(result.ok, f"reference font auto repair did not converge: {result.status}")
+    assert_true("AUTO_REPAIR_REFERENCE_EAST_ASIA_FONT_V1" in build_path.read_text(encoding="utf-8"), "reference font patch was not applied")
+
+
+@case
+def pipeline_auto_repair_stops_after_no_improvement() -> None:
+    work = new_workdir("pipeline_auto_repair_no_improve")
+    build_path = _write_repair_loop_fixture(work)
+    calls = {"qa": 0}
+
+    def fake_qa(out_dir, mode="user", output_docx_name="final.docx"):
+        calls["qa"] += 1
+        return _fake_repair_report(out_dir, code="MISSING_DOCX", message="synthetic persistent missing docx")
+
+    deps = QADependencies(
+        qa_check_and_write=fake_qa,
+        conformance_check_and_write=None,
+        visual_check_and_write=None,
+        optional_import_detail=lambda name: "",
+    )
+    result = run_repair_loop(
+        str(work),
+        mode="user",
+        output_docx_name="final.docx",
+        qa_level="basic",
+        project_root=str(REPO_ROOT),
+        max_rounds=5,
+        stop_no_improve=2,
+        deps=deps,
+        run_generated_script=run_generated_script,
+        python_executable=sys.executable,
+    )
+    report = json.loads((work / "repair_loop_report.json").read_text(encoding="utf-8"))
+    assert_true(not result.ok and result.status == "stopped_no_improvement", f"unexpected stop status: {result.status}")
+    assert_true(calls["qa"] >= 3, "QA was not rerun during no-improvement loop")
+    assert_true((work / "final.docx").exists(), "rebuild action did not run build_generated.py")
+    assert_true(report["stop_detail"], "no-improvement stop detail was not recorded")
+    assert_true(build_path.read_text(encoding="utf-8").count("AUTO_REPAIR") == 0, "no-improvement rebuild should not patch script")
+
+
+@case
+def pipeline_auto_repair_stops_for_needs_user_file() -> None:
+    work = new_workdir("pipeline_auto_repair_needs_file")
+    _write_repair_loop_fixture(work)
+    calls = {"qa": 0}
+
+    def fake_qa(out_dir, mode="user", output_docx_name="final.docx"):
+        calls["qa"] += 1
+        return _fake_repair_report(out_dir, code="CONTENT_IMAGE_MISSING", message="synthetic missing image")
+
+    deps = QADependencies(
+        qa_check_and_write=fake_qa,
+        conformance_check_and_write=None,
+        visual_check_and_write=None,
+        optional_import_detail=lambda name: "",
+    )
+    result = run_repair_loop(
+        str(work),
+        mode="user",
+        output_docx_name="final.docx",
+        qa_level="basic",
+        project_root=str(REPO_ROOT),
+        max_rounds=5,
+        stop_no_improve=2,
+        deps=deps,
+        run_generated_script=run_generated_script,
+        python_executable=sys.executable,
+    )
+    report = json.loads((work / "repair_loop_report.json").read_text(encoding="utf-8"))
+    assert_true(not result.ok and result.status == "stopped_needs_user_file", f"unexpected stop status: {result.status}")
+    assert_true(calls["qa"] == 1, "needs-user-file blocker should stop before rebuild loops")
+    assert_true(report["blockers"] and report["blockers"][0]["code"] == "CONTENT_IMAGE_MISSING", "blocker was not recorded")
+
+
+@case
+def pipeline_auto_repair_strict_requires_conformance_dependency() -> None:
+    work = new_workdir("pipeline_auto_repair_missing_conformance")
+    _write_repair_loop_fixture(work)
+    _fake_repair_report(str(work), code="NO_ISSUE", severity="info")
+
+    deps = QADependencies(
+        qa_check_and_write=lambda out_dir, mode="user", output_docx_name="final.docx": _fake_repair_report(out_dir, code="NO_ISSUE", severity="info"),
+        conformance_check_and_write=None,
+        visual_check_and_write=None,
+        optional_import_detail=lambda name: "missing dependency detail",
+    )
+    result = run_repair_loop(
+        str(work),
+        mode="user",
+        output_docx_name="final.docx",
+        qa_level="strict",
+        project_root=str(REPO_ROOT),
+        max_rounds=1,
+        stop_no_improve=1,
+        deps=deps,
+        run_generated_script=run_generated_script,
+        python_executable=sys.executable,
+    )
+    report = json.loads((work / "repair_loop_report.json").read_text(encoding="utf-8"))
+    assert_true(not result.ok, "strict auto repair should not converge without conformance QA")
+    assert_true("CONFORMANCE_QA_UNAVAILABLE" in report["final_error_codes"], f"missing conformance error was not recorded: {report}")
+
+
+@case
+def pipeline_auto_repair_visual_preserves_visual_options() -> None:
+    work = new_workdir("pipeline_auto_repair_visual_options")
+    build_path = _write_repair_loop_fixture(work)
+    visual_calls: List[Dict[str, Any]] = []
+    qa_calls = {"count": 0}
+
+    def fake_qa(out_dir, mode="user", output_docx_name="final.docx"):
+        qa_calls["count"] += 1
+        if qa_calls["count"] == 1:
+            return _fake_repair_report(out_dir, code="PLACEHOLDER_TEXT_LEFT", message="synthetic placeholder")
+        return _fake_repair_report(out_dir, code="NO_ISSUE", severity="info")
+
+    def fake_conformance(out_dir, mode="user", output_docx_name="final.docx", project_root=""):
+        return _write_conformance_report(out_dir, passed=True)
+
+    def fake_visual(out_dir, output_docx_name="final.docx", project_root="", render_all_pages=True, require_wps=False, golden_dir=None, update_golden=False):
+        visual_calls.append(
+            {
+                "require_wps": require_wps,
+                "golden_dir": golden_dir,
+                "update_golden": update_golden,
+                "render_all_pages": render_all_pages,
+            }
+        )
+        report = {
+            "schema_version": 1,
+            "mode": "user",
+            "passed": True,
+            "counts": {},
+            "issues": [],
+            "next_action": "ok",
+        }
+        Path(out_dir, "visual_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        return report
+
+    deps = QADependencies(
+        qa_check_and_write=fake_qa,
+        conformance_check_and_write=fake_conformance,
+        visual_check_and_write=fake_visual,
+        optional_import_detail=lambda name: "",
+    )
+    result = run_repair_loop(
+        str(work),
+        mode="user",
+        output_docx_name="final.docx",
+        qa_level="visual",
+        project_root=str(REPO_ROOT),
+        max_rounds=3,
+        stop_no_improve=2,
+        deps=deps,
+        run_generated_script=run_generated_script,
+        python_executable=sys.executable,
+        golden_dir=str(work / "Golden"),
+        update_golden=True,
+        require_wps=True,
+    )
+    assert_true(result.ok, f"visual auto repair did not converge: {result.status}")
+    assert_true("AUTO_REPAIR_PLACEHOLDER_CLEANUP_V1" in build_path.read_text(encoding="utf-8"), "placeholder repair was not applied")
+    assert_true(len(visual_calls) >= 2, "visual QA was not rerun after repair")
+    assert_true(all(call["require_wps"] is True for call in visual_calls), f"require_wps was not preserved: {visual_calls}")
+    assert_true(all(call["update_golden"] is True for call in visual_calls), f"update_golden was not preserved: {visual_calls}")
+    assert_true(all(str(call["golden_dir"]).endswith("Golden") for call in visual_calls), f"golden_dir was not preserved: {visual_calls}")
+
+
+@case
+def pipeline_auto_repair_report_paths_are_sanitized() -> None:
+    work = new_workdir("pipeline_auto_repair_sanitized_paths")
+    build_path = _write_repair_loop_fixture(work)
+    first_build = run_generated_script(str(build_path), str(work), python_executable=sys.executable)
+    assert_true(first_build.returncode == 0, f"synthetic build failed: {first_build.stderr}")
+
+    from qa_checker import check_and_write as qa_check_and_write
+
+    deps = QADependencies(
+        qa_check_and_write=qa_check_and_write,
+        conformance_check_and_write=None,
+        visual_check_and_write=None,
+        optional_import_detail=lambda name: "",
+    )
+    result = run_repair_loop(
+        str(work),
+        mode="user",
+        output_docx_name="final.docx",
+        qa_level="basic",
+        project_root=str(REPO_ROOT),
+        max_rounds=3,
+        stop_no_improve=2,
+        deps=deps,
+        run_generated_script=run_generated_script,
+        python_executable=sys.executable,
+    )
+    report_text = (work / "repair_loop_report.json").read_text(encoding="utf-8")
+    report = json.loads(report_text)
+    assert_true(result.ok, f"auto repair did not converge: {result.status}")
+    assert_true(not Path(report["output_dir"]).is_absolute(), f"output_dir leaked absolute path: {report['output_dir']}")
+    assert_true(not Path(report["final_docx"]).is_absolute(), f"final_docx leaked absolute path: {report['final_docx']}")
+    assert_true(str(work) not in report_text, "repair loop report leaked the absolute output path")
 
 
 @case
@@ -276,15 +670,23 @@ def pipeline_artifacts_write_format_and_content_handoffs() -> None:
     content = base_content(
         [
             {"text": "A paragraph with math", "math": [{"text": "E=mc^2"}]},
+            {"role": "figure", "image": "fig2.png", "caption": "Figure 2 Demo"},
+            {"role": "table_caption", "text": "表 1 指标对比"},
+            {"role": "table", "table_rows": [["Metric", "Value"], ["Accuracy", "98%"]]},
             "Plain paragraph",
         ]
     )
-    content["sections"][0]["images"] = ["fig1.png"]
+    content["sections"][0]["images"] = ["fig1.png", "fig2.png"]
     cnt_json_path, cnt_md_path = write_content_artifacts(content, str(work), str(work / "paper.docx"))
     summary = Path(cnt_md_path).read_text(encoding="utf-8")
     assert_true(Path(cnt_json_path).exists(), "content.json was not written")
     assert_true("# 内容提取" in summary, "content report title missing")
     assert_true("- [图片] fig1.png" in summary, "content report image line missing")
+    assert_true("[图片] fig2.png" in summary, "structured figure was not summarized as an image")
+    assert_true(summary.count("[图片] fig2.png") == 1, "structured figure image was duplicated in content report")
+    assert_true("[表格] 2行 x 2列" in summary, "structured table was not summarized as a table")
+    assert_true("表 1 指标对比" in summary, "table caption was not preserved in content markdown")
+    assert_true(summary.count("[公式]") == 0, "non-formula structured content was mislabeled as formula")
     assert_true("(+1公式)" in summary, "content report math count missing")
     assert_true("## 参考文献" in build_content_markdown(content, str(work / "paper.docx")), "references section missing")
 

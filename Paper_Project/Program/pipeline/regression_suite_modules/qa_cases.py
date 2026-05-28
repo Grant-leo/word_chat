@@ -6,6 +6,7 @@ import json
 from docx import Document
 
 from qa_checker import check_output
+from qa_checker_modules.repair import build_repair_plan
 
 from regression_suite_modules.generated_docx import run_generated_case
 from regression_suite_modules.harness import (
@@ -140,3 +141,73 @@ def qa_reports_duplicate_front_matter_headings() -> None:
     assert_true(report["passed"] is False, "duplicate front matter heading should fail QA")
 
 
+@case
+def qa_repair_plan_uses_relative_rebuild_command() -> None:
+    work = new_workdir("qa_relative_rebuild_command")
+    write_json(work / "workflow_mode.json", {"mode": "user"})
+    report = {
+        "mode": "user",
+        "passed": True,
+        "issues": [],
+        "counts": {},
+    }
+    plan = build_repair_plan(report, str(work))
+    command = plan["commands"]["rebuild_current_docx"]
+    assert_true("build_generated.py" in command, "rebuild command should still point to build_generated.py")
+    assert_true(str(work) not in command, f"rebuild command leaked absolute output path: {command}")
+
+
+@case
+def qa_routes_user_file_errors_to_input_fix() -> None:
+    work = new_workdir("qa_user_file_routing")
+    write_json(
+        work / "format.json",
+        {
+            "_meta": {
+                "source": "blank_scan.pdf",
+                "pdf_template": {
+                    "type": "scanned_or_unsupported_pdf",
+                    "errors": ["PDF_TEMPLATE_NO_TEXT"],
+                    "confidence": 0.0,
+                    "text_chars": 0,
+                },
+            },
+            "paragraphs": [],
+            "tables": [],
+            "sections": [{"page_width_cm": 21.0, "page_height_cm": 29.7}],
+            "cover": [],
+            "style_profiles": {},
+        },
+    )
+    write_json(work / "content.json", base_content(["Body text"]))
+    write_json(work / "workflow_mode.json", {"mode": "user"})
+    (work / "build_generated.py").write_text("# synthetic\n", encoding="utf-8")
+    doc = Document()
+    doc.add_paragraph("1 Introduction")
+    doc.add_paragraph("Body text")
+    doc.save(work / "out.docx")
+    write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {}})
+    report = check_output(str(work), mode="user", output_docx_name="out.docx")
+    issue = next(item for item in report["issues"] if item["code"] == "PDF_TEMPLATE_UNSUPPORTED")
+    assert_true(issue["active_owner"] == "User input/template file", f"PDF template issue target was misleading: {issue}")
+    assert_true("用户确认或补充输入文件" in report["next_action"], f"next action did not route to user file fix: {report['next_action']}")
+    step = next(item for item in report["repair_plan"]["steps"] if item["code"] == "PDF_TEMPLATE_UNSUPPORTED")
+    assert_true(step["target"] == "User input/template file", f"repair target was misleading: {step}")
+    assert_true(not report["repair_plan"]["commands"].get("rebuild_current_docx"), "user-file-only error should not suggest rebuilding build_generated.py")
+    assert_true("不要只修改 `build_generated.py`" in report["repair_plan"]["copy_to_ai_prompt"], "AI prompt should not route user-file-only errors to generated-script edits")
+
+    work2 = new_workdir("qa_user_confirmation_routing")
+    content = base_content(["Body text"])
+    content["_meta"]["non_body_images"] = [{"location": "section_1_header", "target": "media/image1.png"}]
+    write_json(work2 / "content.json", content)
+    write_json(work2 / "format.json", base_format())
+    write_json(work2 / "workflow_mode.json", {"mode": "user"})
+    (work2 / "build_generated.py").write_text("# synthetic\n", encoding="utf-8")
+    doc2 = Document()
+    doc2.add_paragraph("1 Introduction")
+    doc2.add_paragraph("Body text")
+    doc2.save(work2 / "out.docx")
+    write_json(work2 / "build_manifest.json", {"schema_version": 1, "counts": {}})
+    report2 = check_output(str(work2), mode="user", output_docx_name="out.docx")
+    issue2 = next(item for item in report2["issues"] if item["code"] == "NON_BODY_IMAGE_UNSUPPORTED")
+    assert_true(issue2["active_owner"] == "User input/template file", f"user-confirmation issue target was misleading: {issue2}")

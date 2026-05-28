@@ -13,7 +13,10 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
+
+sys.dont_write_bytecode = True
 
 from lxml import etree
 from docx import Document

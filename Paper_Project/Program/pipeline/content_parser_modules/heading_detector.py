@@ -17,6 +17,17 @@ _CJK_NUMERALS = r'\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b\u4e5d\u5341\u
 _COMMON_COUNT_WORDS = set('\u79cd\u4e2a\u5929\u5e74\u6708\u65e5\u5428\u9879\u7ec4\u7c7b\u573a')
 
 
+def _numbered_line_looks_like_body_sentence(text: str) -> bool:
+    t = str(text or '').strip()
+    if len(t) > 140:
+        return True
+    if len(t) > 70 and re.search(r'[\u3002\uff1b\uff0c,;]', t):
+        return True
+    if len(t) > 35 and re.search(r'[\u3002\uff1b;]\s*$', t):
+        return True
+    return False
+
+
 def detect_heading_level(para):
     """Detect heading level using OOXML-direct size + heuristics."""
     if not para.runs:
@@ -46,6 +57,8 @@ def detect_heading_level(para):
     if m_count_heading and m_count_heading.group(1) in _COMMON_COUNT_WORDS:
         return 2 if _looks_like_heading_style(para) else 0
     if re.match(r'^(?:Chapter\s*)?\d+\s+[\u4e00-\u9fffA-Za-z]', text) and not re.match(r'^\d+\.\d+', text):
+        if _numbered_line_looks_like_body_sentence(text) and not _looks_like_heading_style(para):
+            return 0
         return 1
     if len(text) <= 80 and re.match(r'^[' + _CJK_NUMERALS + r']+[\u3001\uff0e.]\s*\S+', text):
         return 1

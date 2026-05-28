@@ -42,11 +42,7 @@ def add_reference_mixed_runs(p, text, prof):
     # Chinese parts use the role's CJK font; Latin/numeric punctuation uses Times New Roman.
     for seg in re.findall(r'[\u4e00-\u9fff]+|[^\u4e00-\u9fff]+', text):
         r = p.add_run(seg)
-        if has_cjk(seg):
-            apply_run_profile(r, prof, seg, force_latin='Times New Roman')
-        else:
-            p_latin = dict(prof); p_latin['font'] = 'Times New Roman'
-            apply_run_profile(r, p_latin, seg, force_latin='Times New Roman')
+        apply_run_profile(r, prof, seg, force_latin='Times New Roman')
 
 
 def apply_reference_indent(p, prof, rule_hanging_cm=None):

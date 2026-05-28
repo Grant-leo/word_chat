@@ -14,6 +14,7 @@ from lxml import etree
 from content_parser import extract as extract_docx_content
 from content_parser_modules.caption_flow import (
     is_figure_caption,
+    is_table_caption,
     normalize_caption_spacing,
     pair_figure_blocks,
 )
@@ -71,6 +72,10 @@ def caption_flow_pairs_images_with_nearby_captions() -> None:
     assert_true(paired[2] == {"role": "figure", "image": "b.png", "caption": "Figure 2 First"}, "first stacked image was not paired")
     assert_true(paired[3] == {"role": "figure", "image": "c.png", "caption": "Figure 3 Second"}, "second stacked image was not paired")
     assert_true(is_figure_caption("\u56fe1\u7ed3\u679c\u5bf9\u6bd4"), "Chinese figure caption was not detected")
+    assert_true(is_figure_caption("图 1 机器学习研究流程示意图"), "Chinese noun-phrase figure caption was not detected")
+    assert_true(not is_figure_caption("图 1 展示了从数据到决策的机器学习研究流程。"), "figure reference prose was misclassified as caption")
+    assert_true(is_table_caption("表 1 不同模型在验证集上的表现"), "Chinese table caption was not detected")
+    assert_true(not is_table_caption("表 1 显示 XGBoost 在多数指标上更高。"), "table reference prose was misclassified as caption")
     assert_true(normalize_caption_spacing("\u56fe1\u7ed3\u679c") == "\u56fe 1 \u7ed3\u679c", "Chinese figure caption spacing was not normalized")
 
 
@@ -824,6 +829,32 @@ def content_parser_skips_source_toc_with_roman_page_numbers() -> None:
     assert_true(not content.get("references"), f"source TOC reference line activated reference collection: {content.get('references')}")
     assert_true("1 \u7eea\u8bba" in headings, f"real body heading after roman TOC was lost: {headings}")
     assert_true("real body paragraph" in body_text, f"real body after roman TOC was lost: {body_text}")
+
+
+@case
+def content_parser_keeps_numbered_long_body_sentence_as_body() -> None:
+    work = new_workdir("numbered_long_body_sentence")
+    docx = work / "numbered_long_body_sentence.docx"
+    long_sentence = (
+        "1 绪论的第1个分析段落用于模拟完整论文正文，"
+        "研究对象既包含宏观制度因素，也包含微观行为数据，"
+        "用于检验文本抽取、分页和样式迁移的稳定性。"
+    )
+    doc = Document()
+    doc.add_paragraph("论文题目: Numbered Sentence")
+    doc.add_paragraph("1 绪论")
+    doc.add_paragraph(long_sentence)
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    headings = [sec.get("heading") for sec in content.get("sections") or []]
+    body_text = "\n".join(
+        p if isinstance(p, str) else str(p.get("text") or "")
+        for sec in content.get("sections") or []
+        for p in sec.get("paragraphs", [])
+    )
+    assert_true(long_sentence not in headings, f"numbered body sentence became heading: {headings}")
+    assert_true(long_sentence in body_text, f"numbered body sentence was not preserved: {body_text}")
 
 
 @case

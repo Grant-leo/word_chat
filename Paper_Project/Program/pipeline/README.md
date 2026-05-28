@@ -30,6 +30,7 @@ CLI, output, verification, and QA details in a focused package:
 - `execution.py`: generated-script subprocess execution and UTF-8 output decoding.
 - `contracts.py`: lightweight JSON handoff structure checks.
 - `qa.py`: structural, strict, and visual QA orchestration.
+- `repair_loop.py`: bounded user-mode auto-repair loop; edits only `Outputs/<run>/build_generated.py`, reruns the enabled QA levels, and writes `repair_loop_report.md/json`.
 - `reports.py`: terminal progress, contract warnings, and repair hints.
 - `summary.py`: completion output inventory and repair workflow summary.
 
@@ -37,11 +38,13 @@ CLI, output, verification, and QA details in a focused package:
 
 Current baseline as of 2026-05-28:
 
-- Synthetic regression after the latest architecture split: `118 passed, 0 failed`.
+- Synthetic regression after the latest architecture and novice-flow fixes: `130 passed, 0 failed`.
+- Controlled auto-repair loop regression: repairable build-script error, no-improvement stop, needs-user-file stop, strict/visual dependency failure, visual option preservation, and sanitized report paths passed.
 - PDF template end-to-end strict QA: synthetic instruction PDF template + DOCX content passed.
 - PDF extreme stress gate: 9 cases covering uppercase extensions, visual samples, landscape pages, sparse instructions, scanned/corrupt/blank/too-short PDFs met expected outcomes.
 - End-to-end strict QA matrix: 5 complex content documents × 3 templates = `15/15` passed.
 - Structural QA and conformance QA completed with no errors in that matrix.
+- Fresh-folder novice smoke test: DOCX template + plain DOCX content + `--auto-repair --qa-level visual` converged with structural, strict, and visual QA all at zero errors.
 
 ## Parser Submodules
 
@@ -65,6 +68,10 @@ The formula path is split into label cleanup, source OMML extraction, text
 formula item creation, and split-layout repair strategies. `extractor.py` owns
 DOCX content extraction orchestration.
 
+Caption detection deliberately separates true captions such as `图 1 xxx 示意图`
+from prose references such as `图 1 展示了...`, so body prose keeps body style
+while captions keep caption style.
+
 `md_parser_modules/` owns Markdown-specific helper rules behind `md_parser`:
 YAML/natural-language format extraction, inline/display math tokenization,
 Markdown image copying/missing-image metadata, table parsing, and Markdown text
@@ -80,6 +87,9 @@ conversion, formula rendering, media/table/code blocks, references/backmatter,
 TOC/page resolution, and build manifest orchestration. `runtime_template.py`
 assembles generated-script fragments and `generator.py` owns the reusable
 build-script generation workflow.
+
+Generated scripts suppress Python bytecode cache creation to keep `Outputs/`
+clean during user-mode rebuilds.
 
 ## QA Submodules
 

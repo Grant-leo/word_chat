@@ -92,6 +92,9 @@ def write_workflow_mode(
     golden_dir,
     update_golden,
     require_wps,
+    auto_repair=False,
+    repair_max_rounds=5,
+    repair_stop_no_improve=2,
 ):
     workflow_path = os.path.join(out_dir, "workflow_mode.json")
     with open(workflow_path, "w", encoding="utf-8") as f:
@@ -107,6 +110,9 @@ def write_workflow_mode(
                 "golden_dir": golden_dir,
                 "update_golden": bool(update_golden),
                 "require_wps": bool(require_wps),
+                "auto_repair": bool(auto_repair),
+                "repair_max_rounds": int(repair_max_rounds or 0),
+                "repair_stop_no_improve": int(repair_stop_no_improve or 0),
             },
             f,
             ensure_ascii=False,

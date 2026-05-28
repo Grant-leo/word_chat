@@ -52,6 +52,7 @@ from pipeline_runner.dependencies import load_optional_dependencies
 from pipeline_runner.execution import run_generated_script
 from pipeline_runner.io import normalize_mode
 from pipeline_runner.qa import QADependencies, run_qa_phases
+from pipeline_runner.repair_loop import run_repair_loop
 from pipeline_runner.reports import print_contract_issues, step
 from pipeline_runner.summary import print_completion_summary
 from pipeline_runner.template_phase import write_template_profile_phase, write_template_requirements_phase
@@ -70,6 +71,9 @@ def run(
     golden_dir=None,
     update_golden=False,
     require_wps=False,
+    auto_repair=False,
+    repair_max_rounds=5,
+    repair_stop_no_improve=2,
 ):
     """Core pipeline: takes filenames, runs all phases, returns output directory.
 
@@ -78,6 +82,12 @@ def run(
     """
     mode = normalize_mode(mode)
     qa_level = normalize_qa_level(qa_level)
+    auto_repair = bool(auto_repair)
+    if auto_repair and mode != 'user':
+        print('[ERROR] --auto-repair only supports --mode user because it may edit only Outputs/<run>/build_generated.py.')
+        return None
+    if auto_repair:
+        run_qa = True
 
     resolution = resolve_inputs(template_file, content_file, md_file, TEMPLATE_DIR, INPUTS_DIR)
     if not resolution.ok:
@@ -113,6 +123,9 @@ def run(
         golden_dir=golden_dir,
         update_golden=update_golden,
         require_wps=require_wps,
+        auto_repair=auto_repair,
+        repair_max_rounds=repair_max_rounds,
+        repair_stop_no_improve=repair_stop_no_improve,
     )
 
     # ── Phase 1: Format ──
@@ -159,6 +172,13 @@ def run(
     ):
         return None
 
+    qa_deps = QADependencies(
+        qa_check_and_write=OPTIONAL_DEPS.qa_check_and_write,
+        conformance_check_and_write=OPTIONAL_DEPS.conformance_check_and_write,
+        visual_check_and_write=OPTIONAL_DEPS.visual_check_and_write,
+        optional_import_detail=OPTIONAL_DEPS.optional_import_detail,
+    )
+
     # -- Phase 5: QA --
     if run_qa:
         step('Phase 6/6: QA 检测（发现 error 会阻断流水线）')
@@ -171,15 +191,32 @@ def run(
             golden_dir=golden_dir,
             update_golden=update_golden,
             require_wps=require_wps,
-            deps=QADependencies(
-                qa_check_and_write=OPTIONAL_DEPS.qa_check_and_write,
-                conformance_check_and_write=OPTIONAL_DEPS.conformance_check_and_write,
-                visual_check_and_write=OPTIONAL_DEPS.visual_check_and_write,
-                optional_import_detail=OPTIONAL_DEPS.optional_import_detail,
-            ),
+            deps=qa_deps,
         )
         if not qa_ok:
-            return None
+            if not auto_repair:
+                return None
+        if auto_repair:
+            step('Phase 7/7: Auto repair loop')
+            repair_result = run_repair_loop(
+                out_dir,
+                mode=mode,
+                output_docx_name=output_docx,
+                qa_level=qa_level,
+                project_root=BASE,
+                max_rounds=repair_max_rounds,
+                stop_no_improve=repair_stop_no_improve,
+                deps=qa_deps,
+                run_generated_script=run_generated_script,
+                python_executable=sys.executable,
+                golden_dir=golden_dir,
+                update_golden=update_golden,
+                require_wps=require_wps,
+            )
+            print(f'  [AUTO-REPAIR] {repair_result.status}: final_errors={repair_result.final_errors}')
+            print(f'  [AUTO-REPAIR] report -> {os.path.relpath(repair_result.report_path, BASE).replace(os.sep, "/")}')
+            if not repair_result.ok:
+                return None
 
     # -- Done --
     step('完成')

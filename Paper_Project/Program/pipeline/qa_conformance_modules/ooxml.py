@@ -61,8 +61,7 @@ def _text_of_table(tbl: ET.Element) -> str:
     return "\n".join(t.text or "" for t in tbl.iter(W + "t")).strip()
 
 
-def _first_run_props(p: ET.Element) -> Dict[str, Any]:
-    run = p.find(W + "r")
+def _run_props(run: Optional[ET.Element]) -> Dict[str, Any]:
     rpr = run.find(W + "rPr") if run is not None else None
     fonts = rpr.find(W + "rFonts") if rpr is not None else None
     size = rpr.find(W + "sz") if rpr is not None else None
@@ -75,6 +74,18 @@ def _first_run_props(p: ET.Element) -> Dict[str, Any]:
         "hansi_font": _attr(fonts, "hAnsi"),
         "east_asia_font": _attr(fonts, "eastAsia"),
     }
+
+
+def _first_run_props(p: ET.Element) -> Dict[str, Any]:
+    return _run_props(p.find(W + "r"))
+
+
+def _first_cjk_run_props(p: ET.Element) -> Dict[str, Any]:
+    for run in p.findall(W + "r"):
+        text = "".join(t.text or "" for t in run.iter(W + "t"))
+        if _is_cjk_text(text):
+            return _run_props(run)
+    return _first_run_props(p)
 
 
 def _para_props(p: ET.Element) -> Dict[str, Any]:
@@ -119,4 +130,3 @@ def _profile_subset(profile: Dict[str, Any]) -> Dict[str, Any]:
         "left_indent_cm", "hanging_indent_cm",
     ]
     return {k: profile.get(k) for k in keys if k in profile and profile.get(k) is not None}
-

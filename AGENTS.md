@@ -68,6 +68,9 @@ python run_pipeline.py --mode developer --template <模板文件名> --content <
 
 # Product-grade verification: structure QA + PDF/render QA
 python run_pipeline.py --mode developer --qa-level visual --template <模板文件名> --content <内容文件名>
+
+# Ordinary user controlled auto-repair loop
+python run_pipeline.py --mode user --auto-repair --template <模板文件名> --content <内容文件名>
 ```
 Or interactive: `python run_pipeline.py`
 
@@ -77,6 +80,7 @@ Or interactive: `python run_pipeline.py`
 - Read `Outputs/<latest>/template_profile.md` — check template capabilities and risk flags
 - For PDF templates, check `template_profile.md` and `格式提取.md` for PDF type, confidence, warnings, and possible `PDF_TEMPLATE_UNSUPPORTED`
 - Read `Outputs/<latest>/qa_report.md` first; it names the active fix target for the current mode
+- If `--auto-repair` was used, read `Outputs/<latest>/repair_loop_report.md/json`; it records every repair round, stop reason, and remaining manual checks
 - If `--qa-level visual` was used, read `Outputs/<latest>/visual_report.md` and inspect sample PNGs under `visual_qa/samples/`
 - Confirm `Outputs/<latest>/最终论文.docx` exists
 - Render/check with Word/WPS when layout matters; Office Viewer alone is not enough
@@ -108,6 +112,22 @@ For ordinary users:
 5. Verify the updated `最终论文.docx`
 6. Do not ask users to edit core engine scripts
 
+### User-Level Auto Repair
+
+When the user wants the project to keep fixing obvious QA failures automatically, use:
+
+```bash
+python run_pipeline.py --mode user --auto-repair --template <模板文件名> --content <内容文件名>
+```
+
+Rules:
+- The loop may edit only `Outputs/<latest>/build_generated.py`.
+- It writes `repair_loop_report.md/json` with each round's actions, QA error/warning changes, new/resolved issue codes, and stop reason.
+- It reruns every enabled QA level. In `strict`/`visual` mode, missing conformance or visual dependencies must be reported as errors instead of being treated as convergence.
+- It preserves visual QA options such as golden baseline path, update-golden mode, and WPS requirement across repair rounds.
+- It stops after repeated non-improvement, after the max round limit, or when QA says a user file/input is required.
+- A converged loop means automatic QA has no error; it is not a 100% correctness guarantee. Still ask the user to open the final DOCX in Word/WPS for visual review.
+
 ### Developer-Level Engine Fixes
 
 For reusable fixes, product behavior, parser changes, or when the requester is the developer/maintainer:
@@ -136,7 +156,7 @@ For reusable fixes, product behavior, parser changes, or when the requester is t
    - `regression_suite.py`: synthetic engine regression suite
    - `regression_suite_modules/`: regression harness, assertions, temp workspace cleanup, base fixtures, generated-DOCX helpers, and concrete case groups
    - `run_pipeline.py`: one-click entry and high-level orchestration
-   - `pipeline_runner/`: CLI, IO, run context, dependency loading, artifact writing, extraction verification, template phases, build execution, JSON contracts, QA orchestration, terminal reports, and completion summaries
+   - `pipeline_runner/`: CLI, IO, run context, dependency loading, artifact writing, extraction verification, template phases, build execution, JSON contracts, QA orchestration, controlled auto-repair loops, terminal reports, and completion summaries
 3. **Consult `基础操作.md`** — find the correct OOXML implementation
 4. **Edit the core script** — keep the change generic and template-driven
 5. **Re-run the whole pipeline** — `python run_pipeline.py --mode developer --template <模板文件名> --content <内容文件名>`
@@ -176,6 +196,7 @@ Example: template has no cross-references → generated script has no `B_ref()`.
 - Always honor the workflow mode: user mode changes only `build_generated.py`; developer mode changes only reusable core scripts and reruns the whole pipeline.
 - Generated QA reports are routing-focused and block the pipeline on `error`; they still do not replace WPS/Word visual verification for final delivery.
 - QA also writes `qa_repair_plan.md/json` and `qa_fix_prompt.txt`; use these files as the first repair entry point before editing user-level or developer-level code.
+- QA/user-facing reports should avoid leaking absolute local paths; use run-relative paths whenever possible.
 - `template_profile.json/md` is the reusable template decision layer. Do not add school-name logic when a profile capability/risk flag can describe the same need.
 - PDF templates are best-effort format sources: instruction-style PDFs provide text rules, visual sample PDFs provide estimated geometry/styles, and scanned/textless PDFs must surface `PDF_TEMPLATE_UNSUPPORTED`.
 - When the user says "更新记忆" or asks to save durable progress, update the disk memory under `memory/` and validate with `python scripts/project_memory.py validate`.
@@ -191,6 +212,9 @@ Example: template has no cross-references → generated script has no `B_ref()`.
 - Plain-text formulas extracted from content docx must become formula items (`role="formula"`, `source="text"`) and render as native `m:oMathPara`; verify by checking the docx XML for `<m:oMathPara>` and by rendering in Word/WPS.
 - Markdown `$...$` / `$$...$$` formulas in abstracts and body sections must also render as native OOXML Math; cleanup code must preserve math-only paragraphs.
 - Markdown image paths must resolve relative to the `.md` file first, then copy into the current output `figures/` folder.
+- `内容提取.md` should display structured images, tables, and formulas by role, avoid duplicate image listings, and never label non-formula structured content as `[公式]`.
+- Caption detection must not treat prose references such as `图 1 展示了...` or `表 1 显示...` as captions.
+- Generated scripts should suppress Python bytecode cache creation so `Outputs/` stays clean.
 - Matrix short-cut: `formula_build_matrix(cells, cols, brackets)` as alternative.
 - All legacy formula tools (`formula_text/remove/replace`) remain available.
 - OOXML math: every `m:r` needs `m:rPr` (even empty) for WPS compatibility.

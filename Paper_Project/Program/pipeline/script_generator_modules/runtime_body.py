@@ -49,9 +49,9 @@ def render_paragraph_item(item, code_sensitive=False, chapter=None):
         return
     if code_sensitive and looks_like_code_line(text):
         add_code_block(text)
-    elif re.match(r'^图\s*\d+', text):
+    elif is_figure_caption_text(text):
         add_caption(text, 'figure_caption')
-    elif re.match(r'^表\s*\d+', text):
+    elif is_table_caption_text(text):
         add_caption(text, 'table_caption')
     else:
         add_text(text, role='body', first_indent=True)
@@ -73,7 +73,7 @@ def render_body():
             doc.add_page_break()
         rendered_body_sections += 1
         if is_caption_heading(h):
-            add_caption(h, 'figure_caption' if str(h).strip().startswith('图') else 'table_caption')
+            add_caption(h, 'figure_caption' if is_figure_caption_text(h) else 'table_caption')
         elif h and h != '正文':
             add_heading(h, sec.get('level') or 1)
             if int(sec.get('level') or 1) == 1:

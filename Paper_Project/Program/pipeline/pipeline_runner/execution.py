@@ -18,7 +18,7 @@ def run_generated_script(gen_py_path, out_dir, python_executable):
         [python_executable, gen_py_path],
         capture_output=True,
         cwd=out_dir,
-        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"},
     )
     return ScriptExecutionResult(
         returncode=result.returncode,

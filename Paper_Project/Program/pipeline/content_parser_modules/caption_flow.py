@@ -2,8 +2,43 @@
 import re
 
 
+_REFERENTIAL_PROSE_START = (
+    "展示",
+    "显示",
+    "给出",
+    "给出了",
+    "说明",
+    "表明",
+    "反映",
+    "描述",
+    "列出",
+    "汇总",
+    "呈现",
+    "可见",
+    "所示",
+    "为",
+    "是",
+)
+
+
+def _caption_tail(text, label_pattern):
+    match = re.match(label_pattern, text)
+    if not match:
+        return ""
+    return text[match.end():].strip(" \t:：.．、-—")
+
+
+def _looks_like_referential_prose(tail):
+    tail = str(tail or "").strip()
+    return any(tail.startswith(word) for word in _REFERENTIAL_PROSE_START)
+
+
 def is_figure_caption(text):
     text = str(text or '').strip()
+    cn_tail = _caption_tail(text, r'^\u56fe\s*\d+(?:[.-]\d+)?')
+    en_tail = _caption_tail(text, r'(?i)^(?:fig\.?|figure)\s*\d+(?:[.-]\d+)?')
+    if _looks_like_referential_prose(cn_tail) or _looks_like_referential_prose(en_tail):
+        return False
     return bool(
         re.match(r'^\u56fe\s*\d+(?:[.-]\d+)?\s*[^\d\s]', text)
         or re.match(r'(?i)^(?:fig\.?|figure)\s*\d+(?:[.-]\d+)?\s+[^\d\s]', text)
@@ -12,6 +47,10 @@ def is_figure_caption(text):
 
 def is_table_caption(text):
     text = str(text or '').strip()
+    cn_tail = _caption_tail(text, r'^\u8868\s*\d+(?:[.-]\d+)?')
+    en_tail = _caption_tail(text, r'(?i)^table\s*\d+(?:[.-]\d+)?')
+    if _looks_like_referential_prose(cn_tail) or _looks_like_referential_prose(en_tail):
+        return False
     return bool(
         re.match(r'^\u8868\s*\d+(?:[.-]\d+)?\s*[^\d\s]', text)
         or re.match(r'(?i)^table\s*\d+(?:[.-]\d+)?\s+[^\d\s]', text)

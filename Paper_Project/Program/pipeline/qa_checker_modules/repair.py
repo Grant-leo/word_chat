@@ -11,6 +11,13 @@ try:
 except ImportError:  # pragma: no cover - package-style imports
     from .registry import OWNER_BY_CODE, REPAIR_GUIDES
 
+NEEDS_USER_AUTO_LEVELS = {
+    "needs_user_file",
+    "needs_user_input",
+    "needs_user_confirmation",
+    "optional_user_input",
+}
+
 
 def _load_json(path: str) -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
@@ -18,17 +25,19 @@ def _load_json(path: str) -> Dict[str, Any]:
 
 
 def _safe_rel(path: str, root: str | None = None) -> str:
+    path_text = os.fspath(path)
     try:
         base = os.path.abspath(root or os.getcwd())
-        return os.path.relpath(os.path.abspath(path), base).replace("\\", "/")
+        return os.path.relpath(os.path.abspath(path_text), base).replace("\\", "/")
     except Exception:
-        return path.replace("\\", "/")
+        return path_text.replace("\\", "/")
 
 
 def _workflow_commands(out_dir: str, mode: str) -> Dict[str, str]:
     workflow_path = os.path.join(out_dir, "workflow_mode.json")
+    build_path = _safe_rel(os.path.join(out_dir, "build_generated.py"))
     commands = {
-        "rebuild_current_docx": f"python {os.path.join(out_dir, 'build_generated.py')}",
+        "rebuild_current_docx": f"python {build_path}",
         "rerun_current_pipeline": "",
     }
     try:
@@ -84,6 +93,10 @@ def build_repair_plan(report: Dict[str, Any], out_dir: str) -> Dict[str, Any]:
     ordered_issues = errors + warnings + [i for i in issues if i not in errors and i not in warnings]
     steps = [_repair_step(item, counts, mode) for item in ordered_issues]
     commands = _workflow_commands(out_dir, mode)
+    error_steps = [step for step in steps if step.get("severity") == "error"]
+    all_errors_need_user = bool(error_steps) and all(str(step.get("auto_level") or "") in NEEDS_USER_AUTO_LEVELS for step in error_steps)
+    if all_errors_need_user:
+        commands["rebuild_current_docx"] = ""
     summary = (
         "QA 已通过，仍建议用 WPS/Word 做最终视觉核对。"
         if not errors else
@@ -96,7 +109,10 @@ def build_repair_plan(report: Dict[str, Any], out_dir: str) -> Dict[str, Any]:
         "目标：优先处理 error，再处理 warning；修复后重新生成最终 DOCX 并重新运行 QA。",
     ]
     if mode == "user":
-        user_prompt_lines.append("当前是 user 模式，优先只修改本次输出目录里的 `build_generated.py` 或指导用户修正输入文件。")
+        if all_errors_need_user:
+            user_prompt_lines.append("当前是 user 模式，本轮需要先指导用户补充或更换输入文件；不要只修改 `build_generated.py`。")
+        else:
+            user_prompt_lines.append("当前是 user 模式，优先只修改本次输出目录里的 `build_generated.py` 或指导用户修正输入文件。")
     else:
         user_prompt_lines.append("当前是 developer 模式，可修改 `Paper_Project/Program/pipeline/` 下的核心引擎脚本并重跑完整流水线。")
     for idx, step in enumerate(steps[:5], 1):
@@ -120,4 +136,3 @@ def build_repair_plan(report: Dict[str, Any], out_dir: str) -> Dict[str, Any]:
         "steps": steps,
         "copy_to_ai_prompt": "\n".join(user_prompt_lines),
     }
-

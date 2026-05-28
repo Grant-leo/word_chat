@@ -11,6 +11,7 @@ try:
         _compact,
         _expected_align,
         _expected_line_twips,
+        _first_cjk_run_props,
         _first_run_props,
         _is_cjk_font,
         _is_cjk_text,
@@ -25,6 +26,7 @@ except ImportError:  # pragma: no cover - package-style imports
         _compact,
         _expected_align,
         _expected_line_twips,
+        _first_cjk_run_props,
         _first_run_props,
         _is_cjk_font,
         _is_cjk_text,
@@ -53,8 +55,9 @@ def _style_issues(role: str, text: str, p: ET.Element, profile: Dict[str, Any]) 
     font = profile.get("font")
     if font:
         if _is_cjk_font(str(font)):
-            if _is_cjk_text(text) and run.get("east_asia_font") != font:
-                issues.append(f"{label}: eastAsia font {run.get('east_asia_font')} != {font}")
+            font_run = _first_cjk_run_props(p)
+            if _is_cjk_text(text) and font_run.get("east_asia_font") != font:
+                issues.append(f"{label}: eastAsia font {font_run.get('east_asia_font')} != {font}")
         elif run.get("ascii_font") != font:
             issues.append(f"{label}: ascii font {run.get('ascii_font')} != {font}")
     expected_line = _expected_line_twips(profile)

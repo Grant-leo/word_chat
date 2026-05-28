@@ -40,6 +40,18 @@ def build_arg_parser(default_golden_dir=os.path.join("TestData", "GoldenBaseline
         help="visual QA 时如果 WPS 导出不可用则记为 error",
     )
     parser.add_argument("--no-qa", action="store_true", help="跳过生成后的 QA 检测")
+    parser.add_argument(
+        "--auto-repair",
+        action="store_true",
+        help="Run a bounded user-mode repair loop that may edit only Outputs/<run>/build_generated.py.",
+    )
+    parser.add_argument("--repair-max-rounds", type=int, default=5, help="Maximum auto-repair rounds.")
+    parser.add_argument(
+        "--repair-stop-no-improve",
+        type=int,
+        default=2,
+        help="Stop after this many consecutive repair rounds without reducing QA errors.",
+    )
     return parser
 
 
@@ -54,6 +66,7 @@ def dispatch_cli(args, *, run_pipeline, template_dir, inputs_dir):
 
     interactive = not args.md and not (args.template and args.content)
     mode = choose_mode() if args.mode == "auto" and interactive else normalize_mode("user" if args.mode == "auto" else args.mode)
+    run_qa = True if args.auto_repair else not args.no_qa
 
     if args.md:
         exit_from_result(
@@ -62,11 +75,14 @@ def dispatch_cli(args, *, run_pipeline, template_dir, inputs_dir):
                 None,
                 md_file=args.md,
                 mode=mode,
-                run_qa=not args.no_qa,
+                run_qa=run_qa,
                 qa_level=args.qa_level,
                 golden_dir=args.golden_dir,
                 update_golden=args.update_golden,
                 require_wps=args.require_wps,
+                auto_repair=args.auto_repair,
+                repair_max_rounds=args.repair_max_rounds,
+                repair_stop_no_improve=args.repair_stop_no_improve,
             )
         )
 
@@ -98,11 +114,14 @@ def dispatch_cli(args, *, run_pipeline, template_dir, inputs_dir):
             template_file,
             content_file,
             mode=mode,
-            run_qa=not args.no_qa,
+            run_qa=run_qa,
             qa_level=args.qa_level,
             golden_dir=args.golden_dir,
             update_golden=args.update_golden,
             require_wps=args.require_wps,
+            auto_repair=args.auto_repair,
+            repair_max_rounds=args.repair_max_rounds,
+            repair_stop_no_improve=args.repair_stop_no_improve,
         )
     )
 

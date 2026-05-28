@@ -26,7 +26,39 @@ def is_backmatter_heading(h):
 
 
 def is_caption_heading(h):
-    return bool(re.match(r'^(图|表)\s*\d+(?:[.-]\d+)?\s*', str(h or '').strip()))
+    text = str(h or '').strip()
+    return is_figure_caption_text(text) or is_table_caption_text(text)
+
+
+def caption_tail(text, label_pattern):
+    m = re.match(label_pattern, str(text or '').strip(), flags=re.I)
+    if not m:
+        return ''
+    return str(text or '').strip()[m.end():].strip(' \t:：.．、-—')
+
+
+def is_referential_caption_prose(tail):
+    tail = str(tail or '').strip()
+    return tail.startswith((
+        '展示', '显示', '给出', '给出了', '说明', '表明', '反映', '描述',
+        '列出', '汇总', '呈现', '可见', '所示', '为', '是',
+    ))
+
+
+def is_figure_caption_text(text):
+    text = str(text or '').strip()
+    tail = caption_tail(text, r'^图\s*\d+(?:[.-]\d+)?')
+    if is_referential_caption_prose(tail):
+        return False
+    return bool(re.match(r'^图\s*\d+(?:[.-]\d+)?\s*[^\d\s]', text))
+
+
+def is_table_caption_text(text):
+    text = str(text or '').strip()
+    tail = caption_tail(text, r'^表\s*\d+(?:[.-]\d+)?')
+    if is_referential_caption_prose(tail):
+        return False
+    return bool(re.match(r'^表\s*\d+(?:[.-]\d+)?\s*[^\d\s]', text))
 
 
 def normalize_caption(text):
