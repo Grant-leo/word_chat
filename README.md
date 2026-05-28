@@ -13,6 +13,8 @@
 
 默认你已经在 VSCode 中安装了 Agent 插件。普通用户不需要手动记命令，只需要把模板和内容放好，然后把下面的提示词发给 Agent。
 
+推荐安装配套预览插件：在 VSCode 扩展商店搜索 `DOCX Live Preview` 并安装，用来预览生成的 Word 文档。
+
 先放文件：
 
 - 模板 DOCX 放入 `Templates/`
