@@ -33,6 +33,64 @@ NEEDS_USER_CODES = {
 REBUILD_ONLY_CODES = {"MISSING_DOCX", "DOCX_XML_UNREADABLE"}
 PLACEHOLDER_MARKER = "# AUTO_REPAIR_PLACEHOLDER_CLEANUP_V1"
 REFERENCE_EAST_ASIA_MARKER = "# AUTO_REPAIR_REFERENCE_EAST_ASIA_FONT_V1"
+REPORT_BLOCKER_GUIDES = {
+    "CONFORMANCE_QA_UNAVAILABLE": {
+        "auto_level": "needs_user_input",
+        "user_action": "修复 strict conformance QA 依赖后重跑；先查看 conformance_report.md。",
+    },
+    "VISUAL_QA_UNAVAILABLE": {
+        "auto_level": "needs_user_input",
+        "user_action": "修复 visual QA 依赖后重跑；先查看 visual_report.md。",
+    },
+    "PDF_EXPORT_FAILED": {
+        "auto_level": "needs_user_input",
+        "user_action": "安装或修复 Microsoft Word COM/PDF 导出环境后重跑 visual QA。",
+    },
+    "PDFINFO_UNAVAILABLE": {
+        "auto_level": "needs_user_input",
+        "user_action": "安装 Poppler 的 pdfinfo 后重跑 visual QA。",
+    },
+    "PDFINFO_FAILED": {
+        "auto_level": "needs_user_input",
+        "user_action": "检查 Poppler/pdfinfo 是否可运行，或打开 visual_report.md 查看 PDF 元信息读取错误。",
+    },
+    "PDF_PAGE_COUNT_INVALID": {
+        "auto_level": "needs_user_confirmation",
+        "user_action": "打开导出的 PDF/DOCX 确认是否为空白；若导出异常，先修复 Word/PDF 导出环境后重跑。",
+    },
+    "PDFTOTEXT_UNAVAILABLE": {
+        "auto_level": "needs_user_input",
+        "user_action": "安装 Poppler 的 pdftotext 后重跑 visual QA。",
+    },
+    "PDFTOTEXT_FAILED": {
+        "auto_level": "needs_user_input",
+        "user_action": "检查 Poppler/pdftotext 是否可运行，或打开 visual_report.md 查看文本提取错误。",
+    },
+    "SAMPLE_RENDER_FAILED": {
+        "auto_level": "needs_user_input",
+        "user_action": "安装 Poppler 的 pdftoppm 后重跑 visual QA。",
+    },
+    "ALL_PAGE_RENDER_FAILED": {
+        "auto_level": "needs_user_input",
+        "user_action": "安装或修复 Poppler 的 pdftoppm 后重跑 visual QA。",
+    },
+    "PAGE_IMAGE_UNREADABLE": {
+        "auto_level": "needs_user_input",
+        "user_action": "检查 visual_qa/all_pages 下的 PNG 是否损坏，并修复 PDF 渲染/图像读取环境后重跑。",
+    },
+    "WPS_EXPORT_UNAVAILABLE": {
+        "auto_level": "needs_user_input",
+        "user_action": "安装/配置 WPS COM，或取消 --require-wps 后重跑 visual QA。",
+    },
+    "WPS_PAGE_COUNT_MISMATCH": {
+        "auto_level": "needs_user_confirmation",
+        "user_action": "分别打开 Word 与 WPS 导出的 PDF 比对分页差异；确认是兼容性差异还是排版脚本问题后再修复。",
+    },
+    "GOLDEN_BASELINE_MISMATCH": {
+        "auto_level": "needs_user_confirmation",
+        "user_action": "打开 visual_report.md 和 visual_qa/samples/ 对比页面；确认变化正确后用 --update-golden 更新基线，或继续修复排版。",
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -100,17 +158,18 @@ def run_repair_loop(
         blockers = _blocking_steps(state)
         if blockers:
             history.append(_round_snapshot(round_no, "blocked", state, actions=[], previous_error_codes=history[-1].get("error_codes") or []))
+            status, stop_detail = _blocker_stop_reason(blockers)
             return _finish(
                 out_path,
                 ok=False,
-                status="stopped_needs_user_file",
+                status=status,
                 mode=mode,
                 output_docx_name=output_docx_name,
                 qa_level=qa_level,
                 max_rounds=max_rounds,
                 stop_no_improve=stop_no_improve,
                 history=history,
-                stop_detail="User file/input is required before automatic repair can continue.",
+                stop_detail=stop_detail,
                 blockers=blockers,
             )
 
@@ -298,6 +357,7 @@ def _write_dependency_report(
     message: str,
     detail: str,
 ) -> None:
+    next_action = (REPORT_BLOCKER_GUIDES.get(code) or {}).get("user_action") or "Install or fix the required QA dependency, then rerun the pipeline."
     issue = {
         "code": code,
         "severity": "error",
@@ -312,7 +372,7 @@ def _write_dependency_report(
         "passed": False,
         "counts": {},
         "issues": [issue],
-        "next_action": "Install or fix the required QA dependency, then rerun the pipeline.",
+        "next_action": next_action,
     }
     (out_path / f"{report_name}.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     lines = [
@@ -321,6 +381,7 @@ def _write_dependency_report(
         "- Result: failed",
         f"- Issue: `{code}`",
         f"- Message: {message}",
+        f"- Next action: {next_action}",
     ]
     if detail:
         lines.append(f"- Detail: `{detail}`")
@@ -380,7 +441,32 @@ def _blocking_steps(state: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "detail": step.get("detail") or "",
                 }
             )
+    blocked_codes = {item.get("code") for item in blockers}
+    for issue in state.get("errors") or []:
+        code = str(issue.get("code") or "")
+        if not code or code in blocked_codes:
+            continue
+        guide = REPORT_BLOCKER_GUIDES.get(code)
+        if not guide:
+            continue
+        blockers.append(
+            {
+                "code": code,
+                "auto_level": guide.get("auto_level") or "needs_user_input",
+                "user_action": guide.get("user_action") or "查看对应 QA 报告后重跑。",
+                "detail": issue.get("detail") or issue.get("message") or "",
+                "report": issue.get("report") or "",
+            }
+        )
     return blockers
+
+
+def _blocker_stop_reason(blockers: List[Dict[str, Any]]) -> tuple[str, str]:
+    levels = {str(item.get("auto_level") or "") for item in blockers}
+    codes = {str(item.get("code") or "") for item in blockers}
+    if (levels and levels <= {"needs_user_file"}) or (codes and codes <= NEEDS_USER_CODES):
+        return "stopped_needs_user_file", "User file/input is required before automatic repair can continue."
+    return "stopped_needs_user_input", "User confirmation, dependency repair, or manual inspection is required before automatic repair can continue."
 
 
 def _apply_safe_repairs(out_path: Path, state: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -575,6 +661,10 @@ def _finish(
     final = history[-1] if history else {}
     display_out = _report_display_path(out_path)
     display_docx = _join_report_path(display_out, output_docx_name)
+    final_warnings = int(final.get("total_warnings") or 0)
+    manual_checks = ["Open the final DOCX in Word/WPS for visual review."]
+    if final_warnings:
+        manual_checks.append("Review remaining warnings in qa_report.md and repair_loop_report.md.")
     report = {
         "schema_version": 1,
         "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -588,20 +678,17 @@ def _finish(
         "stop_no_improve": stop_no_improve,
         "rounds_run": max(0, len([r for r in history if r.get("round", 0) > 0])),
         "final_errors": int(final.get("total_errors") or 0),
-        "final_warnings": int(final.get("total_warnings") or 0),
+        "final_warnings": final_warnings,
         "final_error_codes": final.get("error_codes") or [],
         "final_warning_codes": final.get("warning_codes") or [],
         "warning_policy": (
             "Remaining warnings do not block automatic QA convergence, but they can still affect delivery quality and must be reviewed in Word/WPS."
-            if int(final.get("total_warnings") or 0)
+            if final_warnings
             else "No remaining warnings were reported by the enabled QA levels."
         ),
         "stop_detail": stop_detail,
         "blockers": blockers or [],
-        "manual_check_required": [
-            "Open the final DOCX in Word/WPS for visual review.",
-            "Review remaining warnings in qa_report.md and repair_loop_report.md.",
-        ],
+        "manual_check_required": manual_checks,
         "rounds": history,
     }
     report_path = out_path / "repair_loop_report.json"
@@ -610,7 +697,7 @@ def _finish(
     return RepairLoopResult(
         ok=bool(ok),
         status=status,
-        report_path=str(report_path),
+        report_path=_join_report_path(display_out, "repair_loop_report.json"),
         rounds=int(report["rounds_run"]),
         final_errors=int(report["final_errors"]),
     )
@@ -650,9 +737,13 @@ def _report_to_markdown(report: Dict[str, Any]) -> str:
         "## Manual Check",
         "",
         "- Automatic QA convergence is not a 100% correctness guarantee.",
-        "- Open the final DOCX in Word/WPS and visually inspect pagination, figures, formulas, tables, and remaining warnings.",
-        "",
+        "- Open the final DOCX in Word/WPS and visually inspect pagination, figures, formulas, and tables.",
     ])
+    if int(report.get("final_warnings") or 0):
+        lines.append("- Review remaining warnings in qa_report.md and repair_loop_report.md before delivery.")
+    else:
+        lines.append("- No remaining warnings were reported by the enabled QA levels.")
+    lines.append("")
     return "\n".join(lines)
 
 

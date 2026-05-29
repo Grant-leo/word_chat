@@ -44,13 +44,46 @@ def _workflow_commands(out_dir: str, mode: str) -> Dict[str, str]:
         workflow = _load_json(workflow_path)
         template = workflow.get("template")
         content = workflow.get("content")
-        if template and content:
-            commands["rerun_current_pipeline"] = (
-                f"python run_pipeline.py --mode {mode} --template {template} --content {content}"
-            )
+        md_file = workflow.get("md")
+        if not md_file and template and content and str(template).lower().endswith(".md") and template == content:
+            md_file = template
+        args = ["python", "run_pipeline.py", "--mode", mode]
+        if md_file:
+            args.extend(["--md", str(md_file)])
+        elif template and content:
+            args.extend(["--template", str(template), "--content", str(content)])
+        else:
+            args = []
+        if args:
+            qa_level = str(workflow.get("qa_level") or "").strip().lower()
+            if qa_level in {"basic", "strict", "visual"}:
+                args.extend(["--qa-level", qa_level])
+            if workflow.get("auto_repair"):
+                args.append("--auto-repair")
+                if workflow.get("repair_max_rounds"):
+                    args.extend(["--repair-max-rounds", str(workflow.get("repair_max_rounds"))])
+                if workflow.get("repair_stop_no_improve"):
+                    args.extend(["--repair-stop-no-improve", str(workflow.get("repair_stop_no_improve"))])
+            if workflow.get("require_wps"):
+                args.append("--require-wps")
+            if workflow.get("update_golden"):
+                args.append("--update-golden")
+            golden_dir = workflow.get("golden_dir")
+            if golden_dir:
+                args.extend(["--golden-dir", str(golden_dir)])
+            commands["rerun_current_pipeline"] = " ".join(_quote_arg(arg) for arg in args)
     except Exception:
         pass
     return commands
+
+
+def _quote_arg(value: str) -> str:
+    text = str(value)
+    if not text:
+        return '""'
+    if re.search(r'[\s"&|<>^]', text):
+        return '"' + text.replace('"', r'\"') + '"'
+    return text
 
 
 def _parse_count_detail(detail: str) -> Dict[str, int]:

@@ -42,6 +42,7 @@ OWNER_BY_CODE = {
     "WORD_FIELD_ERROR": "script_generator.py",
     "TOC_MISSING": "script_generator.py",
     "WORKFLOW_MODE_INVALID": "run_pipeline.py",
+    "EXTRACTION_VERIFICATION_FAILED": "format_extractor.py / content_parser.py / md_parser.py / run_pipeline.py",
 }
 try:
     from qa_checker_modules.repair_guides import REPAIR_GUIDES

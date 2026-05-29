@@ -12,6 +12,7 @@ def report_to_markdown(report: Dict[str, Any]) -> str:
         "",
         f"- Result: {'passed' if report.get('passed') else 'failed'}",
         f"- Output: `{report.get('output_dir_name')}`",
+        f"- Next action: {report.get('next_action') or 'Open the DOCX/PDF render artifacts and inspect visual issues.'}",
         "",
         "## Counts",
         "",
@@ -47,4 +48,3 @@ def write_reports(report: Dict[str, Any], out_dir: str) -> None:
         json.dump(report, f, ensure_ascii=False, indent=2)
     with open(os.path.join(out_dir, "visual_report.md"), "w", encoding="utf-8") as f:
         f.write(report_to_markdown(report))
-

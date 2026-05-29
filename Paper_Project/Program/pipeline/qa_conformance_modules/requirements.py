@@ -40,15 +40,24 @@ def _profile_from_format(fmt: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 
 def _content_counts(content: Dict[str, Any]) -> Dict[str, int]:
-    images = 0
+    inline_images = 0
+    inline_names = []
+    section_images = 0
+    section_names = []
     tables = 0
     formulas = 0
     for sec in content.get("sections") or []:
+        current_section_images = [str(image or "") for image in (sec.get("images") or []) if str(image or "")]
+        section_images += len(current_section_images)
+        section_names.extend(current_section_images)
         for item in sec.get("paragraphs") or []:
             if not isinstance(item, dict):
                 continue
             if item.get("role") in {"image", "figure"} or item.get("image") or item.get("filename"):
-                images += 1
+                name = str(item.get("image") or item.get("filename") or item.get("asset") or "")
+                inline_images += 1
+                if name:
+                    inline_names.append(name)
             if item.get("table_rows") and item.get("role") != "code":
                 tables += 1
             math_items = item.get("math") or []
@@ -56,10 +65,15 @@ def _content_counts(content: Dict[str, Any]) -> Dict[str, int]:
                 formulas += len(math_items)
             elif item.get("role") == "formula" or item.get("latex") or item.get("xml"):
                 formulas += 1
-        if not images:
-            images += len(sec.get("images") or [])
-    if not images:
+    if inline_images:
+        extra_section_only = [name for name in section_names if name and name not in inline_names]
+        images = inline_images + len(extra_section_only)
+    elif section_images:
+        images = section_images
+    else:
         images = int((content.get("_meta") or {}).get("images_extracted") or 0)
+    if not images:
+        images = 0
     if not tables:
         tables = int((content.get("_meta") or {}).get("tables_count") or 0)
     return {"images": images, "tables": tables, "formulas": formulas}
@@ -139,4 +153,3 @@ def write_requirements(fmt: Dict[str, Any], content: Dict[str, Any], out_dir: st
     with open(os.path.join(out_dir, "template_requirements.md"), "w", encoding="utf-8") as f:
         f.write(requirements_to_markdown(req))
     return req
-

@@ -5,6 +5,45 @@ import json
 import os
 
 
+def write_extraction_failure_report(out_dir, *, mode, label, error, target):
+    """Write a QA-shaped report when extraction verification cannot converge."""
+    try:
+        from qa_checker_modules.repair import build_repair_plan
+        from qa_checker_modules.reports import write_reports
+    except ImportError:  # pragma: no cover - package-style imports
+        from ..qa_checker_modules.repair import build_repair_plan
+        from ..qa_checker_modules.reports import write_reports
+
+    label_text = str(label or "Extraction").strip() or "Extraction"
+    issue = {
+        "code": "EXTRACTION_VERIFICATION_FAILED",
+        "severity": "error",
+        "message": f"{label_text} extraction could not be verified across repeated runs.",
+        "detail": str(error or "")[:2000],
+        "active_owner": target,
+        "owner_user": "User input/template file",
+        "owner_developer": target,
+    }
+    report = {
+        "schema_version": 1,
+        "mode": mode,
+        "passed": False,
+        "counts": {},
+        "issues": [issue],
+        "output_dir_name": os.path.basename(os.path.abspath(out_dir)),
+        "next_action": "查看 qa_repair_plan.md；优先核对输入文件是否稳定可提取，开发者再检查对应提取器。",
+    }
+    report["repair_plan"] = build_repair_plan(report, out_dir)
+    report["repair_plan"]["open_first"] = [
+        "qa_repair_plan.md",
+        "qa_report.md",
+        "workflow_mode.json",
+    ]
+    report["repair_plan"].setdefault("commands", {})["rebuild_current_docx"] = ""
+    write_reports(report, out_dir)
+    return report
+
+
 def _math_count(item):
     count = len(item.get("math") or [])
     if count:

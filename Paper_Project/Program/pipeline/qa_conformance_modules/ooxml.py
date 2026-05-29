@@ -54,11 +54,11 @@ def _compact(text: str) -> str:
 
 
 def _text_of_para(p: ET.Element) -> str:
-    return "".join(t.text or "" for t in p.iter(W + "t")).strip()
+    return "".join(t.text or "" for t in p.iter() if t.tag in {W + "t", M + "t"}).strip()
 
 
 def _text_of_table(tbl: ET.Element) -> str:
-    return "\n".join(t.text or "" for t in tbl.iter(W + "t")).strip()
+    return "\n".join(t.text or "" for t in tbl.iter() if t.tag in {W + "t", M + "t"}).strip()
 
 
 def _run_props(run: Optional[ET.Element]) -> Dict[str, Any]:

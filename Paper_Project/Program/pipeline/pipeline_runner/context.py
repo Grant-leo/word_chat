@@ -93,16 +93,21 @@ def write_workflow_mode(
     update_golden,
     require_wps,
     auto_repair=False,
+    agent_auto=False,
     repair_max_rounds=5,
     repair_stop_no_improve=2,
 ):
     workflow_path = os.path.join(out_dir, "workflow_mode.json")
+    md_file = ""
+    if os.path.abspath(template_path) == os.path.abspath(content_path) and str(content_path).lower().endswith(".md"):
+        md_file = os.path.basename(content_path)
     with open(workflow_path, "w", encoding="utf-8") as f:
         json.dump(
             {
                 "mode": mode,
                 "template": os.path.basename(template_path),
                 "content": os.path.basename(content_path),
+                "md": md_file,
                 "user_fix_target": "build_generated.py",
                 "developer_fix_target": "Paper_Project/Program/pipeline/",
                 "qa_enabled": bool(run_qa),
@@ -111,6 +116,7 @@ def write_workflow_mode(
                 "update_golden": bool(update_golden),
                 "require_wps": bool(require_wps),
                 "auto_repair": bool(auto_repair),
+                "agent_auto": bool(agent_auto),
                 "repair_max_rounds": int(repair_max_rounds or 0),
                 "repair_stop_no_improve": int(repair_stop_no_improve or 0),
             },

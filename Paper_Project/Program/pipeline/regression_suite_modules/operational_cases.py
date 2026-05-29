@@ -61,6 +61,8 @@ def visual_qa_fails_closed_without_pdf_tools() -> None:
     codes = [item["code"] for item in report["issues"]]
     assert_true(report["passed"] is False, "visual QA passed without pdfinfo/text validation")
     assert_true("PDFINFO_UNAVAILABLE" in codes, "missing pdfinfo was not reported")
+    assert_true("Poppler" in report.get("next_action", ""), f"visual QA did not guide dependency repair: {report}")
+    assert_true("Next action" in qa_visual.report_to_markdown(report), "visual report markdown should include next action")
 
 
 @case

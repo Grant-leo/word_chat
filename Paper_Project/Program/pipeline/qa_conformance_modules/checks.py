@@ -109,6 +109,7 @@ def check_conformance(out_dir: str, mode: str = "user", output_docx_name: str = 
     expected = _expected_paragraphs(content)
     body_start = _find_body_start_index(paragraphs, expected)
     body_paragraphs = paragraphs[body_start:]
+    used_body_paragraphs: set[int] = set()
     counts["expected_content_paragraphs"] = len(expected)
     missing_samples = []
     style_mismatches = []
@@ -116,7 +117,7 @@ def check_conformance(out_dir: str, mode: str = "user", output_docx_name: str = 
         role = item["role"]
         text = item["text"]
         profile = style_roles.get(role if role in style_roles else "body")
-        para = _find_para_by_text(body_paragraphs, text)
+        para = _find_para_by_text(body_paragraphs, text, used_body_paragraphs)
         if para is None:
             missing_samples.append(text[:80])
             continue

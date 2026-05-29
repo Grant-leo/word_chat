@@ -49,8 +49,24 @@ Use the mode recorded in `Outputs/<latest>/workflow_mode.json` when it exists.
 
 If no mode is known and the user has not said they are the developer, use `user`.
 
+### 3.5 Agent-First Default
+
+普通用户主要通过 Agent 引导使用项目，不应被要求自己打开终端或拼命令。When the user says "开始排版", "帮我跑论文", "自动排版", or otherwise asks for ordinary paper formatting:
+
+1. Use the project Agent entry: `python run_pipeline.py --agent-auto`
+2. Let it scan `Templates/` and `Inputs/`
+3. If there is exactly one valid template/content pair, run it directly
+4. If there are multiple candidates, ask the user to choose only the file name
+5. After the run, read `Outputs/<latest>/agent_summary.md` first, then the detailed QA reports
+6. If anything interrupts before or during the run, do not leave ordinary users waiting: read or write the relevant `agent_preflight_report.md`, `agent_summary.md`, or QA report, and state the next concrete action they should take
+
+Only use explicit `--template` / `--content` commands when the user or the file situation makes the choice unambiguous.
+
 ### 4. Run Pipeline
 ```bash
+# Agent-first ordinary user workflow
+python run_pipeline.py --agent-auto
+
 # DOCX template + DOCX content
 python run_pipeline.py --mode user --template <模板文件名> --content <内容文件名>
 
@@ -81,6 +97,7 @@ Or interactive: `python run_pipeline.py`
 - For PDF templates, check `template_profile.md` and `格式提取.md` for PDF type, confidence, warnings, and possible `PDF_TEMPLATE_UNSUPPORTED`
 - Read `Outputs/<latest>/qa_report.md` first; it names the active fix target for the current mode
 - If `--auto-repair` was used, read `Outputs/<latest>/repair_loop_report.md/json`; it records every repair round, stop reason, and remaining manual checks
+- Read `Outputs/<latest>/agent_summary.md/json` first when present; it is the user-facing handoff with final DOCX path, QA status, repair-loop result, and manual checks
 - If `--qa-level visual` was used, read `Outputs/<latest>/visual_report.md` and inspect sample PNGs under `visual_qa/samples/`
 - Confirm `Outputs/<latest>/最终论文.docx` exists
 - Render/check with Word/WPS when layout matters; Office Viewer alone is not enough

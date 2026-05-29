@@ -76,17 +76,24 @@ def _style_issues(role: str, text: str, p: ET.Element, profile: Dict[str, Any]) 
     return issues
 
 
-def _find_para_by_text(paragraphs: List[ET.Element], text: str) -> Optional[ET.Element]:
+def _find_para_by_text(paragraphs: List[ET.Element], text: str, used: Optional[set[int]] = None) -> Optional[ET.Element]:
     target = _compact(text)
     if not target:
         return None
     for p in paragraphs:
+        if used is not None and id(p) in used:
+            continue
         if _compact(_text_of_para(p)) == target:
+            if used is not None:
+                used.add(id(p))
             return p
-    sample = target[:80]
     for p in paragraphs:
+        if used is not None and id(p) in used:
+            continue
         actual = _compact(_text_of_para(p))
-        if sample and sample in actual:
+        if target in actual:
+            if used is not None:
+                used.add(id(p))
             return p
     return None
 
@@ -126,8 +133,41 @@ def _is_backmatter(role: str, heading: str) -> bool:
     return bool(re.search(r"致\s*谢|附\s*录|^appendix\b|^acknowledgements?$", str(heading or ""), re.I))
 
 
+def _caption_tail(text: str, label_pattern: str) -> str:
+    match = re.match(label_pattern, str(text or "").strip(), flags=re.I)
+    if not match:
+        return ""
+    return str(text or "").strip()[match.end():].strip(" \t:：.．、-—")
+
+
+def _is_referential_caption_prose(tail: str) -> bool:
+    normalized = str(tail or "").strip().lower()
+    if not normalized:
+        return False
+    return normalized.startswith(
+        (
+            "展示", "显示", "给出", "给出了", "说明", "表明", "反映", "描述",
+            "列出", "汇总", "呈现", "可见", "所示", "为", "是",
+            "shows", "show", "illustrates", "illustrate", "presents",
+            "present", "describes", "describe", "summarizes", "summary",
+            "lists", "reports", "indicates", "demonstrates",
+        )
+    )
+
+
+def _caption_role(text: str) -> str:
+    text = str(text or "").strip()
+    figure_tail = _caption_tail(text, r"^(?:Fig\.|Figure|图)\s*\d+(?:[.-]\d+)?")
+    if figure_tail and not _is_referential_caption_prose(figure_tail):
+        return "figure_caption"
+    table_tail = _caption_tail(text, r"^(?:Table|表)\s*\d+(?:[.-]\d+)?")
+    if table_tail and not _is_referential_caption_prose(table_tail):
+        return "table_caption"
+    return ""
+
+
 def _is_caption_text(text: str) -> bool:
-    return bool(re.match(r"^(Fig\.|Figure|Table|图|表)\s*\d+", str(text or "").strip(), re.I))
+    return bool(_caption_role(text))
 
 
 def _is_table_item(item: Any) -> bool:
@@ -135,7 +175,11 @@ def _is_table_item(item: Any) -> bool:
 
 
 def _is_formula_item(item: Any) -> bool:
-    return isinstance(item, dict) and (item.get("role") == "formula" or item.get("latex") or item.get("xml") or item.get("math"))
+    if not isinstance(item, dict):
+        return False
+    if item.get("role") == "rich_text":
+        return False
+    return item.get("role") == "formula" or item.get("latex") or item.get("xml") or item.get("math")
 
 
 def _expected_paragraphs(content: Dict[str, Any]) -> List[Dict[str, str]]:
@@ -160,14 +204,18 @@ def _expected_paragraphs(content: Dict[str, Any]) -> List[Dict[str, str]]:
                     continue
                 if item_role in {"figure_caption", "table_caption"}:
                     expected.append({"role": item_role, "text": text})
-                elif _is_caption_text(text):
-                    expected.append({"role": "figure_caption" if re.match(r"^(Fig\.|Figure|图)", text, re.I) else "table_caption", "text": text})
+                elif _caption_role(text):
+                    expected.append({"role": _caption_role(text), "text": text})
                 else:
                     expected.append({"role": "body", "text": text})
             else:
                 text = str(item or "").strip()
                 if text:
-                    expected.append({"role": "body", "text": text})
+                    role = _caption_role(text)
+                    if role:
+                        expected.append({"role": role, "text": text})
+                    else:
+                        expected.append({"role": "body", "text": text})
     for ref in content.get("references") or []:
         text = str(ref.get("text") if isinstance(ref, dict) else ref or "").strip()
         if text and not _is_reference_heading(text):

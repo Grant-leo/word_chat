@@ -6,13 +6,14 @@ tracked engine.
 
 ## Stable Entrypoints
 
-- `run_pipeline.py` at the repository root is the one-click CLI.
+- `run_pipeline.py` at the repository root is the one-click CLI; `--agent-auto` is the Agent-first ordinary-user entry.
 - `content_parser.py` extracts structured paper content.
 - `format_extractor.py` extracts DOCX/PDF template style and layout.
 - `template_profiler.py` builds template capability/risk profiles.
 - `script_generator.py` writes `Outputs/<run>/build_generated.py`.
 - `qa_checker.py`, `qa_conformance.py`, and `qa_visual.py` verify generated output.
 - `regression_suite.py` is the synthetic engine regression gate.
+- `RELEASE_VALIDATION.md` is the publish-before-release validation checklist.
 
 ## Runner Helpers
 
@@ -20,8 +21,8 @@ tracked engine.
 CLI, output, verification, and QA details in a focused package:
 
 - `io.py`: input scanning, interactive choices, mode normalization.
-- `cli.py`: CLI arguments, banner, interactive/non-interactive dispatch.
-- `context.py`: path resolution, QA-level normalization, output folder creation, workflow metadata.
+- `cli.py`: CLI arguments, banner, interactive/non-interactive dispatch, and Agent-first auto selection.
+- `context.py`: path resolution, QA-level normalization, output folder creation, workflow metadata, and Agent-auto flags.
 - `dependencies.py`: optional QA/template/Markdown imports and import-error details.
 - `artifacts.py`: `format.json`, `content.json`, and markdown handoff reports.
 - `verification.py`: repeated extraction verification, arbitration, and stable-content convergence.
@@ -32,13 +33,14 @@ CLI, output, verification, and QA details in a focused package:
 - `qa.py`: structural, strict, and visual QA orchestration.
 - `repair_loop.py`: bounded user-mode auto-repair loop; edits only `Outputs/<run>/build_generated.py`, reruns the enabled QA levels, and writes `repair_loop_report.md/json`.
 - `reports.py`: terminal progress, contract warnings, and repair hints.
-- `summary.py`: completion output inventory and repair workflow summary.
+- `summary.py`: completion output inventory, repair workflow summary, and `agent_summary.md/json` handoff reports.
 
 ## Verification Baseline
 
-Current baseline as of 2026-05-28:
+Current baseline as of 2026-05-29:
 
-- Synthetic regression after the latest architecture and novice-flow fixes: `130 passed, 0 failed`.
+- Synthetic regression after the latest architecture and novice-flow fixes: `150 passed, 0 failed`.
+- Agent-first flow: `--agent-auto` scans local inputs, auto-selects only single candidates, defaults to user auto-repair, and writes `agent_summary.md/json`.
 - Controlled auto-repair loop regression: repairable build-script error, no-improvement stop, needs-user-file stop, strict/visual dependency failure, visual option preservation, and sanitized report paths passed.
 - PDF template end-to-end strict QA: synthetic instruction PDF template + DOCX content passed.
 - PDF extreme stress gate: 9 cases covering uppercase extensions, visual samples, landscape pages, sparse instructions, scanned/corrupt/blank/too-short PDFs met expected outcomes.

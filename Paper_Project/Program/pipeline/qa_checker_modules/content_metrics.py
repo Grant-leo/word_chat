@@ -17,7 +17,7 @@ def _count_content_formulas(content: Dict[str, Any]) -> int:
         math_items = item.get("math") or []
         if math_items:
             total += len(math_items)
-        elif item.get("role") == "formula" or item.get("latex"):
+        elif item.get("role") == "formula" or item.get("latex") or item.get("xml"):
             total += 1
     return total
 
@@ -35,27 +35,36 @@ def _count_content_tables(content: Dict[str, Any]) -> int:
     return int((content.get("_meta") or {}).get("tables_count") or 0)
 
 
+def _image_name_from_item(item: Dict[str, Any]) -> str:
+    name = str(item.get("image") or item.get("filename") or item.get("asset") or "")
+    if name and (item.get("role") in ("image", "figure") or item.get("image") or item.get("filename") or item.get("asset")):
+        return name
+    return ""
+
+
 def _count_content_images(content: Dict[str, Any]) -> int:
     inline_total = 0
     inline_names: List[str] = []
     section_total = 0
     section_names: List[str] = []
     for sec in content.get("sections") or []:
-        section_images = [str(x or "") for x in (sec.get("images") or [])]
+        section_images = [str(x or "") for x in (sec.get("images") or []) if str(x or "")]
         section_total += len(section_images)
         section_names.extend(section_images)
         for item in sec.get("paragraphs") or []:
             if not isinstance(item, dict):
                 continue
-            if item.get("role") in ("image", "figure") and (item.get("image") or item.get("filename") or item.get("asset")):
+            name = _image_name_from_item(item)
+            if name:
                 inline_total += 1
-                inline_names.append(str(item.get("image") or item.get("filename") or item.get("asset") or ""))
+                inline_names.append(name)
     if inline_total:
         extra_section_only = [name for name in section_names if name and name not in inline_names]
         return inline_total + len(extra_section_only)
     if section_total:
         return section_total
     return int((content.get("_meta") or {}).get("images_extracted") or 0)
+
 
 def _iter_content_image_refs(content: Dict[str, Any]) -> Iterable[Dict[str, str]]:
     seen: set[str] = set()
@@ -64,16 +73,16 @@ def _iter_content_image_refs(content: Dict[str, Any]) -> Iterable[Dict[str, str]
         for item in sec.get("paragraphs") or []:
             if not isinstance(item, dict):
                 continue
-            if item.get("role") in ("image", "figure") and (item.get("image") or item.get("filename") or item.get("asset")):
-                name = str(item.get("image") or item.get("filename") or item.get("asset") or "")
-                if name and name not in seen:
-                    seen.add(name)
-                    yield {"name": name, "heading": heading, "caption": str(item.get("caption") or "")}
+            name = _image_name_from_item(item)
+            if name and name not in seen:
+                seen.add(name)
+                yield {"name": name, "heading": heading, "caption": str(item.get("caption") or "")}
         for name in sec.get("images") or []:
             name = str(name or "")
             if name and name not in seen:
                 seen.add(name)
                 yield {"name": name, "heading": heading, "caption": ""}
+
 
 def _content_text_chars(content: Dict[str, Any]) -> int:
     parts: List[str] = []

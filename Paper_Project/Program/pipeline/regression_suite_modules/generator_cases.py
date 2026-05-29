@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import re
 
+from docx import Document
 from qa_conformance import check_conformance
+from qa_conformance_modules.requirements import build_requirements
 from regression_suite_modules.generated_docx import run_generated_case
-from regression_suite_modules.harness import PNG_1X1, assert_true, base_content, base_format, case, new_workdir
+from regression_suite_modules.harness import PNG_1X1, assert_true, base_content, base_format, case, new_workdir, write_json
 from script_generator import (
     RUNTIME_TEMPLATE,
     _extract_page_and_header,
@@ -48,6 +50,66 @@ def conformance_reference_labels_keep_template_cjk_font() -> None:
     conf = check_conformance(str(result["work"]), mode="developer", output_docx_name="out.docx")
     codes = [item["code"] for item in conf["issues"]]
     assert_true("STYLE_MISMATCH" not in codes, f"reference label triggered CJK font mismatch: {conf['issues']}")
+
+
+@case
+def conformance_checks_rich_text_and_duplicate_paragraphs() -> None:
+    work = new_workdir("conformance_rich_duplicate_missing")
+    content = base_content(
+        [
+            {
+                "role": "rich_text",
+                "text": "Inline formula should remain visible: x=1.",
+                "runs": [
+                    {"type": "text", "text": "Inline formula should remain visible: "},
+                    {"type": "math", "text": "x=1", "math": [{"type": "inline", "text": "x=1", "latex": "x=1"}]},
+                    {"type": "text", "text": "."},
+                ],
+                "math": [{"type": "inline", "text": "x=1", "latex": "x=1"}],
+            },
+            "Repeated body paragraph.",
+            "Repeated body paragraph.",
+        ]
+    )
+    write_json(work / "format.json", base_format())
+    write_json(work / "content.json", content)
+    doc = Document()
+    doc.add_paragraph("1 Introduction")
+    doc.add_paragraph("Repeated body paragraph.")
+    doc.save(work / "out.docx")
+    write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {"content_formulas_rendered": 1}})
+    conf = check_conformance(str(work), mode="developer", output_docx_name="out.docx")
+    codes = [item["code"] for item in conf["issues"]]
+    assert_true("CONTENT_PARAGRAPH_MISSING" in codes, f"conformance did not check rich_text/duplicate paragraphs: {conf['issues']}")
+
+
+@case
+def conformance_rejects_truncated_long_paragraphs() -> None:
+    work = new_workdir("conformance_truncated_long_paragraph")
+    full_text = (
+        "This long paragraph starts with a stable prefix that previously could satisfy the loose matcher, "
+        "but the final generated document must still contain the complete tail with conclusions and evidence."
+    )
+    content = base_content([full_text])
+    write_json(work / "format.json", base_format())
+    write_json(work / "content.json", content)
+    doc = Document()
+    doc.add_paragraph("1 Introduction")
+    doc.add_paragraph(full_text[:95])
+    doc.save(work / "out.docx")
+    write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {}})
+    conf = check_conformance(str(work), mode="developer", output_docx_name="out.docx")
+    codes = [item["code"] for item in conf["issues"]]
+    assert_true("CONTENT_PARAGRAPH_MISSING" in codes, f"truncated long paragraph passed conformance: {conf['issues']}")
+    assert_true("content.json" in conf.get("next_action", ""), f"conformance next action should guide paragraph repair: {conf}")
+
+
+@case
+def conformance_requirements_count_mixed_inline_and_section_images() -> None:
+    content = base_content([{"role": "image", "image": "inline.png"}])
+    content["sections"][0]["images"] = ["inline.png", "", "section_only.png"]
+    req = build_requirements(base_format(), content)
+    assert_true(req["expected_counts"]["images"] == 2, f"conformance image requirements lost section-only image: {req['expected_counts']}")
 
 
 @case

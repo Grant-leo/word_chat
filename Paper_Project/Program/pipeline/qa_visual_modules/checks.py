@@ -27,6 +27,25 @@ def _issue(code: str, severity: str, message: str, detail: str = "") -> Dict[str
     return {"code": code, "severity": severity, "message": message, "detail": detail}
 
 
+def _next_action(issues: List[Dict[str, Any]]) -> str:
+    error_codes = {str(item.get("code") or "") for item in issues if item.get("severity") == "error"}
+    if not error_codes:
+        return "Visual QA passed for the machine-checkable PDF/render checks; still open the DOCX in Word/WPS for final review."
+    if error_codes & {"PDF_EXPORT_FAILED"}:
+        return "修复 Microsoft Word COM/PDF 导出环境后重跑 visual QA；若 DOCX 本身无法打开，先重新生成最终论文。"
+    if error_codes & {"PDFINFO_UNAVAILABLE", "PDFTOTEXT_UNAVAILABLE", "SAMPLE_RENDER_FAILED", "ALL_PAGE_RENDER_FAILED"}:
+        return "安装或修复 Poppler 命令行工具（pdfinfo、pdftotext、pdftoppm）后重跑 visual QA。"
+    if error_codes & {"WPS_EXPORT_UNAVAILABLE"}:
+        return "安装/配置 WPS COM，或取消 --require-wps 后重跑 visual QA。"
+    if error_codes & {"WPS_PAGE_COUNT_MISMATCH"}:
+        return "分别打开 Word 与 WPS 导出的 PDF 比对分页差异；确认是兼容性差异还是排版脚本问题后再修复。"
+    if error_codes & {"GOLDEN_BASELINE_MISMATCH"}:
+        return "打开 visual_report.md 和 visual_qa/samples/ 对比页面；确认变化正确则用 --update-golden 更新基线，否则继续修复排版。"
+    if error_codes & {"MISSING_DOCX"}:
+        return "先修复构建阶段，确保最终论文 DOCX 生成后再运行 visual QA。"
+    return "打开 visual_report.md 和 visual_qa/samples/，按页面样张定位排版问题后重跑流水线。"
+
+
 def check_visual(
     out_dir: str,
     output_docx_name: str = "最终论文.docx",
@@ -125,6 +144,7 @@ def check_visual(
         "counts": counts,
         "issues": issues,
         "artifacts": sanitize_value(artifacts, project_root),
+        "next_action": _next_action(issues),
     }
 
 

@@ -6,7 +6,11 @@ import json
 from docx import Document
 
 from qa_checker import check_output
+from qa_checker_modules.content_metrics import _count_content_formulas, _count_content_images
+from qa_checker_modules.registry import OWNER_BY_CODE
 from qa_checker_modules.repair import build_repair_plan
+from qa_checker_modules.repair_guides import REPAIR_GUIDES
+from qa_conformance_modules.content_checks import _expected_paragraphs
 
 from regression_suite_modules.generated_docx import run_generated_case
 from regression_suite_modules.harness import (
@@ -65,6 +69,42 @@ def code_table_is_not_body_table() -> None:
 
 
 @case
+def qa_counts_xml_only_formula_items() -> None:
+    content = base_content([
+        {"role": "source_omml", "text": "E=mc^2", "xml": "<m:oMath/>"},
+    ])
+    assert_true(_count_content_formulas(content) == 1, "QA should count source OMML/XML formula items")
+
+
+@case
+def qa_counts_image_fields_even_when_role_varies() -> None:
+    content = base_content([
+        {"role": "media", "filename": "figure_a.png", "caption": "Figure A"},
+    ])
+    assert_true(_count_content_images(content) == 1, "QA should count image items by image fields, not only by role")
+
+
+@case
+def conformance_expected_paragraphs_classifies_plain_caption_strings() -> None:
+    content = base_content([
+        "Table 1 Model results",
+        "表 2 变量描述",
+        "图 3 系统架构",
+        "图 1 展示了系统架构。",
+        "Figure 2 shows the workflow.",
+        "This is a body paragraph.",
+    ])
+    expected = _expected_paragraphs(content)
+    roles_by_text = {item["text"]: item["role"] for item in expected}
+    assert_true(roles_by_text["Table 1 Model results"] == "table_caption", "plain English table caption string should use table_caption style")
+    assert_true(roles_by_text["表 2 变量描述"] == "table_caption", "plain Chinese table caption string should use table_caption style")
+    assert_true(roles_by_text["图 3 系统架构"] == "figure_caption", "plain Chinese figure caption string should use figure_caption style")
+    assert_true(roles_by_text["图 1 展示了系统架构。"] == "body", "plain Chinese figure-reference prose should remain body")
+    assert_true(roles_by_text["Figure 2 shows the workflow."] == "body", "plain English figure-reference prose should remain body")
+    assert_true(roles_by_text["This is a body paragraph."] == "body", "ordinary strings should remain body paragraphs")
+
+
+@case
 def image_manifest_matches_rendered_body_images() -> None:
     img_src = new_workdir("image_src")
     write_sample_png(img_src / "dot.png")
@@ -86,7 +126,7 @@ def qa_counts_mixed_inline_and_section_images() -> None:
     content = base_content([
         {"role": "image", "image": "inline.png"},
     ])
-    content["sections"][0]["images"] = ["inline.png", "section_only.png"]
+    content["sections"][0]["images"] = ["inline.png", "", "section_only.png"]
     write_json(work / "content.json", content)
     write_json(work / "format.json", base_format())
     write_json(work / "workflow_mode.json", {"mode": "developer"})
@@ -155,6 +195,47 @@ def qa_repair_plan_uses_relative_rebuild_command() -> None:
     command = plan["commands"]["rebuild_current_docx"]
     assert_true("build_generated.py" in command, "rebuild command should still point to build_generated.py")
     assert_true(str(work) not in command, f"rebuild command leaked absolute output path: {command}")
+
+
+@case
+def qa_repair_guides_cover_registered_issue_codes() -> None:
+    missing = sorted(code for code in OWNER_BY_CODE if code not in REPAIR_GUIDES)
+    assert_true(not missing, f"registered QA issue codes missing user-facing repair guides: {missing}")
+
+
+@case
+def qa_repair_plan_preserves_md_visual_workflow_command() -> None:
+    work = new_workdir("qa_md_visual_workflow_command")
+    write_json(
+        work / "workflow_mode.json",
+        {
+            "mode": "user",
+            "template": "demo.md",
+            "content": "demo.md",
+            "md": "demo.md",
+            "qa_level": "visual",
+            "golden_dir": "TestData/GoldenBaselines",
+            "update_golden": True,
+            "require_wps": True,
+            "auto_repair": True,
+            "repair_max_rounds": 4,
+            "repair_stop_no_improve": 2,
+        },
+    )
+    report = {
+        "mode": "user",
+        "passed": False,
+        "issues": [{"code": "PLACEHOLDER_TEXT_LEFT", "severity": "error", "message": "placeholder"}],
+        "counts": {},
+    }
+    plan = build_repair_plan(report, str(work))
+    command = plan["commands"]["rerun_current_pipeline"]
+    assert_true("--md demo.md" in command, f"MD workflow should rerun with --md: {command}")
+    assert_true("--template" not in command and "--content" not in command, f"MD workflow should not be rewritten as template/content: {command}")
+    assert_true("--qa-level visual" in command, f"QA level was not preserved: {command}")
+    assert_true("--auto-repair" in command and "--repair-max-rounds 4" in command, f"auto repair options were not preserved: {command}")
+    assert_true("--require-wps" in command and "--update-golden" in command, f"visual options were not preserved: {command}")
+    assert_true("--golden-dir TestData/GoldenBaselines" in command, f"golden dir was not preserved: {command}")
 
 
 @case

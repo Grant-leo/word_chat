@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import io
 import sys
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List
@@ -10,7 +12,7 @@ from typing import Any, Dict, List
 from docx import Document
 from pipeline_runner.artifacts import build_content_markdown, write_content_artifacts, write_format_artifacts
 from pipeline_runner.build_phase import generate_and_build_docx_phase
-from pipeline_runner.cli import build_arg_parser, dispatch_cli
+from pipeline_runner.cli import DEFAULT_GOLDEN_DIR, build_arg_parser, dispatch_cli
 from pipeline_runner.contracts import (
     has_contract_errors,
     validate_build_manifest,
@@ -29,7 +31,7 @@ from pipeline_runner.execution import ScriptExecutionResult, run_generated_scrip
 from pipeline_runner.io import normalize_mode, scan_inputs
 from pipeline_runner.qa import QADependencies, run_qa_phases
 from pipeline_runner.repair_loop import run_repair_loop
-from pipeline_runner.summary import build_completion_summary
+from pipeline_runner.summary import build_completion_summary, write_agent_summary
 from pipeline_runner.template_phase import write_template_profile_phase, write_template_requirements_phase
 from pipeline_runner.verification import VerificationError, _merge_content_results, double_verify
 
@@ -42,6 +44,7 @@ from regression_suite_modules.harness import (
     case,
     fail,
     new_workdir,
+    write_json,
 )
 
 PIPELINE_DIR = Path(__file__).resolve().parents[1]
@@ -220,6 +223,7 @@ def pipeline_cli_dispatches_md_parameter_and_single_file_modes() -> None:
     expect_exit_zero(parser.parse_args(["--template", "t.docx", "--content", "c.docx", "--auto-repair", "--no-qa", "--repair-max-rounds", "4"]))
     assert_true(calls[-1]["run_qa"] is True and calls[-1]["auto_repair"] is True, "auto repair should force QA on")
     assert_true(calls[-1]["repair_max_rounds"] == 4, "auto repair max rounds option was not passed")
+    assert_true(calls[-1]["golden_dir"] is None, "visual golden baseline should be opt-in by default")
 
     work = new_workdir("pipeline_cli")
     template_dir = work / "Templates"
@@ -230,6 +234,103 @@ def pipeline_cli_dispatches_md_parameter_and_single_file_modes() -> None:
     (inputs_dir / "only.md").write_text("# Paper", encoding="utf-8")
     expect_exit_zero(parser.parse_args(["--mode", "user"]), template_dir=str(template_dir), inputs_dir=str(inputs_dir))
     assert_true(calls[-1]["template"] == "only.pdf" and calls[-1]["content"] == "only.md", "single-file interactive dispatch changed")
+
+    expect_exit_zero(parser.parse_args(["--template", "given.docx", "--mode", "user"]), template_dir=str(template_dir), inputs_dir=str(inputs_dir))
+    assert_true(calls[-1]["template"] == "given.docx" and calls[-1]["content"] == "only.md", "partial template argument should still auto-select content")
+    expect_exit_zero(parser.parse_args(["--content", "given.md", "--mode", "user"]), template_dir=str(template_dir), inputs_dir=str(inputs_dir))
+    assert_true(calls[-1]["template"] == "only.pdf" and calls[-1]["content"] == "given.md", "partial content argument should still auto-select template")
+
+    expect_exit_zero(parser.parse_args(["--template", "t.docx", "--content", "c.docx", "--qa-level", "visual", "--update-golden"]))
+    assert_true(calls[-1]["golden_dir"] == DEFAULT_GOLDEN_DIR, "update-golden without explicit dir should use default baseline directory")
+
+    expect_exit_zero(parser.parse_args(["--agent-auto", "--mode", "auto", "--no-qa"]), template_dir=str(template_dir), inputs_dir=str(inputs_dir))
+    assert_true(calls[-1]["template"] == "only.pdf" and calls[-1]["content"] == "only.md", "agent-auto should non-interactively select single template/content")
+    assert_true(calls[-1]["mode"] == "user", "agent-auto auto mode should default to user")
+    assert_true(calls[-1]["run_qa"] is True and calls[-1]["auto_repair"] is True, "agent-auto should force QA and user auto-repair")
+    assert_true(calls[-1]["agent_auto"] is True, "agent-auto flag was not passed to the pipeline")
+
+    md_only = new_workdir("pipeline_cli_agent_md_only")
+    md_templates = md_only / "Templates"
+    md_inputs = md_only / "Inputs"
+    md_templates.mkdir()
+    md_inputs.mkdir()
+    (md_inputs / "paper.md").write_text("# 格式说明\n\n# 正文", encoding="utf-8")
+    expect_exit_zero(parser.parse_args(["--agent-auto"]), template_dir=str(md_templates), inputs_dir=str(md_inputs))
+    assert_true(calls[-1]["template"] is None and calls[-1]["content"] is None, "agent-auto pure MD should not pass template/content")
+    assert_true(calls[-1]["md_file"] == "paper.md", "agent-auto should use the single MD file as pure Markdown mode when no template exists")
+
+    (md_inputs / "second.md").write_text("# Another", encoding="utf-8")
+    try:
+        dispatch_cli(parser.parse_args(["--agent-auto"]), run_pipeline=fake_run, template_dir=str(md_templates), inputs_dir=str(md_inputs))
+    except SystemExit as exc:
+        assert_true(exc.code == 2, f"agent-auto multiple MD candidates should ask for selection, got exit {exc.code}")
+    else:
+        fail("agent-auto should not blind-pick among multiple pure MD candidates")
+
+
+@case
+def pipeline_agent_auto_guides_missing_and_ambiguous_inputs() -> None:
+    parser = build_arg_parser()
+    calls: List[Dict[str, Any]] = []
+
+    def fake_run(template_file, content_file, **kwargs):
+        calls.append({"template": template_file, "content": content_file, **kwargs})
+        return "ok"
+
+    def expect_exit(args, template_dir, inputs_dir, expected_code, expected_text):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            try:
+                dispatch_cli(args, run_pipeline=fake_run, template_dir=str(template_dir), inputs_dir=str(inputs_dir))
+            except SystemExit as exc:
+                assert_true(exc.code == expected_code, f"unexpected exit {exc.code}, output={buf.getvalue()}")
+                assert_true(expected_text in buf.getvalue(), f"agent-auto output missing guidance {expected_text!r}: {buf.getvalue()}")
+                report_path = Path(template_dir).parent / "Outputs" / "_agent_preflight_latest" / "agent_preflight_report.json"
+                assert_true(report_path.exists(), f"agent-auto preflight report missing: {report_path}")
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                assert_true(report.get("next_steps"), f"preflight report missing next steps: {report}")
+                return report
+        fail("agent-auto should exit instead of silently continuing")
+
+    empty = new_workdir("pipeline_agent_auto_empty")
+    empty_templates = empty / "Templates"
+    empty_inputs = empty / "Inputs"
+    empty_templates.mkdir()
+    empty_inputs.mkdir()
+    expect_exit(parser.parse_args(["--agent-auto"]), empty_templates, empty_inputs, 1, "没有找到可运行的模板和内容")
+
+    missing_content = new_workdir("pipeline_agent_auto_missing_content")
+    templates = missing_content / "Templates"
+    inputs = missing_content / "Inputs"
+    templates.mkdir()
+    inputs.mkdir()
+    (templates / "one.docx").write_bytes(b"")
+    expect_exit(parser.parse_args(["--agent-auto"]), templates, inputs, 1, "请把模板 DOCX/PDF 放入 Templates/")
+
+    ambiguous_template = new_workdir("pipeline_agent_auto_multi_template")
+    templates = ambiguous_template / "Templates"
+    inputs = ambiguous_template / "Inputs"
+    templates.mkdir()
+    inputs.mkdir()
+    (templates / "a.docx").write_bytes(b"")
+    (templates / "b.pdf").write_bytes(b"")
+    (inputs / "paper.docx").write_bytes(b"")
+    template_report = expect_exit(parser.parse_args(["--agent-auto"]), templates, inputs, 2, "模板存在多个候选")
+    assert_true("作为模板" in "\n".join(template_report["next_steps"]), f"template ambiguity next step is unclear: {template_report}")
+
+    ambiguous_content = new_workdir("pipeline_agent_auto_multi_content")
+    templates = ambiguous_content / "Templates"
+    inputs = ambiguous_content / "Inputs"
+    templates.mkdir()
+    inputs.mkdir()
+    (templates / "template.docx").write_bytes(b"")
+    (inputs / "a.docx").write_bytes(b"")
+    (inputs / "b.md").write_text("# Paper", encoding="utf-8")
+    content_report = expect_exit(parser.parse_args(["--agent-auto"]), templates, inputs, 2, "内容存在多个候选")
+    content_steps = "\n".join(content_report["next_steps"])
+    assert_true("作为内容" in content_steps, f"content ambiguity next step is unclear: {content_report}")
+    assert_true("作为模板" not in content_steps, f"content ambiguity should not mention template selection: {content_report}")
+    assert_true(not calls, "missing/ambiguous agent-auto inputs should not call the pipeline")
 
 
 @case
@@ -322,6 +423,15 @@ def pipeline_auto_repair_patches_build_script_and_reruns_qa() -> None:
     assert_true(qa.get("passed") is True, f"QA was not rerun to passing state: {qa.get('issues')}")
     loop_report = json.loads((work / "repair_loop_report.json").read_text(encoding="utf-8"))
     assert_true(loop_report["rounds_run"] >= 1, "repair loop did not record a repair round")
+    assert_true(
+        "Review remaining warnings in qa_report.md and repair_loop_report.md." not in loop_report.get("manual_check_required", []),
+        "zero-warning repair report should not ask users to review remaining warnings",
+    )
+    loop_text = (work / "repair_loop_report.md").read_text(encoding="utf-8")
+    assert_true(
+        "and remaining warnings" not in loop_text,
+        "zero-warning repair markdown should not tell users to inspect remaining warnings",
+    )
     assert_true(private_file.read_bytes() == private_before, "auto repair modified a private input file")
     assert_true(core_file.read_bytes() == core_before, "auto repair modified a core engine file")
 
@@ -472,8 +582,11 @@ def pipeline_auto_repair_strict_requires_conformance_dependency() -> None:
         python_executable=sys.executable,
     )
     report = json.loads((work / "repair_loop_report.json").read_text(encoding="utf-8"))
+    conformance_report = json.loads((work / "conformance_report.json").read_text(encoding="utf-8"))
     assert_true(not result.ok, "strict auto repair should not converge without conformance QA")
     assert_true("CONFORMANCE_QA_UNAVAILABLE" in report["final_error_codes"], f"missing conformance error was not recorded: {report}")
+    assert_true(report["blockers"] and report["blockers"][0]["code"] == "CONFORMANCE_QA_UNAVAILABLE", "missing conformance dependency should be a blocker")
+    assert_true("conformance_report.md" in conformance_report.get("next_action", ""), f"dependency report did not explain next action: {conformance_report}")
 
 
 @case
@@ -539,6 +652,53 @@ def pipeline_auto_repair_visual_preserves_visual_options() -> None:
     assert_true(all(call["require_wps"] is True for call in visual_calls), f"require_wps was not preserved: {visual_calls}")
     assert_true(all(call["update_golden"] is True for call in visual_calls), f"update_golden was not preserved: {visual_calls}")
     assert_true(all(str(call["golden_dir"]).endswith("Golden") for call in visual_calls), f"golden_dir was not preserved: {visual_calls}")
+
+
+@case
+def pipeline_auto_repair_blocks_unrepairable_visual_errors() -> None:
+    work = new_workdir("pipeline_auto_repair_visual_blocker")
+    _write_repair_loop_fixture(work)
+
+    def passing_qa(out_dir, mode="user", output_docx_name="final.docx"):
+        return _fake_repair_report(out_dir, code="NO_ISSUE", severity="info")
+
+    def passing_conformance(out_dir, mode="user", output_docx_name="final.docx", project_root=""):
+        return _write_conformance_report(out_dir, passed=True)
+
+    def failing_visual(out_dir, output_docx_name="final.docx", project_root="", render_all_pages=True, require_wps=False, golden_dir=None, update_golden=False):
+        report = {
+            "schema_version": 1,
+            "mode": "user",
+            "passed": False,
+            "counts": {},
+            "issues": [{"severity": "error", "code": "PAGE_IMAGE_UNREADABLE", "message": "bad png", "detail": "page=2"}],
+            "next_action": "Fix rendering tools.",
+        }
+        Path(out_dir, "visual_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        return report
+
+    deps = QADependencies(
+        qa_check_and_write=passing_qa,
+        conformance_check_and_write=passing_conformance,
+        visual_check_and_write=failing_visual,
+        optional_import_detail=lambda name: "",
+    )
+    result = run_repair_loop(
+        str(work),
+        mode="user",
+        output_docx_name="final.docx",
+        qa_level="visual",
+        project_root=str(REPO_ROOT),
+        max_rounds=2,
+        stop_no_improve=1,
+        deps=deps,
+        run_generated_script=run_generated_script,
+        python_executable=sys.executable,
+    )
+    report = json.loads((work / "repair_loop_report.json").read_text(encoding="utf-8"))
+    assert_true(not result.ok, "unrepairable visual QA error should stop auto repair")
+    assert_true(result.status == "stopped_needs_user_input", f"visual blocker should not be reported as missing user file: {result.status}")
+    assert_true(report["blockers"] and report["blockers"][0]["code"] == "PAGE_IMAGE_UNREADABLE", f"visual error was not surfaced as blocker: {report}")
 
 
 @case
@@ -804,12 +964,283 @@ def pipeline_qa_runs_strict_and_blocks_failures() -> None:
 
 
 @case
+def pipeline_qa_points_to_conformance_report_when_strict_fails() -> None:
+    work = new_workdir("pipeline_qa_conformance_hint")
+
+    def passing_qa(out_dir, mode, output_docx_name):
+        return {"passed": True, "issues": [], "counts": {}, "mode": mode, "repair_plan": {"steps": [], "passed": True}}
+
+    def failing_conformance(out_dir, mode, output_docx_name, project_root):
+        return {
+            "passed": False,
+            "issues": [
+                {"severity": "error", "code": "STYLE_MISMATCH", "message": f"bad style {idx}", "detail": "body"}
+                for idx in range(10)
+            ],
+            "counts": {},
+            "next_action": "Fix conformance mismatch.",
+        }
+
+    deps = QADependencies(
+        qa_check_and_write=passing_qa,
+        conformance_check_and_write=failing_conformance,
+        visual_check_and_write=None,
+        optional_import_detail=lambda name: "",
+    )
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        ok = run_qa_phases(str(work), mode="developer", output_docx_name="最终论文.docx", qa_level="strict", project_root=str(work), deps=deps)
+    output = buf.getvalue()
+    assert_true(not ok, "strict QA should fail when conformance fails")
+    assert_true("conformance_report.md" in output, f"conformance report was not routed in terminal hint: {output}")
+    assert_true("请看 conformance_report.md" in output, f"overflow summary pointed at the wrong report: {output}")
+    assert_true("结构 QA 已通过" in output, f"terminal hint should avoid implying structural QA repair plan is enough: {output}")
+
+
+@case
+def pipeline_qa_writes_report_when_conformance_dependency_missing() -> None:
+    work = new_workdir("pipeline_qa_missing_conformance_report")
+
+    def passing_qa(out_dir, mode, output_docx_name):
+        return {"passed": True, "issues": [], "counts": {}, "mode": mode, "repair_plan": {"steps": [], "passed": True}}
+
+    deps = QADependencies(
+        qa_check_and_write=passing_qa,
+        conformance_check_and_write=None,
+        visual_check_and_write=None,
+        optional_import_detail=lambda name: "missing module",
+    )
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        ok = run_qa_phases(str(work), mode="developer", output_docx_name="最终论文.docx", qa_level="strict", project_root=str(work), deps=deps)
+    output = buf.getvalue()
+    report = json.loads((work / "conformance_report.json").read_text(encoding="utf-8"))
+    assert_true(not ok, "strict QA should fail closed when conformance dependency is missing")
+    assert_true((work / "conformance_report.md").exists(), "missing conformance dependency should write markdown report")
+    assert_true(report["issues"][0]["code"] == "CONFORMANCE_QA_UNAVAILABLE", f"wrong dependency issue: {report}")
+    assert_true("conformance_report.md" in output, f"terminal output did not route to conformance report: {output}")
+
+
+@case
+def pipeline_qa_writes_report_when_visual_dependency_missing() -> None:
+    work = new_workdir("pipeline_qa_missing_visual_report")
+
+    def passing_qa(out_dir, mode, output_docx_name):
+        return {"passed": True, "issues": [], "counts": {}, "mode": mode, "repair_plan": {"steps": [], "passed": True}}
+
+    def passing_conformance(out_dir, mode, output_docx_name, project_root):
+        return {"passed": True, "issues": [], "counts": {}, "next_action": "ok"}
+
+    deps = QADependencies(
+        qa_check_and_write=passing_qa,
+        conformance_check_and_write=passing_conformance,
+        visual_check_and_write=None,
+        optional_import_detail=lambda name: "missing visual",
+    )
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        ok = run_qa_phases(str(work), mode="developer", output_docx_name="最终论文.docx", qa_level="visual", project_root=str(work), deps=deps)
+    output = buf.getvalue()
+    report = json.loads((work / "visual_report.json").read_text(encoding="utf-8"))
+    assert_true(not ok, "visual QA should fail closed when visual dependency is missing")
+    assert_true((work / "visual_report.md").exists(), "missing visual dependency should write markdown report")
+    assert_true(report["issues"][0]["code"] == "VISUAL_QA_UNAVAILABLE", f"wrong dependency issue: {report}")
+    assert_true("visual_report.md" in output, f"terminal output did not route to visual report: {output}")
+
+
+@case
 def pipeline_summary_mentions_outputs_and_mode() -> None:
     summary = build_completion_summary("2026-05-27_demo", "最终论文.docx", "developer")
     assert_true("Outputs/2026-05-27_demo/" in summary, "output directory missing from completion summary")
     assert_true("最终论文.docx" in summary, "output docx missing from completion summary")
     assert_true("当前模式: 开发者" in summary, "developer mode missing from completion summary")
     assert_true("build_generated.py" in summary, "user fine-tuning target missing from completion summary")
+    assert_true("agent_summary.md" in summary, "agent handoff summary missing from completion summary")
+
+
+@case
+def pipeline_agent_summary_writes_user_handoff() -> None:
+    work = new_workdir("pipeline_agent_summary")
+    write_workflow_mode(
+        str(work),
+        mode="user",
+        template_path="template.docx",
+        content_path="content.docx",
+        run_qa=True,
+        qa_level="strict",
+        golden_dir=None,
+        update_golden=False,
+        require_wps=False,
+        auto_repair=True,
+        agent_auto=True,
+        repair_max_rounds=3,
+        repair_stop_no_improve=2,
+    )
+    (work / "最终论文.docx").write_bytes(b"synthetic")
+    write_json(
+        work / "qa_report.json",
+        {
+            "passed": True,
+            "issues": [],
+            "counts": {},
+            "next_action": "ok",
+        },
+    )
+    write_json(
+        work / "conformance_report.json",
+        {
+            "passed": True,
+            "issues": [],
+            "counts": {},
+            "next_action": "ok",
+        },
+    )
+    write_json(
+        work / "repair_loop_report.json",
+        {
+            "status": "converged",
+            "rounds_run": 1,
+            "final_errors": 0,
+            "final_warnings": 1,
+            "manual_check_required": ["打开最终 DOCX 核对图片。"],
+        },
+    )
+    json_path, md_path = write_agent_summary(str(work), "2026-05-29_demo", "最终论文.docx", "user")
+    summary = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    text = Path(md_path).read_text(encoding="utf-8")
+    assert_true(summary["agent_auto"] is True and summary["auto_repair"] is True, "agent summary should preserve workflow flags")
+    assert_true(summary["output_docx"] == "Outputs/2026-05-29_demo/最终论文.docx", "agent summary should use run-relative output paths")
+    assert_true(summary["repair_loop"]["status"] == "converged", "repair loop status missing from agent summary")
+    assert_true(summary["manual_check_required"] == ["打开最终 DOCX 核对图片。"], "manual checks were not preserved")
+    assert_true("Agent 排版摘要" in text and "最终论文" in text, "agent summary markdown missing user-facing handoff")
+
+
+@case
+def pipeline_agent_summary_does_not_claim_qa_passed_when_qa_disabled() -> None:
+    work = new_workdir("pipeline_agent_summary_no_qa")
+    write_workflow_mode(
+        str(work),
+        mode="user",
+        template_path="template.docx",
+        content_path="content.docx",
+        run_qa=False,
+        qa_level="basic",
+        golden_dir=None,
+        update_golden=False,
+        require_wps=False,
+        auto_repair=False,
+        agent_auto=False,
+    )
+    (work / "最终论文.docx").write_bytes(b"synthetic")
+    json_path, _ = write_agent_summary(str(work), "2026-05-29_noqa", "最终论文.docx", "user")
+    summary = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    assert_true(summary["status_label"] == "已生成 DOCX，未运行自动 QA", f"summary overstated QA status: {summary['status_label']}")
+
+
+@case
+def pipeline_agent_summary_requires_expected_strict_reports() -> None:
+    work = new_workdir("pipeline_agent_summary_missing_strict_report")
+    write_workflow_mode(
+        str(work),
+        mode="user",
+        template_path="template.docx",
+        content_path="content.docx",
+        run_qa=True,
+        qa_level="strict",
+        golden_dir=None,
+        update_golden=False,
+        require_wps=False,
+        auto_repair=True,
+        agent_auto=True,
+    )
+    (work / "最终论文.docx").write_bytes(b"synthetic")
+    write_json(work / "qa_report.json", {"passed": True, "issues": [], "counts": {}, "next_action": "ok"})
+    json_path, md_path = write_agent_summary(str(work), "2026-05-29_missing_strict", "最终论文.docx", "user")
+    summary = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    text = Path(md_path).read_text(encoding="utf-8")
+    assert_true(summary["status_label"] == "已生成 DOCX，但自动 QA 报告不完整", f"summary overstated QA status: {summary['status_label']}")
+    assert_true(summary["missing_required_reports"] == ["conformance"], f"missing strict report was not recorded: {summary}")
+    assert_true("DOCX/XML 合规 QA 未生成" in text, "agent summary should tell users which required QA report is missing")
+
+
+@case
+def pipeline_agent_summary_failed_before_docx_does_not_blame_missing_later_qa() -> None:
+    work = new_workdir("pipeline_agent_summary_failed_before_docx")
+    write_workflow_mode(
+        str(work),
+        mode="user",
+        template_path="template.docx",
+        content_path="content.docx",
+        run_qa=True,
+        qa_level="strict",
+        golden_dir=None,
+        update_golden=False,
+        require_wps=False,
+        auto_repair=False,
+        agent_auto=True,
+    )
+    write_json(
+        work / "qa_report.json",
+        {
+            "passed": False,
+            "issues": [{"severity": "error", "code": "EXTRACTION_VERIFICATION_FAILED"}],
+            "counts": {},
+            "next_action": "查看 qa_repair_plan.md，先处理提取验证失败。",
+        },
+    )
+    json_path, md_path = write_agent_summary(
+        str(work),
+        "2026-05-29_failed_before_docx",
+        "最终论文.docx",
+        "user",
+        pipeline_status="failed",
+        note="模板格式提取多次验证无法收敛。",
+    )
+    summary = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    text = Path(md_path).read_text(encoding="utf-8")
+    assert_true(summary["missing_required_reports"] == [], f"early failure should not require later QA reports: {summary}")
+    assert_true("合规 QA 未生成" not in text, "early failure should not send users toward conformance QA")
+    assert_true("提取验证失败" in text or "qa_repair_plan.md" in text, "early failure should preserve the real next action")
+
+
+@case
+def pipeline_agent_summary_localizes_manual_checks_and_skips_empty_warning_prompt() -> None:
+    work = new_workdir("pipeline_agent_summary_manual_checks")
+    write_workflow_mode(
+        str(work),
+        mode="user",
+        template_path="template.docx",
+        content_path="content.docx",
+        run_qa=True,
+        qa_level="strict",
+        golden_dir=None,
+        update_golden=False,
+        require_wps=False,
+        auto_repair=True,
+        agent_auto=True,
+    )
+    (work / "最终论文.docx").write_bytes(b"synthetic")
+    write_json(work / "qa_report.json", {"passed": True, "issues": [], "counts": {}, "next_action": "ok"})
+    write_json(work / "conformance_report.json", {"passed": True, "issues": [], "counts": {}, "next_action": "ok"})
+    write_json(
+        work / "repair_loop_report.json",
+        {
+            "status": "converged",
+            "rounds_run": 0,
+            "final_errors": 0,
+            "final_warnings": 0,
+            "manual_check_required": [
+                "Open the final DOCX in Word/WPS for visual review.",
+                "Review remaining warnings in qa_report.md and repair_loop_report.md.",
+            ],
+            "remaining_manual_note": "No remaining warnings were reported by the enabled QA levels.",
+        },
+    )
+    json_path, md_path = write_agent_summary(str(work), "2026-05-29_manual", "最终论文.docx", "user")
+    summary = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    text = Path(md_path).read_text(encoding="utf-8")
+    assert_true(summary["manual_check_required"] == ["用 Word/WPS 打开最终 DOCX，核对分页、图片、公式、表格和目录。"], f"manual checks were noisy: {summary['manual_check_required']}")
+    assert_true("Review remaining warnings" not in text, "agent summary should not expose English warning boilerplate when no warnings remain")
 
 
 @case
@@ -960,6 +1391,92 @@ def pipeline_verification_fails_when_no_majority_signature() -> None:
         assert_true(len(calls) == 3, "unresolved mismatch should stop after the third run")
         return
     fail("unresolved extraction mismatch should raise VerificationError")
+
+
+@case
+def run_pipeline_writes_repair_plan_for_verification_failure() -> None:
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    import run_pipeline as runner
+
+    work = new_workdir("run_pipeline_verification_failure")
+    template_dir = work / "Templates"
+    inputs_dir = work / "Inputs"
+    outputs_dir = work / "Outputs"
+    template_dir.mkdir()
+    inputs_dir.mkdir()
+    outputs_dir.mkdir()
+    (template_dir / "template.docx").write_text("template", encoding="utf-8")
+    (inputs_dir / "content.docx").write_text("content", encoding="utf-8")
+
+    original = {
+        "TEMPLATE_DIR": runner.TEMPLATE_DIR,
+        "INPUTS_DIR": runner.INPUTS_DIR,
+        "OUTPUTS_DIR": runner.OUTPUTS_DIR,
+        "double_verify": runner.double_verify,
+    }
+
+    def failing_verify(*args, **kwargs):
+        raise VerificationError("synthetic verification mismatch")
+
+    try:
+        runner.TEMPLATE_DIR = str(template_dir)
+        runner.INPUTS_DIR = str(inputs_dir)
+        runner.OUTPUTS_DIR = str(outputs_dir)
+        runner.double_verify = failing_verify
+        result = runner.run("template.docx", "content.docx", mode="user", run_qa=True)
+    finally:
+        runner.TEMPLATE_DIR = original["TEMPLATE_DIR"]
+        runner.INPUTS_DIR = original["INPUTS_DIR"]
+        runner.OUTPUTS_DIR = original["OUTPUTS_DIR"]
+        runner.double_verify = original["double_verify"]
+
+    assert_true(result is None, "pipeline should stop cleanly on verification failure")
+    out_dirs = sorted(outputs_dir.iterdir())
+    assert_true(out_dirs, "pipeline did not create an output directory")
+    report = json.loads((out_dirs[-1] / "qa_report.json").read_text(encoding="utf-8"))
+    assert_true(report["issues"][0]["code"] == "EXTRACTION_VERIFICATION_FAILED", f"wrong verification failure issue: {report}")
+    assert_true((out_dirs[-1] / "qa_repair_plan.md").exists(), "verification failure did not write repair plan")
+    plan = json.loads((out_dirs[-1] / "qa_repair_plan.json").read_text(encoding="utf-8"))
+    assert_true("build_manifest.json" not in plan["open_first"], f"verification failure plan should not point at later-stage artifacts: {plan}")
+    assert_true(not plan["commands"].get("rebuild_current_docx"), f"verification failure should not suggest rebuilding a missing generated script: {plan}")
+
+
+@case
+def run_pipeline_agent_auto_writes_preflight_report_for_missing_file() -> None:
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    import run_pipeline as runner
+
+    work = new_workdir("run_pipeline_agent_preflight_missing_file")
+    template_dir = work / "Templates"
+    inputs_dir = work / "Inputs"
+    outputs_dir = work / "Outputs"
+    template_dir.mkdir()
+    inputs_dir.mkdir()
+    outputs_dir.mkdir()
+
+    original = {
+        "TEMPLATE_DIR": runner.TEMPLATE_DIR,
+        "INPUTS_DIR": runner.INPUTS_DIR,
+        "OUTPUTS_DIR": runner.OUTPUTS_DIR,
+    }
+    try:
+        runner.TEMPLATE_DIR = str(template_dir)
+        runner.INPUTS_DIR = str(inputs_dir)
+        runner.OUTPUTS_DIR = str(outputs_dir)
+        result = runner.run(None, None, md_file="missing.md", mode="user", agent_auto=True)
+    finally:
+        runner.TEMPLATE_DIR = original["TEMPLATE_DIR"]
+        runner.INPUTS_DIR = original["INPUTS_DIR"]
+        runner.OUTPUTS_DIR = original["OUTPUTS_DIR"]
+
+    assert_true(result is None, "missing explicit agent input should stop before pipeline run")
+    report_path = outputs_dir / "_agent_preflight_latest" / "agent_preflight_report.json"
+    assert_true(report_path.exists(), "missing explicit agent input should write a preflight report")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert_true(report["status"] == "blocked_input_resolution", f"wrong preflight status: {report}")
+    assert_true(report.get("next_steps"), f"preflight report should include next steps: {report}")
 
 
 @case

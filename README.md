@@ -11,7 +11,7 @@
 
 ## 快速开始
 
-默认你已经在 VSCode 中安装了 Agent 插件。普通用户不需要手动记命令，只需要把模板和内容放好，然后把下面的提示词发给 Agent。
+默认你已经在 VSCode 中安装了 Agent 插件。普通用户不需要打开终端，也不需要手动记命令；把模板和内容放好，然后把下面的提示词发给 Agent。
 
 推荐安装配套预览插件：在 VSCode 扩展商店搜索 `DOCX Live Preview` 并安装，用来预览生成的 Word 文档。
 
@@ -26,8 +26,9 @@
 请读取本项目的 AGENTS.md、README.md 和 Paper_Project/基础操作.md。
 我已经把论文模板放在 Templates/，把论文内容放在 Inputs/。模板可能是 DOCX，也可能是 PDF。
 请先检查 Python 依赖是否齐全：python-docx、Pillow、lxml；缺失时请帮我安装。
-请帮我检查文件是否齐全，选择合适的模板和内容，以普通用户模式运行论文排版流水线，并开启 --auto-repair 自动修复闭环。若模板是 PDF，请读取 template_profile.md 和 qa_report.md 说明 PDF 提取置信度与风险。
-运行完成后，请读取最新 Outputs 目录里的 repair_loop_report.md、qa_report.md、qa_repair_plan.md、template_profile.md、格式提取.md、内容提取.md，并告诉我：
+请使用项目的 Agent 自动入口完成排版：自动扫描 Templates/ 和 Inputs/，能唯一确定文件时直接运行；有多个候选时只问我选择哪一个。
+请以普通用户模式运行，开启自动修复闭环，能自动修的 QA 问题请直接修复并重跑。若模板是 PDF，请读取 template_profile.md 和 qa_report.md 说明 PDF 提取置信度与风险。
+运行完成后，请优先读取最新 Outputs 目录里的 agent_summary.md，再读取 repair_loop_report.md、qa_report.md、qa_repair_plan.md、template_profile.md、格式提取.md、内容提取.md，并告诉我：
 1. 最终论文 docx 在哪里；
 2. QA 是否通过；
 3. 自动修复了什么，是否还有需要我补文件或人工检查的事项。
@@ -65,11 +66,9 @@
 告诉我最终 DOCX 位置、自动修复了什么、还剩什么问题、需要我在 Word/WPS 里人工检查什么。
 ```
 
-命令形式：
+Agent 内部优先使用项目的自动入口；普通用户不用自己输入 Python 命令。开发者需要手动复现时，可在高级场景下使用 `run_pipeline.py --agent-auto` 或显式传入模板/内容参数。
 
-```bash
-python run_pipeline.py --mode user --auto-repair --template <template.docx-or.pdf> --content <content.docx-or-md>
-```
+如果流程在预检、QA、依赖或自动修复阶段中断，Agent 必须明确告诉用户下一步该做什么；预检阶段会写入 `Outputs/_agent_preflight_latest/agent_preflight_report.md`，正式运行后优先看 `agent_summary.md`。
 
 自动修复闭环会生成 `repair_loop_report.md/json`，最多运行有限轮次，只允许修改本次输出目录的 `build_generated.py`。如果连续修复没有减少 error，或遇到缺图、扫描 PDF、内容缺失等必须由用户补文件的问题，会停止并说明原因。即使自动 QA 已无 error，也不代表 100% 正确，最终仍建议用 Word/WPS 做视觉检查。
 
@@ -83,6 +82,7 @@ python run_pipeline.py --mode user --auto-repair --template <template.docx-or.pd
 Outputs/日期_内容名/
 ├── 最终论文.docx
 ├── build_generated.py
+├── agent_summary.md / agent_summary.json
 ├── qa_report.md / qa_report.json
 ├── qa_repair_plan.md / qa_repair_plan.json
 ├── repair_loop_report.md / repair_loop_report.json   <- --auto-repair 时生成
@@ -97,6 +97,7 @@ Outputs/日期_内容名/
 最常看的文件：
 
 - `最终论文.docx`：生成结果。
+- `agent_summary.md`：面向用户和 Agent 的最终摘要，先看它。
 - `qa_report.md`：是否有图片、公式、表格、占位符、内容缺失等问题。
 - `qa_repair_plan.md`：下一步该修哪里，适合直接交给 AI 继续处理。
 - `build_generated.py`：本次文档的用户级微调脚本。
@@ -128,6 +129,7 @@ build_generated.py ─────────→ 最终论文.docx
 核心入口：
 
 - `run_pipeline.py`：一键运行入口。
+- `run_pipeline.py --agent-auto`：Agent-first 自动入口；自动扫描、唯一选择、普通用户模式、自动修复、写出 `agent_summary.md/json`。
 - `format_extractor.py`：提取 DOCX/PDF 模板格式；PDF 会区分文字说明模板、精排样张模板、扫描/不可解析模板。
 - `content_parser.py`：提取 DOCX 内容。
 - `md_parser.py`：解析 Markdown 内容和格式说明。
@@ -169,10 +171,11 @@ build_generated.py ─────────→ 最终论文.docx
 
 ## 当前验证基线
 
-截至 2026-05-28：
+截至 2026-05-29：
 
-- 合成回归：`130 passed, 0 failed`
+- 合成回归：`150 passed, 0 failed`
 - 自动修复闭环回归：可修复 QA error、连续无改善停止、needs_user_file 停止、strict/visual QA 依赖缺失、visual 参数保持、报告路径脱敏均已覆盖
+- Agent-first 自动入口：`--agent-auto` 可自动扫描单候选模板/内容，默认普通用户自动修复，并写出 `agent_summary.md/json`
 - PDF 模板端到端 strict QA：合成文字说明 PDF 模板 + DOCX 内容，`passed`
 - PDF 极端压力测试：9 个场景覆盖大写扩展名、精排样张、横向页面、稀疏说明、扫描/损坏/空白/过短 PDF，`9/9` 符合预期
 - 端到端 strict QA：5 个复杂测试文本 × 3 个模板，`15/15 passed`
@@ -195,11 +198,11 @@ Put the template in `Templates/`, put the content file in `Inputs/`, then send t
 ```text
 Please read AGENTS.md, README.md, and Paper_Project/基础操作.md.
 I have placed the template in Templates/ and the paper content in Inputs/. The template may be DOCX or PDF.
-Please check the files, run the paper formatting pipeline in user mode with --auto-repair, then inspect the latest Outputs folder.
+Please use the Agent-first entry to scan the files, run the paper formatting pipeline in user mode with automatic repair, then inspect agent_summary.md in the latest Outputs folder first.
 Report where the final DOCX is, whether automatic QA converged, what was repaired, and what I should still check manually.
 ```
 
-Outputs are written to `Outputs/<date_content>/`. Use `repair_loop_report.md`, `qa_report.md`, and `qa_repair_plan.md` to inspect issues.
+Outputs are written to `Outputs/<date_content>/`. Read `agent_summary.md` first, then use `repair_loop_report.md`, `qa_report.md`, and `qa_repair_plan.md` to inspect details.
 
 ## License
 

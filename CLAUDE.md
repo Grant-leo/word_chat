@@ -89,9 +89,31 @@ Use the mode recorded in `Outputs/<latest>/workflow_mode.json` when it exists.
 
 If no mode is known and the user has not said they are the developer, use `user`.
 
+### 3.5 Agent-First Default
+
+Ordinary users are expected to be guided by an Agent, not by terminal commands.
+When the user asks you to start formatting, run the Agent entry first:
+
+```bash
+python run_pipeline.py --agent-auto
+```
+
+This non-interactive path scans `Templates/` and `Inputs/`, auto-selects only
+when there is a single valid choice, defaults to `user` mode, enables the
+bounded auto-repair loop, and writes `agent_summary.md/json`. If there are
+multiple candidates, ask the user for the file name only.
+
+If anything interrupts before or during the run, do not leave ordinary users
+waiting without direction. Read or write the relevant `agent_preflight_report.md`,
+`agent_summary.md`, or QA report, then state the next concrete action they
+should take.
+
 ### 4. Run Pipeline
 
 ```bash
+# Agent-first ordinary user workflow
+python run_pipeline.py --agent-auto
+
 # DOCX template + DOCX content
 python run_pipeline.py --mode user --template <模板文件名> --content <内容文件名>
 
@@ -124,6 +146,7 @@ python run_pipeline.py
 
 Open the newest `Outputs/<run>/` directory and inspect:
 
+- `agent_summary.md` / `agent_summary.json`: user-facing handoff; read this first when present.
 - `格式提取.md`: template format extraction summary.
 - `内容提取.md`: content extraction summary.
 - `template_profile.md`: template capability and risk flags.
