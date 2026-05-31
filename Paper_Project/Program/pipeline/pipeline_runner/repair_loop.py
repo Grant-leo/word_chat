@@ -20,6 +20,11 @@ except Exception:  # pragma: no cover - best-effort report hardening
     def sanitize_value(value, project_root=None):
         return value
 
+try:
+    from .qa import _write_structural_dependency_handoff
+except Exception:  # pragma: no cover - repair loop can still write a minimal fallback
+    _write_structural_dependency_handoff = None
+
 
 NEEDS_USER_AUTO_LEVELS = {
     "needs_user_file",
@@ -40,13 +45,29 @@ REBUILD_ONLY_CODES = {"MISSING_DOCX", "DOCX_XML_UNREADABLE"}
 PLACEHOLDER_MARKER = "# AUTO_REPAIR_PLACEHOLDER_CLEANUP_V1"
 REFERENCE_EAST_ASIA_MARKER = "# AUTO_REPAIR_REFERENCE_EAST_ASIA_FONT_V1"
 REPORT_BLOCKER_GUIDES = {
+    "STRUCTURAL_QA_UNAVAILABLE": {
+        "auto_level": "needs_user_input",
+        "user_action": "修复 qa_checker.py / qa_checker_modules 的导入或依赖后，重新运行完整流水线；先查看 qa_report.md 和 qa_repair_plan.md。",
+    },
+    "STRUCTURAL_QA_FAILED": {
+        "auto_level": "needs_user_input",
+        "user_action": "修复 qa_checker.py / qa_checker_modules 的运行异常后，重新运行完整流水线；先查看 qa_report.md 和 qa_repair_plan.md。",
+    },
     "CONFORMANCE_QA_UNAVAILABLE": {
         "auto_level": "needs_user_input",
         "user_action": "修复 strict conformance QA 依赖后重跑；先查看 conformance_report.md。",
     },
+    "CONFORMANCE_QA_FAILED": {
+        "auto_level": "needs_user_input",
+        "user_action": "修复 qa_conformance.py / qa_conformance_modules 的运行异常后重跑 strict QA；先查看 conformance_report.md。",
+    },
     "VISUAL_QA_UNAVAILABLE": {
         "auto_level": "needs_user_input",
         "user_action": "修复 visual QA 依赖后重跑；先查看 visual_report.md。",
+    },
+    "VISUAL_QA_FAILED": {
+        "auto_level": "needs_user_input",
+        "user_action": "修复 qa_visual.py / qa_visual_modules、Word COM 或 Poppler 渲染异常后重跑 visual QA；先查看 visual_report.md。",
     },
     "PDF_EXPORT_FAILED": {
         "auto_level": "needs_user_input",
@@ -302,8 +323,25 @@ def _run_qa_state(
     require_wps: bool = False,
 ) -> Dict[str, Any]:
     if deps.qa_check_and_write is None:
-        raise RuntimeError("qa_checker.py is required for auto repair")
-    deps.qa_check_and_write(str(out_path), mode=mode, output_docx_name=output_docx_name)
+        _write_structural_failure_report(
+            out_path,
+            mode=mode,
+            code="STRUCTURAL_QA_UNAVAILABLE",
+            detail=_optional_detail(deps, "qa_checker"),
+            project_root=project_root,
+        )
+        return _read_state(out_path, qa_level)
+    try:
+        deps.qa_check_and_write(str(out_path), mode=mode, output_docx_name=output_docx_name)
+    except Exception as exc:
+        _write_structural_failure_report(
+            out_path,
+            mode=mode,
+            code="STRUCTURAL_QA_FAILED",
+            detail=_exception_detail(exc, project_root),
+            project_root=project_root,
+        )
+        return _read_state(out_path, qa_level)
     if qa_level in ("strict", "visual") and deps.conformance_check_and_write is None:
         _write_dependency_report(
             out_path,
@@ -316,12 +354,24 @@ def _run_qa_state(
         )
         return _read_state(out_path, qa_level)
     if qa_level in ("strict", "visual"):
-        deps.conformance_check_and_write(
-            str(out_path),
-            mode=mode,
-            output_docx_name=output_docx_name,
-            project_root=project_root,
-        )
+        try:
+            deps.conformance_check_and_write(
+                str(out_path),
+                mode=mode,
+                output_docx_name=output_docx_name,
+                project_root=project_root,
+            )
+        except Exception as exc:
+            _write_dependency_report(
+                out_path,
+                report_name="conformance_report",
+                mode=mode,
+                code="CONFORMANCE_QA_FAILED",
+                message="strict conformance QA crashed before it could finish.",
+                detail=_exception_detail(exc, project_root),
+                project_root=project_root,
+            )
+            return _read_state(out_path, qa_level)
     if qa_level == "visual" and deps.visual_check_and_write is None:
         _write_dependency_report(
             out_path,
@@ -334,16 +384,32 @@ def _run_qa_state(
         )
         return _read_state(out_path, qa_level)
     if qa_level == "visual":
-        deps.visual_check_and_write(
-            str(out_path),
-            output_docx_name=output_docx_name,
-            project_root=project_root,
-            render_all_pages=True,
-            require_wps=bool(require_wps),
-            golden_dir=os.path.abspath(golden_dir) if golden_dir else None,
-            update_golden=bool(update_golden),
-        )
+        try:
+            deps.visual_check_and_write(
+                str(out_path),
+                output_docx_name=output_docx_name,
+                project_root=project_root,
+                render_all_pages=True,
+                require_wps=bool(require_wps),
+                golden_dir=os.path.abspath(golden_dir) if golden_dir else None,
+                update_golden=bool(update_golden),
+            )
+        except Exception as exc:
+            _write_dependency_report(
+                out_path,
+                report_name="visual_report",
+                mode=mode,
+                code="VISUAL_QA_FAILED",
+                message="visual QA crashed before it could finish.",
+                detail=_exception_detail(exc, project_root),
+                project_root=project_root,
+            )
+            return _read_state(out_path, qa_level)
     return _read_state(out_path, qa_level)
+
+
+def _exception_detail(exc: Exception, project_root: str | None = None) -> str:
+    return str(_safe_report_value(f"{exc.__class__.__name__}: {exc}", project_root) or "")
 
 
 def _optional_detail(deps: Any, name: str) -> str:
@@ -354,6 +420,82 @@ def _optional_detail(deps: Any, name: str) -> str:
         return str(detail(name) or "")
     except Exception:
         return ""
+
+
+def _write_structural_failure_report(
+    out_path: Path,
+    *,
+    mode: str,
+    code: str,
+    detail: str,
+    project_root: str | None = None,
+) -> None:
+    if _write_structural_dependency_handoff is not None:
+        if code == "STRUCTURAL_QA_FAILED":
+            _write_structural_dependency_handoff(
+                str(out_path),
+                mode=mode,
+                detail=detail,
+                project_root=project_root,
+                code=code,
+                message="Structural QA crashed before it could finish, so the pipeline cannot prove this DOCX is safe to deliver.",
+                title="结构 QA 执行失败",
+                why="qa_checker.py 运行中抛出异常；不能把本轮输出标记为已通过。",
+                user_action="让 Agent 先查看 qa_report.md 和 qa_repair_plan.md，修复 qa_checker.py / qa_checker_modules 后重跑完整流水线；不要把这次输出当作已通过。",
+                developer_action="检查 qa_checker.py / qa_checker_modules 的异常堆栈、输入报告和依赖状态，修复后重跑 targeted regression、完整 regression 与真实流水线。",
+                next_action="结构 QA 运行中断。先修复 qa_checker.py / qa_checker_modules 的异常，再重新运行完整流水线；先查看 qa_report.md 和 qa_repair_plan.md。",
+            )
+            return
+        _write_structural_dependency_handoff(
+            str(out_path),
+            mode=mode,
+            detail=detail,
+            project_root=project_root,
+        )
+        return
+
+    _write_dependency_report(
+        out_path,
+        report_name="qa_report",
+        mode=mode,
+        code=code,
+        message="Structural QA could not run, so auto repair stopped before declaring the output safe.",
+        detail=detail,
+        project_root=project_root,
+    )
+    resume_command = _workflow_resume_command_fallback(out_path, mode)
+    issue = {
+        "code": code,
+        "severity": "error",
+        "title": "结构 QA 不可用",
+        "why": "结构 QA 没有成功运行，无法证明当前输出可交付。",
+        "detail": _safe_report_value(detail, project_root),
+        "auto_level": "dependency_repair",
+        "target": "Paper_Project/Program/pipeline/qa_checker.py / qa_checker_modules",
+        "user_action": "让 Agent 修复结构 QA 后重跑完整流水线。",
+        "developer_action": "修复 qa_checker.py / qa_checker_modules 后重跑回归测试和真实流水线。",
+    }
+    plan = {
+        "schema_version": 1,
+        "passed": False,
+        "summary": "结构 QA 没有运行成功，auto-repair 已停止。",
+        "mode": mode,
+        "blocking_errors": 1,
+        "warnings": 0,
+        "next_action": f"修复 qa_checker.py / qa_checker_modules 后重新运行完整流水线。{(' 修复后运行：`' + resume_command + '`') if resume_command else ''}",
+        "resume_scope": "full_pipeline",
+        "resume_command": resume_command,
+        "steps": [issue],
+    }
+    (out_path / "qa_repair_plan.json").write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
+    (out_path / "qa_repair_plan.md").write_text(
+        "# QA 修复向导\n\n"
+        "- 结果：需要修复\n"
+        f"- 优先动作：{plan['next_action']}\n"
+        "- 先打开 `qa_report.md`。\n",
+        encoding="utf-8",
+    )
+    (out_path / "qa_fix_prompt.txt").write_text(str(plan["next_action"]) + "\n", encoding="utf-8")
 
 
 def _write_dependency_report(
@@ -426,6 +568,8 @@ def _read_state(out_path: Path, qa_level: str) -> Dict[str, Any]:
     passed = bool(qa_report.get("passed")) and all(
         bool(report.get("passed", True)) for label, report in reports.items() if label != "qa" and report
     )
+    report_mode = str(qa_report.get("mode") or next((r.get("mode") for r in reports.values() if r.get("mode")), "user"))
+    workflow_resume_command = _workflow_resume_command_fallback(out_path, report_mode)
     return {
         "passed": passed,
         "reports": reports,
@@ -440,6 +584,8 @@ def _read_state(out_path: Path, qa_level: str) -> Dict[str, Any]:
         "qa_warnings": sum(1 for item in qa_report.get("issues") or [] if item.get("severity") == "warning"),
         "total_errors": len(errors),
         "total_warnings": len(warnings),
+        "workflow_resume_command": workflow_resume_command,
+        "workflow_resume_scope": "full_pipeline" if workflow_resume_command else "",
     }
 
 
@@ -662,6 +808,8 @@ def _round_snapshot(
         "repair_next_action": repair_plan.get("next_action") or "",
         "repair_resume_scope": repair_plan.get("resume_scope") or "",
         "repair_resume_command": repair_plan.get("resume_command") or "",
+        "workflow_resume_scope": state.get("workflow_resume_scope") or "",
+        "workflow_resume_command": state.get("workflow_resume_command") or "",
         "actions": actions,
         "build": build or {},
     }
@@ -769,7 +917,7 @@ def _repair_loop_handoff(
         action = str(first.get("user_action") or "").strip() or str(first.get("detail") or "").strip()
         prefix = f"优先处理 `{code}`：{action}" if code else action
         scope = "input_files" if status == "stopped_needs_user_file" else "manual_or_dependency"
-        command = str(final.get("repair_resume_command") or "").strip()
+        command = str(final.get("repair_resume_command") or final.get("workflow_resume_command") or "").strip()
         route = "补齐或更换输入文件后重新运行完整流水线。" if scope == "input_files" else "完成依赖修复、人工确认或环境修复后重新运行对应 QA。"
         if command:
             route += f" 可运行：`{command}`"
@@ -817,6 +965,45 @@ def _quote_cmd_arg(value: str) -> str:
     if re.search(r'[\s"&|<>^]', text):
         return '"' + text.replace('"', r'\"') + '"'
     return text
+
+
+def _workflow_resume_command_fallback(out_path: Path, fallback_mode: str) -> str:
+    try:
+        workflow = json.loads((out_path / "workflow_mode.json").read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+
+    mode = str(workflow.get("mode") or fallback_mode or "user")
+    template = workflow.get("template")
+    content = workflow.get("content")
+    md_file = workflow.get("md")
+    if not md_file and template and content and str(template).lower().endswith(".md") and template == content:
+        md_file = template
+
+    args = ["python", "run_pipeline.py", "--mode", mode]
+    if md_file:
+        args.extend(["--md", str(md_file)])
+    elif template and content:
+        args.extend(["--template", str(template), "--content", str(content)])
+    else:
+        return ""
+
+    qa_level = str(workflow.get("qa_level") or "").strip().lower()
+    if qa_level in {"basic", "strict", "visual"}:
+        args.extend(["--qa-level", qa_level])
+    if workflow.get("auto_repair"):
+        args.append("--auto-repair")
+        if workflow.get("repair_max_rounds"):
+            args.extend(["--repair-max-rounds", str(workflow.get("repair_max_rounds"))])
+        if workflow.get("repair_stop_no_improve"):
+            args.extend(["--repair-stop-no-improve", str(workflow.get("repair_stop_no_improve"))])
+    if workflow.get("require_wps"):
+        args.append("--require-wps")
+    if workflow.get("update_golden"):
+        args.append("--update-golden")
+    if workflow.get("golden_dir"):
+        args.extend(["--golden-dir", str(workflow.get("golden_dir"))])
+    return " ".join(_quote_cmd_arg(arg) for arg in args)
 
 
 def _report_to_markdown(report: Dict[str, Any]) -> str:

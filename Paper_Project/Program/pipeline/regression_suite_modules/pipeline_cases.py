@@ -669,6 +669,142 @@ def pipeline_auto_repair_build_failure_has_resume_handoff() -> None:
 
 
 @case
+def pipeline_auto_repair_qa_crash_has_resume_handoff() -> None:
+    work = new_workdir("pipeline_auto_repair_qa_crash")
+    _write_repair_loop_fixture(work)
+    private_path = work / "private" / "qa_checker.py"
+
+    def crashing_qa(out_dir, mode="user", output_docx_name="final.docx"):
+        raise RuntimeError(f"synthetic QA crash at {private_path}")
+
+    deps = QADependencies(
+        qa_check_and_write=crashing_qa,
+        conformance_check_and_write=None,
+        visual_check_and_write=None,
+        optional_import_detail=lambda name: "",
+    )
+    result = run_repair_loop(
+        str(work),
+        mode="user",
+        output_docx_name="final.docx",
+        qa_level="basic",
+        project_root=str(work),
+        max_rounds=2,
+        stop_no_improve=1,
+        deps=deps,
+        run_generated_script=run_generated_script,
+        python_executable=sys.executable,
+    )
+    report_text = (work / "repair_loop_report.json").read_text(encoding="utf-8")
+    report = json.loads(report_text)
+    qa_report = json.loads((work / "qa_report.json").read_text(encoding="utf-8"))
+    plan = json.loads((work / "qa_repair_plan.json").read_text(encoding="utf-8"))
+    assert_true(not result.ok, "auto repair should stop when structural QA crashes")
+    assert_true(report["status"] == "stopped_needs_user_input", f"unexpected structural crash stop status: {report}")
+    assert_true("STRUCTURAL_QA_FAILED" in report["final_error_codes"], f"structural crash code missing from repair report: {report}")
+    assert_true(report.get("resume_scope") == "manual_or_dependency", f"structural crash should route to dependency/manual repair: {report}")
+    assert_true("run_pipeline.py" in report.get("resume_command", ""), f"structural crash should preserve a rerun command: {report}")
+    assert_true("--auto-repair" in report.get("resume_command", ""), f"structural crash rerun command should preserve auto repair: {report}")
+    assert_true("qa_checker.py" in report.get("next_action", ""), f"structural crash next action should name qa_checker.py: {report}")
+    assert_true(qa_report["issues"][0]["code"] == "STRUCTURAL_QA_FAILED", f"structural crash QA report used wrong code: {qa_report}")
+    assert_true(plan.get("resume_scope") == "full_pipeline", f"structural crash repair plan should route to full pipeline: {plan}")
+    assert_true(str(work) not in report_text, "repair-loop structural crash report leaked an absolute path")
+    assert_true("<PROJECT>" in report_text, f"structural crash detail was not sanitized: {report}")
+    assert_true((work / "repair_loop_report.md").exists(), "structural crash should write repair_loop_report.md")
+
+
+@case
+def pipeline_auto_repair_conformance_crash_has_resume_handoff() -> None:
+    work = new_workdir("pipeline_auto_repair_conformance_crash")
+    _write_repair_loop_fixture(work)
+    private_path = work / "private" / "qa_conformance.py"
+
+    def passing_qa(out_dir, mode="user", output_docx_name="final.docx"):
+        return _fake_repair_report(out_dir, code="NO_ISSUE", severity="info")
+
+    def crashing_conformance(out_dir, mode="user", output_docx_name="final.docx", project_root=""):
+        raise RuntimeError(f"synthetic conformance crash at {private_path}")
+
+    deps = QADependencies(
+        qa_check_and_write=passing_qa,
+        conformance_check_and_write=crashing_conformance,
+        visual_check_and_write=None,
+        optional_import_detail=lambda name: "",
+    )
+    result = run_repair_loop(
+        str(work),
+        mode="user",
+        output_docx_name="final.docx",
+        qa_level="strict",
+        project_root=str(work),
+        max_rounds=2,
+        stop_no_improve=1,
+        deps=deps,
+        run_generated_script=run_generated_script,
+        python_executable=sys.executable,
+    )
+    report_text = (work / "repair_loop_report.json").read_text(encoding="utf-8")
+    report = json.loads(report_text)
+    conformance_report = json.loads((work / "conformance_report.json").read_text(encoding="utf-8"))
+    assert_true(not result.ok, "auto repair should stop when conformance QA crashes")
+    assert_true("CONFORMANCE_QA_FAILED" in report["final_error_codes"], f"conformance crash code missing from repair report: {report}")
+    assert_true(report["blockers"] and report["blockers"][0]["code"] == "CONFORMANCE_QA_FAILED", f"conformance crash should be a blocker: {report}")
+    assert_true("qa_conformance.py" in report.get("next_action", ""), f"conformance crash next action should name qa_conformance.py: {report}")
+    assert_true("run_pipeline.py" in report.get("resume_command", ""), f"conformance crash should preserve a rerun command: {report}")
+    assert_true("--auto-repair" in report.get("resume_command", ""), f"conformance crash rerun command should preserve auto repair: {report}")
+    assert_true(conformance_report["issues"][0]["code"] == "CONFORMANCE_QA_FAILED", f"wrong conformance crash code: {conformance_report}")
+    assert_true(str(work) not in report_text, "repair-loop conformance crash report leaked an absolute path")
+    assert_true("<PROJECT>" in report_text, f"conformance crash detail was not sanitized: {report}")
+
+
+@case
+def pipeline_auto_repair_visual_crash_has_resume_handoff() -> None:
+    work = new_workdir("pipeline_auto_repair_visual_crash")
+    _write_repair_loop_fixture(work)
+    private_path = work / "private" / "qa_visual.py"
+
+    def passing_qa(out_dir, mode="user", output_docx_name="final.docx"):
+        return _fake_repair_report(out_dir, code="NO_ISSUE", severity="info")
+
+    def passing_conformance(out_dir, mode="user", output_docx_name="final.docx", project_root=""):
+        return _write_conformance_report(out_dir, passed=True)
+
+    def crashing_visual(out_dir, output_docx_name="final.docx", project_root="", render_all_pages=True, require_wps=False, golden_dir=None, update_golden=False):
+        raise RuntimeError(f"synthetic visual crash at {private_path}")
+
+    deps = QADependencies(
+        qa_check_and_write=passing_qa,
+        conformance_check_and_write=passing_conformance,
+        visual_check_and_write=crashing_visual,
+        optional_import_detail=lambda name: "",
+    )
+    result = run_repair_loop(
+        str(work),
+        mode="user",
+        output_docx_name="final.docx",
+        qa_level="visual",
+        project_root=str(work),
+        max_rounds=2,
+        stop_no_improve=1,
+        deps=deps,
+        run_generated_script=run_generated_script,
+        python_executable=sys.executable,
+    )
+    report_text = (work / "repair_loop_report.json").read_text(encoding="utf-8")
+    report = json.loads(report_text)
+    visual_report = json.loads((work / "visual_report.json").read_text(encoding="utf-8"))
+    assert_true(not result.ok, "auto repair should stop when visual QA crashes")
+    assert_true("VISUAL_QA_FAILED" in report["final_error_codes"], f"visual crash code missing from repair report: {report}")
+    assert_true(report["blockers"] and report["blockers"][0]["code"] == "VISUAL_QA_FAILED", f"visual crash should be a blocker: {report}")
+    assert_true("qa_visual.py" in report.get("next_action", ""), f"visual crash next action should name qa_visual.py: {report}")
+    assert_true("run_pipeline.py" in report.get("resume_command", ""), f"visual crash should preserve a rerun command: {report}")
+    assert_true("--auto-repair" in report.get("resume_command", ""), f"visual crash rerun command should preserve auto repair: {report}")
+    assert_true(visual_report["issues"][0]["code"] == "VISUAL_QA_FAILED", f"wrong visual crash code: {visual_report}")
+    assert_true(str(work) not in report_text, "repair-loop visual crash report leaked an absolute path")
+    assert_true("<PROJECT>" in report_text, f"visual crash detail was not sanitized: {report}")
+
+
+@case
 def pipeline_auto_repair_strict_requires_conformance_dependency() -> None:
     work = new_workdir("pipeline_auto_repair_missing_conformance")
     _write_repair_loop_fixture(work)
