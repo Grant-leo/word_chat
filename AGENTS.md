@@ -96,7 +96,7 @@ Or interactive: `python run_pipeline.py`
 - Read `Outputs/<latest>/内容提取.md` — check all sections present
 - Read `Outputs/<latest>/template_profile.md` — check template capabilities and risk flags
 - For PDF templates, check `template_profile.md` and `格式提取.md` for PDF type, confidence, warnings, and possible `PDF_TEMPLATE_UNSUPPORTED`
-- Read `Outputs/<latest>/qa_report.md` first; it names the active fix target for the current mode
+- Read `Outputs/<latest>/qa_report.md` first; it names the active fix target and the first issue-code-specific next action for the current mode
 - If `--auto-repair` was used, read `Outputs/<latest>/repair_loop_report.md/json`; it records every repair round, stop reason, and remaining manual checks
 - Read `Outputs/<latest>/agent_summary.md/json` first when present; it is the user-facing handoff with final DOCX path, QA status, repair-loop result, structural/strict/visual QA issue-code next actions, and manual checks
 - If `--qa-level visual` was used, read `Outputs/<latest>/visual_report.md` and inspect sample PNGs under `visual_qa/samples/`
@@ -213,7 +213,7 @@ Example: template has no cross-references → generated script has no `B_ref()`.
 - Do not commit or upload private test data: real files under `Inputs/`, `Outputs/`, `Templates/`, generated DOCX/PDF/PNG, QA renders, and template assets are local-only.
 - Always honor the workflow mode: user mode changes only `build_generated.py`; developer mode changes only reusable core scripts and reruns the whole pipeline.
 - Generated QA reports are routing-focused and block the pipeline on `error`; they still do not replace WPS/Word visual verification for final delivery.
-- QA also writes `qa_repair_plan.md/json` and `qa_fix_prompt.txt`; use these files as the first repair entry point before editing user-level or developer-level code.
+- QA also writes `qa_repair_plan.md/json` and `qa_fix_prompt.txt`; `qa_report.md/json` and the repair plan should name the leading issue code and concrete next action before editing user-level or developer-level code.
 - QA/user-facing reports should avoid leaking absolute local paths; use run-relative paths whenever possible.
 - `template_profile.json/md` is the reusable template decision layer. Do not add school-name logic when a profile capability/risk flag can describe the same need.
 - PDF templates are best-effort format sources: instruction-style PDFs provide text rules, visual sample PDFs provide estimated geometry/styles, and scanned/textless PDFs must surface `PDF_TEMPLATE_UNSUPPORTED`.

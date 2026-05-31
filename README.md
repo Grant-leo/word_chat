@@ -100,7 +100,7 @@ Outputs/日期_内容名/
 
 - `最终论文.docx`：生成结果。
 - `agent_summary.md`：面向用户和 Agent 的最终摘要，先看它；如果结构/strict/visual QA 失败，这里会直接汇总问题码和小白下一步。
-- `qa_report.md`：是否有图片、公式、表格、占位符、内容缺失等问题。
+- `qa_report.md`：是否有图片、公式、表格、占位符、内容缺失等问题；顶部“下一步”会点名优先处理的问题码和具体动作。
 - `qa_repair_plan.md`：下一步该修哪里，适合直接交给 AI 继续处理。
 - `conformance_report.md` / `visual_report.md`：strict/visual QA 的中文报告，缺依赖或渲染失败时会给出下一步。
 - `build_generated.py`：本次文档的用户级微调脚本。
@@ -176,10 +176,10 @@ build_generated.py ─────────→ 最终论文.docx
 
 截至 2026-05-31：
 
-- 合成回归：`169 passed, 0 failed`
+- 合成回归：`170 passed, 0 failed`
 - 自动修复闭环回归：可修复 QA error、连续无改善停止、needs_user_file 停止、strict/visual QA 依赖缺失、visual 参数保持、报告路径脱敏均已覆盖
 - Agent-first 自动入口：`--agent-auto` 可自动扫描单候选模板/内容，默认普通用户自动修复，并写出 `agent_summary.md/json`
-- 小白中断体验：交互取消、EOF、预检失败、QA/依赖失败都会给出下一步，`agent_summary.md/json` 会聚合结构/strict/visual QA 的问题码和具体修复动作
+- 小白中断体验：交互取消、EOF、预检失败、QA/依赖失败都会给出下一步，`agent_summary.md/json` 会聚合结构/strict/visual QA 的问题码和具体修复动作，`qa_report.md/json` 顶部也会点名首个结构 QA 问题码和动作
 - 输出边界：独立 `format_extractor.py` / `content_parser.py` / `md_parser.py` 默认写入 `Outputs/_...`，不污染 `Inputs/` 或 `Templates/`
 - PDF 模板端到端 strict QA：合成文字说明 PDF 模板 + DOCX 内容，`passed`
 - PDF 极端压力测试：9 个场景覆盖大写扩展名、精排样张、横向页面、稀疏说明、扫描/损坏/空白/过短 PDF，`9/9` 符合预期

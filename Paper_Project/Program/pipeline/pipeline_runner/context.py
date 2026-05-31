@@ -38,6 +38,17 @@ def _display_input_path(folder_label: str, requested: str) -> str:
     return f"{folder_label}/{requested}".replace("//", "/")
 
 
+def _workflow_file_arg(path: str, folder_name: str) -> str:
+    """Return a non-absolute argument that can be reused from Templates/Inputs."""
+    normalized = os.path.normpath(os.path.abspath(path))
+    parts = normalized.split(os.sep)
+    folder_lower = folder_name.lower()
+    for idx in range(len(parts) - 1, -1, -1):
+        if parts[idx].lower() == folder_lower and idx < len(parts) - 1:
+            return "/".join(parts[idx + 1 :])
+    return os.path.basename(path)
+
+
 def resolve_inputs(template_file, content_file, md_file, template_dir, inputs_dir) -> InputResolution:
     """Resolve CLI filenames into concrete input paths."""
     if md_file:
@@ -107,13 +118,15 @@ def write_workflow_mode(
     workflow_path = os.path.join(out_dir, "workflow_mode.json")
     md_file = ""
     if os.path.abspath(template_path) == os.path.abspath(content_path) and str(content_path).lower().endswith(".md"):
-        md_file = os.path.basename(content_path)
+        md_file = _workflow_file_arg(content_path, "Inputs")
+    template_file = _workflow_file_arg(template_path, "Templates")
+    content_file = _workflow_file_arg(content_path, "Inputs")
     with open(workflow_path, "w", encoding="utf-8") as f:
         json.dump(
             {
                 "mode": mode,
-                "template": os.path.basename(template_path),
-                "content": os.path.basename(content_path),
+                "template": template_file,
+                "content": content_file,
                 "md": md_file,
                 "user_fix_target": "build_generated.py",
                 "developer_fix_target": "Paper_Project/Program/pipeline/",

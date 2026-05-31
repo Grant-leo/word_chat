@@ -10,6 +10,7 @@ from qa_checker import check_output
 from qa_checker_modules.content_samples import _content_toc_pollution_samples
 from qa_checker_modules.content_metrics import _count_content_formulas, _count_content_images
 from qa_checker_modules.registry import OWNER_BY_CODE
+from qa_checker_modules.report_phase import build_report
 from qa_checker_modules.repair import build_repair_plan
 from qa_checker_modules.repair_guides import REPAIR_GUIDES
 from qa_conformance_modules.content_checks import _expected_paragraphs, _find_para_by_text
@@ -270,6 +271,28 @@ def qa_repair_plan_preserves_md_visual_workflow_command() -> None:
     assert_true("--auto-repair" in command and "--repair-max-rounds 4" in command, f"auto repair options were not preserved: {command}")
     assert_true("--require-wps" in command and "--update-golden" in command, f"visual options were not preserved: {command}")
     assert_true("--golden-dir TestData/GoldenBaselines" in command, f"golden dir was not preserved: {command}")
+
+
+@case
+def qa_report_next_action_names_first_repair_step() -> None:
+    work = new_workdir("qa_next_action_first_step")
+    write_json(work / "workflow_mode.json", {"mode": "user"})
+    report = build_report(
+        str(work),
+        "user",
+        {},
+        [
+            {
+                "code": "CONTENT_IMAGE_MISSING",
+                "severity": "error",
+                "message": "missing image",
+                "active_owner": "User input/template file",
+            }
+        ],
+    )
+    assert_true("CONTENT_IMAGE_MISSING" in report["next_action"], f"next_action lost the issue code: {report['next_action']}")
+    assert_true("把缺失图片放回" in report["next_action"], f"next_action lost the beginner repair action: {report['next_action']}")
+    assert_true("用户确认或补充输入文件" in report["next_action"], f"user-file routing disappeared: {report['next_action']}")
 
 
 @case

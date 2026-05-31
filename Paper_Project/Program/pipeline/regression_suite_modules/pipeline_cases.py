@@ -372,6 +372,9 @@ def pipeline_context_resolves_inputs_outputs_and_workflow() -> None:
     outputs_dir.mkdir()
     (template_dir / "template.PDF").write_text("x", encoding="utf-8")
     (inputs_dir / "paper.md").write_text("# Paper", encoding="utf-8")
+    nested_dir = inputs_dir / "nested"
+    nested_dir.mkdir()
+    (nested_dir / "nested_paper.md").write_text("# Nested Paper", encoding="utf-8")
 
     resolution = resolve_inputs("template.PDF", "paper.md", None, str(template_dir), str(inputs_dir))
     assert_true(resolution.ok, f"expected inputs to resolve: {resolution.error}")
@@ -406,6 +409,23 @@ def pipeline_context_resolves_inputs_outputs_and_workflow() -> None:
     assert_true(workflow["qa_level"] == "visual", "workflow QA level was not written")
     assert_true(workflow["require_wps"] is True, "workflow require_wps flag was not written")
     assert_true(workflow["auto_repair"] is False, "workflow auto_repair default changed")
+
+    nested = resolve_inputs("template.PDF", "nested/nested_paper.md", None, str(template_dir), str(inputs_dir))
+    assert_true(nested.ok, f"expected nested content to resolve: {nested.error}")
+    nested_workflow_path = write_workflow_mode(
+        second_dir,
+        mode="developer",
+        template_path=nested.inputs.template_path,
+        content_path=nested.inputs.content_path,
+        run_qa=True,
+        qa_level="strict",
+        golden_dir=None,
+        update_golden=False,
+        require_wps=False,
+    )
+    nested_workflow = json.loads(Path(nested_workflow_path).read_text(encoding="utf-8"))
+    assert_true(nested_workflow["content"] == "nested/nested_paper.md", f"workflow lost nested input path: {nested_workflow}")
+    assert_true(str(inputs_dir) not in nested_workflow["content"], f"workflow leaked absolute input path: {nested_workflow}")
 
 
 @case
