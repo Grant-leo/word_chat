@@ -135,7 +135,7 @@ build_generated.py ─────────→ 最终论文.docx
 - `run_pipeline.py --agent-auto`：Agent-first 自动入口；自动扫描、唯一选择、普通用户模式、自动修复、写出 `agent_summary.md/json`。
 - `format_extractor.py`：提取 DOCX/PDF 模板格式；PDF 会区分文字说明模板、精排样张模板、扫描/不可解析模板；独立运行时默认写入 `Outputs/_format_extractor_cli/`，模板 assets 不写回 `Templates/`。
 - `content_parser.py`：提取 DOCX 内容；独立运行时默认写入 `Outputs/_content_parser_cli/`，图片不写回 `Inputs/`。
-- `md_parser.py`：解析 Markdown 内容和格式说明；独立运行时默认写入 `Outputs/_md_parser_cli/`。
+- `md_parser.py`：解析 Markdown 内容和格式说明；会剥离开头的 YAML/自然语言格式块，避免格式规则进入正文；独立运行时默认写入 `Outputs/_md_parser_cli/`。
 - `script_generator.py`：生成构建脚本。
 - `latex_omath.py`：LaTeX / 文本公式转原生 Word 公式。
 - `qa_checker.py`：结构 QA。
@@ -176,15 +176,18 @@ build_generated.py ─────────→ 最终论文.docx
 
 截至 2026-05-31：
 
-- 合成回归：`159 passed, 0 failed`
+- 合成回归：`166 passed, 0 failed`
 - 自动修复闭环回归：可修复 QA error、连续无改善停止、needs_user_file 停止、strict/visual QA 依赖缺失、visual 参数保持、报告路径脱敏均已覆盖
 - Agent-first 自动入口：`--agent-auto` 可自动扫描单候选模板/内容，默认普通用户自动修复，并写出 `agent_summary.md/json`
 - 小白中断体验：交互取消、EOF、预检失败、QA/依赖失败都会给出下一步，相关报告文案已中文化
 - 输出边界：独立 `format_extractor.py` / `content_parser.py` / `md_parser.py` 默认写入 `Outputs/_...`，不污染 `Inputs/` 或 `Templates/`
 - PDF 模板端到端 strict QA：合成文字说明 PDF 模板 + DOCX 内容，`passed`
 - PDF 极端压力测试：9 个场景覆盖大写扩展名、精排样张、横向页面、稀疏说明、扫描/损坏/空白/过短 PDF，`9/9` 符合预期
-- 端到端 strict QA：5 个复杂测试文本 × 3 个模板，`15/15 passed`
-- 矩阵结果：`0` QA error，`0` QA warning，`0` conformance error，`0` conformance warning
+- 端到端 strict QA：5 个 DOCX 模板 × 5 个 DOCX 内容，`25/25 passed`
+- 公共模板兼容套件：5 个公开模板 × 5 个合成场景，`25/25 passed`
+- PDF 边界测试：5 个 PDF 模板中 3 个可解析模板通过 strict QA，2 个不可用/扫描类模板按预期失败并给出下一步
+- 高风险引擎流水线：纯 Markdown strict、缺图 Markdown、页眉图片边界、user auto-repair、DOCX/PDF visual smoke、密集媒体公式 strict 共 `7/7` 符合预期
+- 矩阵结果：通过项均为 `0` QA error，`0` conformance error；visual smoke 为 `0` visual error
 - fresh-folder 小白用户 visual 冒烟：DOCX 模板 + 无格式机器学习内容 + `--auto-repair --qa-level visual`，结构 QA / strict conformance / visual QA 均为 `0` error，自动修复闭环 `converged`
 
 ## 进一步文档

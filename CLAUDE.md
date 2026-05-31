@@ -256,7 +256,7 @@ python run_pipeline.py --mode developer --qa-level visual --template <模板文�
 - `format_extractor.py`: stable DOCX/PDF template format extraction entry point.
 - `format_extractor_modules/`: PDF template parsing, OOXML metrics, style inheritance, semantic style profiles, cover assets, and cover table extraction. Standalone CLI output defaults to `Outputs/_format_extractor_cli/`, and template assets should not be written beside files in `Templates/`.
 - `md_parser.py`: Markdown format/content parsing.
-- `md_parser_modules/`: Markdown parser helpers for content extraction orchestration, format extraction, inline/display math tokens, image path resolution, table parsing, and text cleanup. Standalone CLI output defaults to `Outputs/_md_parser_cli/`.
+- `md_parser_modules/`: Markdown parser helpers for content extraction orchestration, format extraction, front format-instruction stripping, inline/display math tokens, image path resolution, table parsing, and text cleanup. Standalone CLI output defaults to `Outputs/_md_parser_cli/`.
 - `template_profiler.py`: stable template capability/risk profile entry point.
 - `template_profiler_modules/`: template profile construction and report writing.
 - `script_generator.py`: stable public script generation entrypoint.
@@ -348,6 +348,7 @@ When a user wants a document-specific feature:
 - Formulas should render as native OOXML Math. Check the generated docx XML for `<m:oMathPara>` / `<m:oMath>` when formula correctness matters.
 - Markdown `$...$` / `$$...$$` formulas in abstracts and body sections should render as native OOXML Math.
 - Markdown image paths resolve relative to the `.md` file first, then copy into the current output `figures/` folder.
+- Markdown front format-instruction sections are format-only. They must be stripped from the content stream, including noisy/encoding-damaged headings followed by obvious format rules and a `---` delimiter.
 - `内容提取.md` should summarize images, tables, and formulas by their real roles, avoid duplicate image listings, and never display non-formula structured content as `[公式]`.
 - Caption detection should distinguish true captions from prose references: `图 1 xxx 示意图` can be a caption, while `图 1 展示了...` remains body text.
 - Generated scripts should suppress Python bytecode cache creation so output folders stay clean.

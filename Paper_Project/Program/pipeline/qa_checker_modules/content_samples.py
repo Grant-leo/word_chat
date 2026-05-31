@@ -45,6 +45,8 @@ def _heading_looks_like_body_or_formula(text: str) -> bool:
     t = str(text or "").strip()
     if not t:
         return False
+    if re.match(r"^\d{1,2}(?:\.\d{1,2}){1,5}\s+[\w\u4e00-\u9fff]", t, re.I):
+        return False
     if len(t) > 90:
         return True
     if re.search(r"(?:MWh|MW|Etotal|Esell|Ebuy|ERE|Pbuy|Psell|PRE|rself|rgreen|rup|max\s*\(|∑)", t):

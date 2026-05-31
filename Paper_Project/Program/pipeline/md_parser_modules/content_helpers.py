@@ -11,8 +11,94 @@ _RE_REF_HEADING = re.compile(r'(?i)^references?\b|^参考文献|^引用文献')
 _RE_BACKMATTER_HEADING = re.compile(r'(?i)^append(?:ix|ices)\b|^acknowledg(?:e)?ments?\b|^acknowledgment\b|^附\s*录|^致\s*谢')
 
 
+def _classify_markdown_heading_role(heading: str) -> str:
+    text = str(heading or "").strip()
+    compact = re.sub(r"\s+", "", text).lower()
+    if compact in {"摘要", "中文摘要"}:
+        return "cn_abstract"
+    if compact in {"关键词", "关键字"}:
+        return "cn_keywords"
+    if compact in {"abstract", "englishabstract"}:
+        return "en_abstract"
+    if compact in {"keywords", "keyword", "keywords:", "keywords："}:
+        return "en_keywords"
+    if re.match(r"(?i)^append(?:ix|ices)\b", text) or re.search(r"附\s*录", text):
+        return "appendix"
+    if re.match(r"(?i)^acknowledg(?:e)?ments?\b|^acknowledgment\b", text) or re.search(r"致\s*谢", text):
+        return "acknowledgement"
+    return ""
+
+
+def _markdown_heading_text(line: str) -> str:
+    match = re.match(r'^#{1,3}\s+(.+?)\s*#*\s*$', str(line or '').strip())
+    return match.group(1).strip() if match else ''
+
+
 def _is_format_section_heading(line: str) -> bool:
-    return bool(re.match(r'^#{1,3}\s+[格式排版要求说明]', line))
+    text = re.sub(r"\s+", "", _markdown_heading_text(line))
+    if not text:
+        return False
+    explicit_names = {"格式", "排版", "格式说明", "格式要求", "排版说明", "排版要求", "格式排版", "要求说明"}
+    if text in explicit_names:
+        return True
+    return any(token in text for token in ("格式说明", "格式要求", "排版说明", "排版要求"))
+
+
+def _looks_like_format_rule_line(line: str) -> bool:
+    text = str(line or '').strip()
+    if not text or text == '---' or re.match(r'^#{1,3}\s+', text):
+        return False
+    lower = text.lower()
+    score = 0
+    if any(font.lower() in lower for font in (
+        "times new roman", "arial", "calibri", "宋体", "黑体", "楷体", "仿宋", "微软雅黑"
+    )):
+        score += 1
+    if re.search(
+        r'正文|标题|摘要|关键词|字体|字号|行距|页边距|缩进|居中|对齐|加粗|'
+        r'\bbody\b|\bheading\b|\bfont\b|\babstract\b|\bkeywords?\b|'
+        r'\bmargin\b|\bspacing\b|\bindent\b|\bjustif(?:y|ied)\b|\bcenter\b|\bbold\b',
+        text,
+        re.I,
+    ):
+        score += 1
+    if re.search(r'\d+(?:\.\d+)?\s*(?:pt|cm|mm|号|字符|倍)', text, re.I):
+        score += 1
+    elif re.search(r'\d+(?:\.\d+)?', text) and ("times new roman" in lower or "font" in lower):
+        score += 1
+    if re.search(r'[:：]', text) and score:
+        score += 1
+    return score >= 2
+
+
+def _format_section_end(lines: List[str]) -> int | None:
+    if not lines or not re.match(r'^#{1,3}\s+', str(lines[0] or '').strip()):
+        return None
+
+    explicit_heading = _is_format_section_heading(lines[0])
+    seen_rule = False
+    seen_nonblank = False
+    for i in range(1, len(lines)):
+        stripped = lines[i].strip()
+        if not stripped:
+            continue
+        if stripped == '---':
+            return i + 1 if explicit_heading or seen_rule else None
+        if re.match(r'^#{1,3}\s+', stripped):
+            return i if explicit_heading else None
+
+        seen_nonblank = True
+        if _looks_like_format_rule_line(stripped):
+            seen_rule = True
+            continue
+        if not explicit_heading:
+            return None
+
+    if explicit_heading:
+        return len(lines)
+    if seen_nonblank and seen_rule:
+        return len(lines)
+    return None
 
 
 def _skip_format_section(lines: List[str]) -> List[str]:
@@ -24,15 +110,9 @@ def _skip_format_section(lines: List[str]) -> List[str]:
                 break
     while lines and not lines[0].strip():
         lines = lines[1:]
-    if lines and _is_format_section_heading(lines[0]):
-        for i in range(1, len(lines)):
-            stripped = lines[i].strip()
-            if stripped == '---' or (re.match(r'^#{1,3}\s+', stripped)
-                                     and not _is_format_section_heading(stripped)):
-                lines = lines[i + (1 if stripped == '---' else 0):]
-                break
-        else:
-            lines = []
+    end = _format_section_end(lines)
+    if end is not None:
+        lines = lines[end:]
     return lines
 
 
@@ -280,4 +360,3 @@ def _parse_markdown_table(lines: List[str], start: int) -> Tuple[List[List[str]]
             rows.append(row)
         i += 1
     return rows if len(rows) > 1 else [], i
-

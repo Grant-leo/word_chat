@@ -50,6 +50,66 @@ def md_parser_keeps_table_code_and_rich_math() -> None:
 
 
 @case
+def md_parser_classifies_front_and_back_matter_headings() -> None:
+    work = new_workdir("md_heading_roles")
+    md = work / "roles.md"
+    md.write_text(
+        "\n".join(
+            [
+                "# Demo",
+                "",
+                "## Abstract",
+                "English abstract paragraph.",
+                "",
+                "## Key words",
+                "template; parser",
+                "",
+                "## Appendix A",
+                "Appendix paragraph.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    content = extract_md_content(str(md), output_dir=str(work))
+    roles = {sec.get("heading"): sec.get("role") for sec in content.get("sections") or []}
+    assert_true(roles.get("Abstract") == "en_abstract", f"Markdown Abstract role was not classified: {roles}")
+    assert_true(roles.get("Key words") == "en_keywords", f"Markdown keywords role was not classified: {roles}")
+    assert_true(roles.get("Appendix A") == "appendix", f"Markdown appendix role was not classified: {roles}")
+
+
+@case
+def md_parser_skips_front_format_rules_until_delimiter() -> None:
+    work = new_workdir("md_format_skip")
+    md = work / "format_skip.md"
+    md.write_text(
+        "\n".join(
+            [
+                "---",
+                "title: Demo",
+                "---",
+                "# ????",
+                "???Times New Roman?????1.5????",
+                "---",
+                "# Paper Title",
+                "",
+                "## Abstract",
+                "Real abstract paragraph.",
+                "",
+                "## 1 Body",
+                "Real body paragraph.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    content = extract_md_content(str(md), output_dir=str(work))
+    assert_true(content.get("title_info", {}).get("title_cn") == "Paper Title", f"format heading leaked into title: {content.get('title_info')}")
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    joined = "\n".join(str(p) for p in paragraphs)
+    assert_true("Times New Roman" not in joined and "1.5" not in joined, f"format rule leaked into content paragraphs: {paragraphs}")
+    assert_true("---" not in joined, f"format delimiter leaked into content paragraphs: {paragraphs}")
+
+
+@case
 def md_title_only_document_keeps_body_section() -> None:
     work = new_workdir("md_title_only")
     md = work / "title_only.md"

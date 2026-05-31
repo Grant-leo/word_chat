@@ -41,15 +41,17 @@ CLI, output, verification, and QA details in a focused package:
 
 Current baseline as of 2026-05-31:
 
-- Synthetic regression after the latest architecture and novice-flow fixes: `159 passed, 0 failed`.
+- Synthetic regression after the latest parser/QA/high-risk fixes: `166 passed, 0 failed`.
 - Agent-first flow: `--agent-auto` scans local inputs, auto-selects only single candidates, defaults to user auto-repair, and writes `agent_summary.md/json`.
 - Novice interruption coverage: interactive cancellation/EOF, missing preflight inputs, QA dependency failures, and auto-repair blockers all route to a next action.
 - Output-boundary coverage: standalone/default `format_extractor`, `content_parser`, and `md_parser` outputs stay under `Outputs/_...` instead of beside private source files.
 - Controlled auto-repair loop regression: repairable build-script error, no-improvement stop, needs-user-file stop, strict/visual dependency failure, visual option preservation, and sanitized report paths passed.
 - PDF template end-to-end strict QA: synthetic instruction PDF template + DOCX content passed.
 - PDF extreme stress gate: 9 cases covering uppercase extensions, visual samples, landscape pages, sparse instructions, scanned/corrupt/blank/too-short PDFs met expected outcomes.
-- End-to-end strict QA matrix: 5 complex content documents × 3 templates = `15/15` passed.
-- Structural QA and conformance QA completed with no errors in that matrix.
+- Public-template compatibility suite: 5 public templates × 5 synthetic scenarios = `25/25` passed.
+- Local DOCX strict QA matrix: 5 DOCX templates × 5 DOCX contents = `25/25` passed.
+- PDF boundary probe: 3 parseable PDF templates passed strict QA; 2 unsupported/scanned-style PDFs failed closed with `PDF_TEMPLATE_UNSUPPORTED` guidance.
+- High-risk pipeline matrix: pure Markdown strict, missing Markdown image, header/footer image boundary, user auto-repair, DOCX/PDF visual smoke, and dense media/math strict checks all matched expectations (`7/7`).
 - Fresh-folder novice smoke test: DOCX template + plain DOCX content + `--auto-repair --qa-level visual` converged with structural, strict, and visual QA all at zero errors.
 
 ## Parser Submodules
@@ -80,8 +82,9 @@ while captions keep caption style.
 
 `md_parser_modules/` owns Markdown-specific helper rules behind `md_parser`:
 YAML/natural-language format extraction, inline/display math tokenization,
-Markdown image copying/missing-image metadata, table parsing, and Markdown text
-cleanup. `content_extractor.py` owns Markdown content orchestration. The public
+front format-instruction stripping, Markdown image copying/missing-image
+metadata, table parsing, and Markdown text cleanup. `content_extractor.py` owns
+Markdown content orchestration. The public
 Markdown entrypoints stay `extract_format` and `extract_content`.
 
 ## Generator Submodules

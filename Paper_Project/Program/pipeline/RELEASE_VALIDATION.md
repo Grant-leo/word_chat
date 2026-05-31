@@ -110,6 +110,7 @@ Pass criteria per run:
 
 Use synthetic or developer-owned samples for:
 
+- Markdown front format-instruction block with a noisy or encoding-damaged heading, followed by a `---` delimiter and real content.
 - Missing Markdown image.
 - Header/footer content image.
 - Table-cell image.
@@ -125,6 +126,9 @@ Pass criteria:
 - Engine either produces a correct DOCX or fails closed with a QA report and actionable next step.
 - User-file problems are routed to input/template repair, not blind generated-script editing.
 - Developer engine problems name the owning module.
+- Format-instruction paragraphs must not leak into `content.json`, `内容提取.md`, or strict conformance expected-content checks.
+
+For parser/QA/release-candidate changes, also run the high-risk matrix that covers pure Markdown strict, missing Markdown images, header/footer image boundaries, user auto-repair, DOCX/PDF visual smoke, and dense media/math strict content. The expected release gate is that every case either passes or fails closed with the intended QA code and next-step guidance.
 
 ## Gate 7: Repository Hygiene
 

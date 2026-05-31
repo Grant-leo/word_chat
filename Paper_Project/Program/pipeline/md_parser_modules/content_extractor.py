@@ -10,6 +10,7 @@ try:
     from md_parser_modules.content_helpers import (
         _RE_BACKMATTER_HEADING,
         _RE_REF_HEADING,
+        _classify_markdown_heading_role,
         _detect_title,
         _parse_markdown_table,
         _parse_paragraph_items,
@@ -21,6 +22,7 @@ except ImportError:  # pragma: no cover - package-style imports
     from .content_helpers import (
         _RE_BACKMATTER_HEADING,
         _RE_REF_HEADING,
+        _classify_markdown_heading_role,
         _detect_title,
         _parse_markdown_table,
         _parse_paragraph_items,
@@ -138,6 +140,7 @@ def extract_content(md_path, output_dir=None):
             current_section = {
                 'heading': heading,
                 'level': level,
+                'role': _classify_markdown_heading_role(heading),
                 'paragraphs': [],
                 'images': [],
             }

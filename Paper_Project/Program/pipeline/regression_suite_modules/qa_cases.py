@@ -2,15 +2,17 @@
 from __future__ import annotations
 
 import json
+from xml.etree import ElementTree as ET
 
 from docx import Document
 
 from qa_checker import check_output
+from qa_checker_modules.content_samples import _content_toc_pollution_samples
 from qa_checker_modules.content_metrics import _count_content_formulas, _count_content_images
 from qa_checker_modules.registry import OWNER_BY_CODE
 from qa_checker_modules.repair import build_repair_plan
 from qa_checker_modules.repair_guides import REPAIR_GUIDES
-from qa_conformance_modules.content_checks import _expected_paragraphs
+from qa_conformance_modules.content_checks import _expected_paragraphs, _find_para_by_text
 
 from regression_suite_modules.generated_docx import run_generated_case
 from regression_suite_modules.harness import (
@@ -102,6 +104,38 @@ def conformance_expected_paragraphs_classifies_plain_caption_strings() -> None:
     assert_true(roles_by_text["图 1 展示了系统架构。"] == "body", "plain Chinese figure-reference prose should remain body")
     assert_true(roles_by_text["Figure 2 shows the workflow."] == "body", "plain English figure-reference prose should remain body")
     assert_true(roles_by_text["This is a body paragraph."] == "body", "ordinary strings should remain body paragraphs")
+
+
+@case
+def qa_toc_pollution_allows_numbered_multilevel_headings() -> None:
+    content = {
+        "sections": [
+            {"heading": "1 Chapter 1", "level": 1, "paragraphs": ["Opening paragraph."]},
+            {"heading": "1.1 Section 1.1", "level": 2, "paragraphs": ["Nested body paragraph."]},
+            {"heading": "1.1.1 Detail", "level": 3, "paragraphs": ["Third-level content."]},
+        ]
+    }
+    assert_true(not _content_toc_pollution_samples(content), "legitimate numbered multilevel headings were flagged as TOC pollution")
+
+
+@case
+def conformance_finds_inline_math_paragraphs_by_linearized_text() -> None:
+    xml = """
+    <w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+         xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
+      <w:r><w:t>Inline formula </w:t></w:r>
+      <m:oMath>
+        <m:r><m:t>E</m:t></m:r>
+        <m:r><m:t>=</m:t></m:r>
+        <m:r><m:t>m</m:t></m:r>
+        <m:sSup><m:e><m:r><m:t>c</m:t></m:r></m:e><m:sup><m:r><m:t>2</m:t></m:r></m:sup></m:sSup>
+      </m:oMath>
+      <w:r><w:t> should remain editable.</w:t></w:r>
+    </w:p>
+    """
+    para = ET.fromstring(xml)
+    found = _find_para_by_text([para], "Inline formula E=mc^2 should remain editable.")
+    assert_true(found is para, "conformance QA did not match paragraph text containing editable inline math")
 
 
 @case

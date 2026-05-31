@@ -77,13 +77,13 @@ def _style_issues(role: str, text: str, p: ET.Element, profile: Dict[str, Any]) 
 
 
 def _find_para_by_text(paragraphs: List[ET.Element], text: str, used: Optional[set[int]] = None) -> Optional[ET.Element]:
-    target = _compact(text)
-    if not target:
+    targets = _compact_targets(text)
+    if not targets:
         return None
     for p in paragraphs:
         if used is not None and id(p) in used:
             continue
-        if _compact(_text_of_para(p)) == target:
+        if _compact(_text_of_para(p)) in targets:
             if used is not None:
                 used.add(id(p))
             return p
@@ -91,11 +91,25 @@ def _find_para_by_text(paragraphs: List[ET.Element], text: str, used: Optional[s
         if used is not None and id(p) in used:
             continue
         actual = _compact(_text_of_para(p))
-        if target in actual:
+        if any(target in actual for target in targets):
             if used is not None:
                 used.add(id(p))
             return p
     return None
+
+
+def _math_linearized_text(text: str) -> str:
+    linear = str(text or "")
+    linear = re.sub(r"[\^_]\s*\{([^{}]+)\}", r"\1", linear)
+    linear = re.sub(r"[\^_]\s*([A-Za-z0-9+\-=]+)", r"\1", linear)
+    return linear.replace("{", "").replace("}", "")
+
+
+def _compact_targets(text: str) -> set[str]:
+    target = _compact(text)
+    if not target:
+        return set()
+    return {target, _compact(_math_linearized_text(text))}
 
 
 def _find_body_start_index(paragraphs: List[ET.Element], expected: List[Dict[str, str]]) -> int:
@@ -131,6 +145,13 @@ def _is_backmatter(role: str, heading: str) -> bool:
     if role in BACKMATTER_ROLES:
         return True
     return bool(re.search(r"致\s*谢|附\s*录|^appendix\b|^acknowledgements?$", str(heading or ""), re.I))
+
+
+def _is_frontmatter(role: str, heading: str) -> bool:
+    if role in FRONTMATTER_ROLES:
+        return True
+    compact = re.sub(r"\s+", "", str(heading or "")).lower()
+    return compact in {"摘要", "中文摘要", "关键词", "关键字", "abstract", "englishabstract", "keywords", "keyword", "keywords:", "keywords：", "keywords;"}
 
 
 def _caption_tail(text: str, label_pattern: str) -> str:
@@ -187,7 +208,7 @@ def _expected_paragraphs(content: Dict[str, Any]) -> List[Dict[str, str]]:
     for sec in content.get("sections") or []:
         heading = str(sec.get("heading") or "").strip()
         role = str(sec.get("role") or "")
-        if role in FRONTMATTER_ROLES:
+        if _is_frontmatter(role, heading):
             continue
         if _is_backmatter(role, heading):
             continue
