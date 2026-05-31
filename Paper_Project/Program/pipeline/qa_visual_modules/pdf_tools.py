@@ -51,16 +51,49 @@ def _find_page(pages: List[str], patterns: List[str], start: int = 0) -> int | N
     return None
 
 
+def _find_pages(pages: List[str], patterns: List[str], start: int = 0) -> List[int]:
+    matches: List[int] = []
+    for idx, text in enumerate(pages[start:], start):
+        compact = re.sub(r"\s+", "", text or "")
+        for pat in patterns:
+            if re.search(pat, compact, re.I) or re.search(pat, text or "", re.I):
+                matches.append(idx + 1)
+                break
+    return matches
+
+
+def _add_sample(samples: List[int], page: int | None, page_count: int, limit: int = 6) -> None:
+    if page and 1 <= page <= page_count and page not in samples and len(samples) < limit:
+        samples.append(page)
+
+
 def _sample_pages(page_count: int, pages_text: List[str]) -> List[int]:
     if page_count <= 0:
         return []
-    samples = {1}
+    samples: List[int] = []
     toc_page = _find_page(pages_text, [r"目录", r"contents"])
     body_page = _find_page(pages_text, [r"第\d+章", r"chapter\s*1", r"1\.\s*[A-Za-z]"])
-    for page in (toc_page, body_page, 3 if page_count >= 3 else None, page_count // 2 if page_count >= 8 else None):
-        if page and 1 <= page <= page_count:
-            samples.add(page)
-    return sorted(samples)[:6]
+    for page in (1, toc_page, body_page):
+        _add_sample(samples, page, page_count)
+
+    risk_page_patterns = [
+        [r"图\s*\d+", r"\bfig\.?\s*\d+", r"\bfigure\s*\d+", r"插图"],
+        [r"表\s*\d+", r"\btable\s*\d+", r"三线表"],
+        [r"公式", r"方程", r"\bequation\b", r"\beq\.?\s*\(?\d+"],
+    ]
+    for patterns in risk_page_patterns:
+        for page in _find_pages(pages_text, patterns):
+            if page not in samples:
+                _add_sample(samples, page, page_count)
+                break
+
+    for page in (
+        3 if page_count >= 3 else None,
+        page_count // 2 if page_count >= 8 else None,
+        page_count,
+    ):
+        _add_sample(samples, page, page_count)
+    return sorted(samples)
 
 
 def _render_samples(pdf_path: str, visual_dir: str, pages: List[int]) -> List[str]:
@@ -92,4 +125,3 @@ def _render_all_pages(pdf_path: str, visual_dir: str, page_count: int) -> List[s
     if result.returncode != 0:
         return []
     return sorted(os.path.join(page_dir, f) for f in os.listdir(page_dir) if f.lower().endswith(".png"))
-

@@ -41,6 +41,38 @@ def visual_sample_pages_pick_useful_pages() -> None:
 
 
 @case
+def visual_sample_pages_prioritize_late_risk_content_pages() -> None:
+    import qa_visual
+
+    pages = [
+        "cover",
+        "contents",
+        "preface",
+        "1. Introduction",
+        "background prose",
+        "method prose",
+        "middle prose",
+        "body prose",
+        "图 2 模型结构",
+        "Table 3 Ablation Results",
+        "公式 (3.1) E = mc^2",
+        "discussion",
+        "references",
+        "appendix",
+    ]
+    samples = qa_visual._sample_pages(14, pages)
+    assert_true(len(samples) <= 6, f"sample page selection should stay bounded: {samples}")
+    assert_true(
+        1 in samples and 2 in samples and 4 in samples,
+        f"sample page selection lost cover/TOC/body anchors: {samples}",
+    )
+    assert_true(
+        9 in samples and 10 in samples and 11 in samples,
+        f"sample page selection missed late figure/table/formula risk pages: {samples}",
+    )
+
+
+@case
 def visual_qa_fails_closed_without_pdf_tools() -> None:
     import qa_visual
 
