@@ -97,7 +97,7 @@ Or interactive: `python run_pipeline.py`
 - Read `Outputs/<latest>/template_profile.md` — check template capabilities and risk flags
 - For PDF templates, check `template_profile.md` and `格式提取.md` for PDF type, confidence, warnings, and possible `PDF_TEMPLATE_UNSUPPORTED`
 - Read `Outputs/<latest>/qa_report.md` first; it names the active fix target and the first issue-code-specific next action for the current mode. If `build_generated.py` failed before QA, the pipeline still writes `qa_report.md/json`, `qa_repair_plan.md/json`, and `qa_fix_prompt.txt` with `MISSING_DOCX` guidance.
-- If `--auto-repair` was used, read `Outputs/<latest>/repair_loop_report.md/json`; it records every repair round, stop reason, and remaining manual checks
+- If `--auto-repair` was used, read `Outputs/<latest>/repair_loop_report.md/json`; it records every repair round, stop reason, top-level `next_action`, `resume_scope`, `resume_command`, and remaining manual checks
 - Read `Outputs/<latest>/agent_summary.md/json` first when present; it is the user-facing handoff with final DOCX path, QA status, repair-loop result, structural/strict/visual QA issue-code next actions, and manual checks
 - Read `conformance_report.md` and `visual_report.md` when strict/visual fails; their top-level next action should be issue-code-specific for common blockers such as placeholders, Word field errors, invalid PDF page count, unreadable page PNGs, and missing render dependencies
 - If `--qa-level visual` was used, read `Outputs/<latest>/visual_report.md` and inspect sample PNGs under `visual_qa/samples/`
@@ -141,7 +141,7 @@ python run_pipeline.py --mode user --auto-repair --template <模板文件名> --
 
 Rules:
 - The loop may edit only `Outputs/<latest>/build_generated.py`.
-- It writes `repair_loop_report.md/json` with each round's actions, QA error/warning changes, new/resolved issue codes, and stop reason.
+- It writes `repair_loop_report.md/json` with each round's actions, QA error/warning changes, new/resolved issue codes, stop reason, top-level next action, resume scope, and resume command.
 - It reruns every enabled QA level. In `strict`/`visual` mode, missing conformance or visual dependencies must be reported as errors instead of being treated as convergence.
 - It preserves visual QA options such as golden baseline path, update-golden mode, and WPS requirement across repair rounds.
 - It stops after repeated non-improvement, after the max round limit, or when QA says a user file/input is required.

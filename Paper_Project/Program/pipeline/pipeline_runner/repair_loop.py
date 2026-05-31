@@ -646,6 +646,7 @@ def _round_snapshot(
 ) -> Dict[str, Any]:
     previous_codes = set(previous_error_codes or [])
     current_codes = set(state.get("error_codes") or [])
+    repair_plan = state.get("repair_plan") or {}
     return {
         "round": round_no,
         "phase": phase,
@@ -658,6 +659,9 @@ def _round_snapshot(
         "warning_codes": list(state.get("warning_codes") or []),
         "new_error_codes": sorted(current_codes - previous_codes),
         "resolved_error_codes": sorted(previous_codes - current_codes),
+        "repair_next_action": repair_plan.get("next_action") or "",
+        "repair_resume_scope": repair_plan.get("resume_scope") or "",
+        "repair_resume_command": repair_plan.get("resume_command") or "",
         "actions": actions,
         "build": build or {},
     }
@@ -681,6 +685,15 @@ def _finish(
     display_out = _report_display_path(out_path)
     display_docx = _join_report_path(display_out, output_docx_name)
     final_warnings = int(final.get("total_warnings") or 0)
+    handoff = _repair_loop_handoff(
+        ok=ok,
+        status=status,
+        mode=mode,
+        final=final,
+        display_out=display_out,
+        blockers=blockers or [],
+        stop_detail=stop_detail,
+    )
     manual_checks = ["用 Word/WPS 打开最终 DOCX，核对分页、图片、公式、表格和目录。"]
     if final_warnings:
         manual_checks.append("查看 qa_report.md 和 repair_loop_report.md 中的剩余 warning，确认不会影响交付。")
@@ -700,6 +713,9 @@ def _finish(
         "final_warnings": final_warnings,
         "final_error_codes": final.get("error_codes") or [],
         "final_warning_codes": final.get("warning_codes") or [],
+        "next_action": handoff["next_action"],
+        "resume_scope": handoff["resume_scope"],
+        "resume_command": handoff["resume_command"],
         "warning_policy": (
             "剩余 warning 不会阻断自动 QA 收敛，但仍可能影响交付质量，交付前必须用 Word/WPS 人工确认。"
             if final_warnings
@@ -722,6 +738,87 @@ def _finish(
     )
 
 
+def _repair_loop_handoff(
+    *,
+    ok: bool,
+    status: str,
+    mode: str,
+    final: Dict[str, Any],
+    display_out: str,
+    blockers: List[Dict[str, Any]],
+    stop_detail: str,
+) -> Dict[str, str]:
+    if ok:
+        return {
+            "next_action": "自动修复已收敛；请用 Word/WPS 打开最终 DOCX 做最终视觉核对。",
+            "resume_scope": "final_review",
+            "resume_command": "",
+        }
+
+    if status == "stopped_build_failed":
+        command = _default_rebuild_command(display_out)
+        return {
+            "next_action": f"自动修复后重建失败；先打开 `repair_loop_report.md` 查看构建错误，再让 Agent 检查本次 `build_generated.py`，修复后运行：`{command}`。",
+            "resume_scope": "current_docx",
+            "resume_command": command,
+        }
+
+    if blockers:
+        first = blockers[0]
+        code = str(first.get("code") or "").strip()
+        action = str(first.get("user_action") or "").strip() or str(first.get("detail") or "").strip()
+        prefix = f"优先处理 `{code}`：{action}" if code else action
+        scope = "input_files" if status == "stopped_needs_user_file" else "manual_or_dependency"
+        command = str(final.get("repair_resume_command") or "").strip()
+        route = "补齐或更换输入文件后重新运行完整流水线。" if scope == "input_files" else "完成依赖修复、人工确认或环境修复后重新运行对应 QA。"
+        if command:
+            route += f" 可运行：`{command}`"
+        return {
+            "next_action": " ".join(part for part in (prefix, route) if part).strip(),
+            "resume_scope": scope,
+            "resume_command": command,
+        }
+
+    command = str(final.get("repair_resume_command") or "").strip()
+    scope = str(final.get("repair_resume_scope") or "").strip()
+    if not scope:
+        scope = "current_docx" if mode == "user" else "full_pipeline"
+    if not command and scope == "current_docx":
+        command = _default_rebuild_command(display_out)
+    repair_next = str(final.get("repair_next_action") or "").strip()
+    if status == "stopped_no_improvement":
+        reason = "自动修复已停止：QA 错误数没有继续改善。"
+    elif status == "stopped_no_supported_auto_repair":
+        reason = "自动修复已停止：当前问题没有匹配到安全的自动修复动作。"
+    elif status == "stopped_max_rounds":
+        reason = "自动修复已停止：已达到最大修复轮次。"
+    else:
+        reason = "自动修复已停止。"
+    if stop_detail:
+        reason += f" {stop_detail}"
+    next_action = repair_next or "请打开 `qa_report.md`、`qa_repair_plan.md` 和 `build_generated.py`，让 Agent 继续处理剩余错误。"
+    if command and command not in next_action:
+        next_action += f" 修复后运行：`{command}`"
+    return {
+        "next_action": f"{reason} {next_action}".strip(),
+        "resume_scope": scope,
+        "resume_command": command,
+    }
+
+
+def _default_rebuild_command(display_out: str) -> str:
+    return "python " + _quote_cmd_arg(_join_report_path(display_out, "build_generated.py"))
+
+
+def _quote_cmd_arg(value: str) -> str:
+    text = str(value)
+    if not text:
+        return '""'
+    if re.search(r'[\s"&|<>^]', text):
+        return '"' + text.replace('"', r'\"') + '"'
+    return text
+
+
 def _report_to_markdown(report: Dict[str, Any]) -> str:
     lines = [
         "# 自动修复闭环报告",
@@ -733,7 +830,11 @@ def _report_to_markdown(report: Dict[str, Any]) -> str:
         f"- 最终 DOCX：`{report.get('final_docx')}`",
         f"- 最终错误：`{report.get('final_errors')}`",
         f"- 最终警告：`{report.get('final_warnings')}`",
+        f"- 下一步：{report.get('next_action')}",
+        f"- 修复范围：`{report.get('resume_scope')}`",
     ]
+    if report.get("resume_command"):
+        lines.append(f"- 恢复命令：`{report.get('resume_command')}`")
     if report.get("stop_detail"):
         lines.append(f"- 停止原因：{report.get('stop_detail')}")
     lines.append(f"- warning 处理策略：{report.get('warning_policy')}")

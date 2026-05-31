@@ -584,6 +584,11 @@ def pipeline_auto_repair_stops_after_no_improvement() -> None:
     assert_true(calls["qa"] >= 3, "QA was not rerun during no-improvement loop")
     assert_true((work / "final.docx").exists(), "rebuild action did not run build_generated.py")
     assert_true(report["stop_detail"], "no-improvement stop detail was not recorded")
+    assert_true(report.get("next_action"), f"repair loop report should expose a beginner-facing next action: {report}")
+    assert_true(report.get("resume_scope") == "current_docx", f"no-improvement repair loop should resume from the current DOCX script: {report}")
+    assert_true("build_generated.py" in report.get("resume_command", ""), f"repair loop report should provide a copyable resume command: {report}")
+    loop_text = (work / "repair_loop_report.md").read_text(encoding="utf-8")
+    assert_true("下一步" in loop_text and "修复范围" in loop_text, "repair loop markdown should show the next action and scope")
     assert_true(build_path.read_text(encoding="utf-8").count("AUTO_REPAIR") == 0, "no-improvement rebuild should not patch script")
 
 
@@ -619,6 +624,48 @@ def pipeline_auto_repair_stops_for_needs_user_file() -> None:
     assert_true(not result.ok and result.status == "stopped_needs_user_file", f"unexpected stop status: {result.status}")
     assert_true(calls["qa"] == 1, "needs-user-file blocker should stop before rebuild loops")
     assert_true(report["blockers"] and report["blockers"][0]["code"] == "CONTENT_IMAGE_MISSING", "blocker was not recorded")
+    assert_true(report.get("resume_scope") == "input_files", f"needs-user-file stop should route to input files: {report}")
+    assert_true("CONTENT_IMAGE_MISSING" in report.get("next_action", ""), f"needs-user-file stop should name the blocking code: {report}")
+    assert_true("完整流水线" in report.get("next_action", ""), f"needs-user-file stop should tell users to rerun the full pipeline after fixing input: {report}")
+
+
+@case
+def pipeline_auto_repair_build_failure_has_resume_handoff() -> None:
+    work = new_workdir("pipeline_auto_repair_build_failure")
+    _write_repair_loop_fixture(work)
+    calls = {"build": 0}
+
+    def fake_qa(out_dir, mode="user", output_docx_name="final.docx"):
+        return _fake_repair_report(out_dir, code="PLACEHOLDER_TEXT_LEFT", message="synthetic placeholder")
+
+    def failing_build(_gen_py_path, _out_dir, python_executable):
+        calls["build"] += 1
+        return ScriptExecutionResult(returncode=1, stdout="", stderr="synthetic build failure")
+
+    deps = QADependencies(
+        qa_check_and_write=fake_qa,
+        conformance_check_and_write=None,
+        visual_check_and_write=None,
+        optional_import_detail=lambda name: "",
+    )
+    result = run_repair_loop(
+        str(work),
+        mode="user",
+        output_docx_name="final.docx",
+        qa_level="basic",
+        project_root=str(REPO_ROOT),
+        max_rounds=2,
+        stop_no_improve=1,
+        deps=deps,
+        run_generated_script=failing_build,
+        python_executable=sys.executable,
+    )
+    report = json.loads((work / "repair_loop_report.json").read_text(encoding="utf-8"))
+    assert_true(not result.ok and result.status == "stopped_build_failed", f"unexpected build-failure stop status: {result.status}")
+    assert_true(calls["build"] == 1, "auto repair should attempt one rebuild before stopping")
+    assert_true(report.get("resume_scope") == "current_docx", f"build failure should route to current docx repair: {report}")
+    assert_true("build_generated.py" in report.get("resume_command", ""), f"build failure should provide rebuild command: {report}")
+    assert_true("构建错误" in report.get("next_action", "") and "build_generated.py" in report.get("next_action", ""), f"build failure next action should be concrete: {report}")
 
 
 @case
@@ -1465,6 +1512,46 @@ def pipeline_agent_summary_localizes_manual_checks_and_skips_empty_warning_promp
     text = Path(md_path).read_text(encoding="utf-8")
     assert_true(summary["manual_check_required"] == ["用 Word/WPS 打开最终 DOCX，核对分页、图片、公式、表格和目录。"], f"manual checks were noisy: {summary['manual_check_required']}")
     assert_true("Review remaining warnings" not in text and "剩余 warning" not in text, "agent summary should not expose warning boilerplate when no warnings remain")
+
+
+@case
+def pipeline_agent_summary_surfaces_repair_loop_next_action() -> None:
+    work = new_workdir("pipeline_agent_summary_repair_loop_next")
+    write_workflow_mode(
+        str(work),
+        mode="user",
+        template_path="template.docx",
+        content_path="content.docx",
+        run_qa=True,
+        qa_level="basic",
+        golden_dir=None,
+        update_golden=False,
+        require_wps=False,
+        auto_repair=True,
+        repair_max_rounds=2,
+        repair_stop_no_improve=1,
+    )
+    write_json(work / "qa_report.json", {"passed": True, "issues": [], "counts": {}, "next_action": "ok"})
+    write_json(
+        work / "repair_loop_report.json",
+        {
+            "status": "stopped_build_failed",
+            "ok": False,
+            "rounds_run": 1,
+            "final_errors": 1,
+            "final_warnings": 0,
+            "next_action": "自动修复后重建失败；先打开 repair_loop_report.md，再检查 build_generated.py。",
+            "resume_scope": "current_docx",
+            "resume_command": "python Outputs/demo/build_generated.py",
+            "manual_check_required": ["用 Word/WPS 打开最终 DOCX，核对分页、图片、公式、表格和目录。"],
+        },
+    )
+    json_path, md_path = write_agent_summary(str(work), "2026-05-31_repair_loop_next", "最终论文.docx", "user", pipeline_status="failed")
+    summary = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    text = Path(md_path).read_text(encoding="utf-8")
+    action_text = "\n".join(summary.get("next_actions") or summary.get("manual_check_required") or [])
+    assert_true("repair_loop_report.md" in action_text and "build_generated.py" in action_text, f"agent summary lost repair-loop next action: {summary}")
+    assert_true("repair_loop_report.md" in text and "build_generated.py" in text, "agent summary markdown should surface repair-loop next action")
 
 
 @case

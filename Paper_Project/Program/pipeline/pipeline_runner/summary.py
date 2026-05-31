@@ -195,6 +195,23 @@ def _missing_report_actions(reports, missing_keys):
     return actions
 
 
+def _repair_loop_actions(repair_report):
+    if not repair_report or repair_report.get("ok") is True:
+        return []
+    action = str(repair_report.get("next_action") or "").strip()
+    if not action:
+        return []
+    status = str(repair_report.get("status") or "stopped").strip()
+    scope = str(repair_report.get("resume_scope") or "").strip()
+    command = str(repair_report.get("resume_command") or "").strip()
+    parts = [f"自动修复 `{status}`：{action}"]
+    if scope:
+        parts.append(f"修复范围：`{scope}`。")
+    if command and command not in action:
+        parts.append(f"恢复命令：`{command}`。")
+    return [" ".join(parts)]
+
+
 def _friendly_manual_check(item):
     text = str(item or "").strip()
     lowered = text.lower()
@@ -264,6 +281,7 @@ def build_agent_summary(
     )
     required_reports_present = bool(expected_report_keys) and not missing_required_reports
     automatic_qa_passed = required_reports_present and final_errors == 0 and all_existing_reports_passed
+    next_actions.extend(_repair_loop_actions(repair_report))
     next_actions.extend(_missing_report_actions(reports, missing_required_reports))
     if pipeline_status != "completed":
         status_label = "需要继续处理"

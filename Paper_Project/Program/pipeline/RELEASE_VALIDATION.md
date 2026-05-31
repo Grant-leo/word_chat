@@ -57,6 +57,7 @@ python Paper_Project\Program\pipeline\regression_suite.py --filter pipeline_qa_w
 python Paper_Project\Program\pipeline\regression_suite.py --filter pipeline_qa_writes_report_when_visual_dependency_missing
 python Paper_Project\Program\pipeline\regression_suite.py --filter pipeline_auto_repair_blocks_unrepairable_visual_errors
 python Paper_Project\Program\pipeline\regression_suite.py --filter run_pipeline_writes_repair_plan_for_build_failure
+python Paper_Project\Program\pipeline\regression_suite.py --filter pipeline_agent_summary_surfaces_repair_loop_next_action
 python Paper_Project\Program\pipeline\regression_suite.py --filter qa_repair_guides_cover_registered_issue_codes
 ```
 
@@ -68,6 +69,7 @@ Pass criteria:
 - `--agent-auto` auto-selects only single candidates, refuses ambiguous choices, and writes `agent_summary.md/json`.
 - Registered structural QA issue codes have user-facing repair guides.
 - Auto-repair stops with a clear reason when it needs user input, dependencies, or manual visual confirmation.
+- Stopped auto-repair reports expose `next_action`, `resume_scope`, and `resume_command`, and `agent_summary` surfaces that next action.
 
 ## Gate 4.5: Fresh-Folder Agent Smoke
 
