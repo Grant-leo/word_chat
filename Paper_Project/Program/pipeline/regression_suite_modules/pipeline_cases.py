@@ -1096,6 +1096,54 @@ def pipeline_auto_repair_wps_text_mismatch_has_visual_rerun_handoff() -> None:
 
 
 @case
+def pipeline_auto_repair_wps_sample_mismatch_has_visual_rerun_handoff() -> None:
+    work = new_workdir("pipeline_auto_repair_wps_sample_mismatch")
+    _write_repair_loop_fixture(work)
+
+    def passing_qa(out_dir, mode="user", output_docx_name="final.docx"):
+        return _fake_repair_report(out_dir, code="NO_ISSUE", severity="info")
+
+    def passing_conformance(out_dir, mode="user", output_docx_name="final.docx", project_root=""):
+        return _write_conformance_report(out_dir, passed=True)
+
+    def failing_visual(out_dir, output_docx_name="final.docx", project_root="", render_all_pages=True, require_wps=False, golden_dir=None, update_golden=False):
+        report = {
+            "schema_version": 1,
+            "mode": "user",
+            "passed": False,
+            "counts": {"sample_images": 2, "wps_sample_images": 2, "wps_sample_mismatches": [1]},
+            "issues": [{"severity": "error", "code": "WPS_SAMPLE_IMAGE_MISMATCH", "message": "sample image mismatch", "detail": "pages=1"}],
+            "next_action": "Compare Word and WPS sample PNGs.",
+        }
+        Path(out_dir, "visual_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        return report
+
+    deps = QADependencies(
+        qa_check_and_write=passing_qa,
+        conformance_check_and_write=passing_conformance,
+        visual_check_and_write=failing_visual,
+        optional_import_detail=lambda name: "",
+    )
+    result = run_repair_loop(
+        str(work),
+        mode="user",
+        output_docx_name="final.docx",
+        qa_level="visual",
+        project_root=str(REPO_ROOT),
+        max_rounds=2,
+        stop_no_improve=1,
+        deps=deps,
+        run_generated_script=run_generated_script,
+        python_executable=sys.executable,
+    )
+    report = json.loads((work / "repair_loop_report.json").read_text(encoding="utf-8"))
+    assert_true(not result.ok, "WPS sample-image mismatch should stop auto repair")
+    assert_true(result.status == "stopped_needs_user_input", f"WPS sample-image mismatch should require manual confirmation: {result.status}")
+    assert_true(report["blockers"] and report["blockers"][0]["code"] == "WPS_SAMPLE_IMAGE_MISMATCH", f"WPS sample-image mismatch should be a blocker: {report}")
+    assert_true("WPS" in report.get("next_action", "") and ("样张" in report.get("next_action", "") or "PNG" in report.get("next_action", "")) and "重跑 visual QA" in report.get("next_action", ""), f"WPS sample-image mismatch handoff should tell users to rerun visual QA: {report}")
+
+
+@case
 def pipeline_auto_repair_report_paths_are_sanitized() -> None:
     work = new_workdir("pipeline_auto_repair_sanitized_paths")
     build_path = _write_repair_loop_fixture(work)
@@ -1688,6 +1736,9 @@ def pipeline_strict_and_visual_reports_surface_specific_next_actions() -> None:
     wps_text_mismatch = visual_next_action([{"code": "WPS_TEXT_PAGE_MISMATCH", "severity": "error", "message": "wps text pages missing"}])
     assert_true("WPS" in wps_text_mismatch and ("文本" in wps_text_mismatch or "内容" in wps_text_mismatch) and "重跑 visual QA" in wps_text_mismatch, f"WPS text mismatch action should tell users how to resume: {wps_text_mismatch}")
 
+    wps_sample_mismatch = visual_next_action([{"code": "WPS_SAMPLE_IMAGE_MISMATCH", "severity": "error", "message": "wps sample images differ"}])
+    assert_true("WPS" in wps_sample_mismatch and ("样张" in wps_sample_mismatch or "PNG" in wps_sample_mismatch or "画面" in wps_sample_mismatch) and "重跑 visual QA" in wps_sample_mismatch, f"WPS sample-image mismatch action should tell users how to resume: {wps_sample_mismatch}")
+
     wps_pdfinfo = visual_next_action([{"code": "WPS_PDFINFO_FAILED", "severity": "error", "message": "wps pdfinfo failed"}])
     assert_true("WPS" in wps_pdfinfo and "PDF" in wps_pdfinfo and "重跑 visual QA" in wps_pdfinfo, f"WPS PDF metadata action should tell users how to resume: {wps_pdfinfo}")
 
@@ -2243,6 +2294,52 @@ def pipeline_agent_summary_surfaces_wps_text_rerun_step() -> None:
     assert_true("WPS_TEXT_PAGE_MISMATCH" in action_text, f"summary lost the WPS text issue code: {summary}")
     assert_true(("文本" in action_text or "内容" in action_text) and "重跑 visual QA" in action_text, f"summary should tell users to rerun visual QA after WPS text repair: {summary}")
     assert_true("WPS_TEXT_PAGE_MISMATCH" in text and "重跑 visual QA" in text, "agent summary markdown should show the WPS text rerun step")
+
+
+@case
+def pipeline_agent_summary_surfaces_wps_sample_rerun_step() -> None:
+    work = new_workdir("pipeline_agent_summary_wps_sample")
+    write_workflow_mode(
+        str(work),
+        mode="developer",
+        template_path="template.docx",
+        content_path="content.docx",
+        run_qa=True,
+        qa_level="visual",
+        golden_dir=None,
+        update_golden=False,
+        require_wps=True,
+        auto_repair=False,
+        agent_auto=True,
+    )
+    (work / "最终论文.docx").write_bytes(b"synthetic")
+    write_json(work / "qa_report.json", {"passed": True, "issues": [], "counts": {}, "next_action": "ok"})
+    write_json(work / "conformance_report.json", {"passed": True, "issues": [], "counts": {}, "next_action": "ok"})
+    write_json(
+        work / "visual_report.json",
+        {
+            "passed": False,
+            "issues": [
+                {
+                    "code": "WPS_SAMPLE_IMAGE_MISMATCH",
+                    "severity": "error",
+                    "message": "WPS sample images differ",
+                    "detail": "pages=1",
+                }
+            ],
+            "counts": {"sample_images": 2, "wps_sample_images": 2, "wps_sample_mismatches": [1]},
+            "next_action": "",
+        },
+    )
+
+    json_path, md_path = write_agent_summary(str(work), "2026-06-01_wps_sample", "最终论文.docx", "developer")
+    summary = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    text = Path(md_path).read_text(encoding="utf-8")
+    action_text = "\n".join(summary.get("next_actions") or [])
+
+    assert_true("WPS_SAMPLE_IMAGE_MISMATCH" in action_text, f"summary lost the WPS sample issue code: {summary}")
+    assert_true(("样张" in action_text or "PNG" in action_text or "画面" in action_text) and "重跑 visual QA" in action_text, f"summary should tell users to rerun visual QA after WPS sample repair: {summary}")
+    assert_true("WPS_SAMPLE_IMAGE_MISMATCH" in text and "重跑 visual QA" in text, "agent summary markdown should show the WPS sample rerun step")
 
 
 @case

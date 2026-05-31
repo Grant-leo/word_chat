@@ -62,6 +62,24 @@ def _text_page_count_differs(word_text_pages: Any, wps_text_pages: Any) -> bool:
     return (word_count - wps_count) > max(2, word_count // 8)
 
 
+def _hash_distance(a: Any, b: Any) -> int | None:
+    try:
+        return (int(str(a), 16) ^ int(str(b), 16)).bit_count()
+    except (TypeError, ValueError):
+        return None
+
+
+def _sample_hash_mismatches(sample_pages: List[int], word_hashes: List[str], wps_hashes: List[str], *, threshold: int = 12) -> List[int]:
+    mismatches: List[int] = []
+    for idx, page in enumerate(sample_pages):
+        if idx >= len(word_hashes) or idx >= len(wps_hashes):
+            continue
+        distance = _hash_distance(word_hashes[idx], wps_hashes[idx])
+        if distance is not None and distance > threshold:
+            mismatches.append(page)
+    return mismatches
+
+
 def _preserve_rendered_text_artifact(visual_dir: str, label: str) -> str | None:
     src = os.path.join(visual_dir, "rendered.txt")
     if not os.path.exists(src):
@@ -106,6 +124,10 @@ def _next_action(issues: List[Dict[str, Any]]) -> str:
         return "分别打开 Word 与 WPS 导出的 PDF 比对纸张大小、页面尺寸和横竖方向；修复模板页面设置或 WPS 兼容性问题后重跑 visual QA。"
     if error_codes & {"WPS_TEXT_PAGE_MISMATCH"}:
         return "分别打开 Word 与 WPS 导出的 PDF 比对正文、目录、公式和图片内容；WPS 文本页明显缺失时先修复 WPS 导出、字体兼容或排版生成问题，再重跑 visual QA。"
+    if error_codes & {"WPS_SAMPLE_RENDER_FAILED"}:
+        return "WPS 样张 PNG 没有完整渲染；先检查 WPS 导出的 PDF 能否正常打开，并修复 Poppler/WPS 渲染问题后重跑 visual QA。"
+    if error_codes & {"WPS_SAMPLE_IMAGE_MISMATCH"}:
+        return "分别打开 Word 样张 `visual_qa/samples/` 和 WPS 样张 `visual_qa/wps/samples/` 比对公式、图片、表格和正文画面差异；修复 WPS 兼容或排版生成问题后重跑 visual QA。"
     if error_codes & {"GOLDEN_BASELINE_MISMATCH"}:
         return "打开 visual_report.md 和 visual_qa/samples/ 对比页面；确认变化正确则用 --update-golden 更新基线，否则继续修复排版。"
     if error_codes & {"MISSING_DOCX"}:
@@ -128,6 +150,8 @@ def _next_action(issues: List[Dict[str, Any]]) -> str:
         return "visual QA 通过但 WPS 与 Word 的页面尺寸不同；需要 WPS 校验时比对纸张大小和横竖方向，修复后重跑 visual QA。"
     if warning_codes & {"WPS_TEXT_PAGE_MISMATCH"}:
         return "visual QA 通过但 WPS 与 Word 的可提取文本页数不同；需要 WPS 校验时打开两份 PDF 比对内容，修复后重跑 visual QA。"
+    if warning_codes & {"WPS_SAMPLE_RENDER_FAILED", "WPS_SAMPLE_IMAGE_MISMATCH"}:
+        return "visual QA 通过但 WPS 样张渲染或样张画面与 Word 不一致；需要 WPS 校验时打开两组 PNG 样张比对，修复后重跑 visual QA。"
     if warning_codes:
         return "visual QA 通过但仍有 warning；打开 visual_report.md 按问题码确认是否影响交付，必要时修复后重跑 visual QA。"
     return "打开 visual_report.md 和 visual_qa/samples/，按页面样张定位排版问题后重跑流水线。"
@@ -191,6 +215,7 @@ def check_visual(
             counts["sample_images"] = len(rendered)
             if samples and len(rendered) < len(samples):
                 issues.append(_issue("SAMPLE_RENDER_FAILED", "error", "Could not render all PDF sample PNGs; install pdftoppm/Poppler."))
+            sample_image_stats = _image_stats(rendered) if rendered and len(rendered) == len(samples) else {"page_hashes": []}
             image_stats: Dict[str, Any] = {"page_hashes": [], "blank_pages": []}
             if render_all_pages and page_count > 0:
                 all_pages = _render_all_pages(pdf_path, visual_dir, page_count)
@@ -260,6 +285,38 @@ def check_visual(
                                 f"word_text_pages={counts.get('text_pages')} wps_text_pages={counts.get('wps_text_pages')}",
                             )
                         )
+                    if samples and rendered:
+                        wps_visual_dir = os.path.join(visual_dir, "wps")
+                        wps_rendered = _render_samples(wps_pdf, wps_visual_dir, samples)
+                        artifacts["wps_samples"] = wps_rendered
+                        counts["wps_sample_images"] = len(wps_rendered)
+                        if len(wps_rendered) < len(samples):
+                            issues.append(
+                                _issue(
+                                    "WPS_SAMPLE_RENDER_FAILED",
+                                    "error",
+                                    "Could not render all WPS PDF sample PNGs.",
+                                    f"pages={len(samples)} rendered={len(wps_rendered)}",
+                                )
+                            )
+                        elif sample_image_stats.get("page_hashes"):
+                            wps_sample_stats = _image_stats(wps_rendered)
+                            counts["wps_sample_image_hashes"] = len(wps_sample_stats.get("page_hashes") or [])
+                            mismatches = _sample_hash_mismatches(
+                                samples,
+                                sample_image_stats.get("page_hashes") or [],
+                                wps_sample_stats.get("page_hashes") or [],
+                            )
+                            if mismatches:
+                                counts["wps_sample_mismatches"] = mismatches
+                                issues.append(
+                                    _issue(
+                                        "WPS_SAMPLE_IMAGE_MISMATCH",
+                                        "error",
+                                        "WPS-rendered sample PNGs differ substantially from Word-rendered sample PNGs.",
+                                        "pages=" + ",".join(map(str, mismatches[:12])),
+                                    )
+                                )
             except Exception as exc:
                 severity = "error" if require_wps else "warning"
                 issues.append(_issue("WPS_EXPORT_UNAVAILABLE", severity, "WPS PDF export could not be completed.", str(exc)))

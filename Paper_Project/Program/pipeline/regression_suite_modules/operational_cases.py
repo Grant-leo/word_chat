@@ -249,6 +249,67 @@ def visual_qa_preserves_word_and_wps_text_diagnostics() -> None:
 
 
 @case
+def visual_qa_fails_closed_when_wps_sample_images_differ() -> None:
+    from PIL import Image
+    from qa_visual_modules import checks as visual_checks
+
+    work = new_workdir("visual_wps_sample_image_mismatch")
+    (work / "final.docx").write_bytes(b"not a real docx; export is monkeypatched")
+    word_pdf = work / "word.pdf"
+    wps_pdf = work / "wps.pdf"
+    word_pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+    wps_pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+
+    original_export = visual_checks._export_pdf
+    original_wps_export = visual_checks._export_wps_pdf
+    original_pdfinfo = visual_checks._pdfinfo
+    original_pages_text = visual_checks._pdf_pages_text
+    original_render = visual_checks._render_samples
+    try:
+        visual_checks._export_pdf = lambda _docx, _visual_dir: str(word_pdf)
+        visual_checks._export_wps_pdf = lambda _docx, _visual_dir: str(wps_pdf)
+        visual_checks._pdfinfo = lambda _path: {"available": True, "pages": 1, "page_width_pt": 595.3, "page_height_pt": 841.9}
+        visual_checks._pdf_pages_text = lambda _pdf, _visual_dir: ["same visible text"]
+
+        def fake_render_samples(pdf, visual_dir, pages):
+            sample_dir = Path(visual_dir) / "samples"
+            sample_dir.mkdir(parents=True, exist_ok=True)
+            rendered = []
+            for page in pages:
+                img = Image.new("L", (80, 80), color=255)
+                pixels = img.load()
+                if Path(pdf).name == "wps.pdf":
+                    for x in range(40, 80):
+                        for y in range(80):
+                            pixels[x, y] = 0
+                else:
+                    for x in range(40):
+                        for y in range(80):
+                            pixels[x, y] = 0
+                path = sample_dir / f"page_{page:03d}.png"
+                img.save(path)
+                rendered.append(str(path))
+            return rendered
+
+        visual_checks._render_samples = fake_render_samples
+        report = visual_checks.check_visual(str(work), output_docx_name="final.docx", require_wps=False, render_all_pages=False)
+    finally:
+        visual_checks._export_pdf = original_export
+        visual_checks._export_wps_pdf = original_wps_export
+        visual_checks._pdfinfo = original_pdfinfo
+        visual_checks._pdf_pages_text = original_pages_text
+        visual_checks._render_samples = original_render
+
+    codes = [item["code"] for item in report["issues"]]
+    assert_true(report["passed"] is False, f"WPS sample-image mismatch should fail visual QA even when pages and text match: {report}")
+    assert_true("WPS_SAMPLE_IMAGE_MISMATCH" in codes, f"WPS sample-image mismatch was not reported: {report}")
+    assert_true(report["counts"].get("wps_sample_images") == 1, f"WPS sample image count was not recorded: {report}")
+    assert_true(report["counts"].get("wps_sample_mismatches") == [1], f"WPS sample mismatch page was not recorded: {report}")
+    action = report.get("next_action", "")
+    assert_true("WPS" in action and ("样张" in action or "PNG" in action or "画面" in action) and "重跑 visual QA" in action, f"WPS sample-image mismatch lacked a concrete next action: {report}")
+
+
+@case
 def visual_qa_sanitizes_issue_details() -> None:
     import qa_visual
 

@@ -133,6 +133,14 @@ REPORT_BLOCKER_GUIDES = {
         "auto_level": "needs_user_confirmation",
         "user_action": "分别打开 Word 与 WPS 导出的 PDF 比对正文、目录、公式和图片内容；确认 WPS 文本页缺失是导出、字体兼容还是排版生成问题。修复后重跑 visual QA。",
     },
+    "WPS_SAMPLE_RENDER_FAILED": {
+        "auto_level": "needs_user_confirmation",
+        "user_action": "打开 WPS 导出的 PDF 和 visual_report.md，检查 WPS 样张 PNG 是否能完整生成；修复 WPS/Poppler 渲染问题后重跑 visual QA。",
+    },
+    "WPS_SAMPLE_IMAGE_MISMATCH": {
+        "auto_level": "needs_user_confirmation",
+        "user_action": "分别打开 Word 样张 visual_qa/samples/ 和 WPS 样张 visual_qa/wps/samples/，比对公式、图片、表格和正文画面差异；确认是 WPS 兼容还是排版生成问题。修复后重跑 visual QA。",
+    },
     "GOLDEN_BASELINE_MISMATCH": {
         "auto_level": "needs_user_confirmation",
         "user_action": "打开 visual_report.md 和 visual_qa/samples/ 对比页面；确认变化正确后用 --update-golden 更新基线，或继续修复排版。",
