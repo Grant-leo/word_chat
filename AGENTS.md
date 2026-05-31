@@ -59,6 +59,7 @@ If no mode is known and the user has not said they are the developer, use `user`
 4. If there are multiple candidates, ask the user to choose only the file name
 5. After the run, read `Outputs/<latest>/agent_summary.md` first, then the detailed QA reports
 6. If anything interrupts before or during the run, do not leave ordinary users waiting: read or write the relevant `agent_preflight_report.md`, `agent_summary.md`, or QA report, and state the next concrete action they should take
+7. If interactive selection is cancelled or stdin closes, tell the user to rerun through `python run_pipeline.py --agent-auto`, or rerun with explicit `--template` / `--content` file names
 
 Only use explicit `--template` / `--content` commands when the user or the file situation makes the choice unambiguous.
 
@@ -156,11 +157,11 @@ For reusable fixes, product behavior, parser changes, or when the requester is t
    - `latex_omath.py`: LaTeX/text formula to native OOXML Math conversion
    - `latex_omath_modules/`: formula converter tokenizer, parser, API helpers, symbol registries, and OOXML builders copied with generated scripts
    - `format_extractor.py`: stable template format extraction entry point
-   - `format_extractor_modules/`: extraction orchestration, PDF template parsing, OOXML metrics, style inheritance, semantic style profiles, cover assets, and cover table extraction
+   - `format_extractor_modules/`: extraction orchestration, PDF template parsing, OOXML metrics, style inheritance, semantic style profiles, cover assets, and cover table extraction. Standalone CLI output defaults to `Outputs/_format_extractor_cli/`; template assets should not be written beside files in `Templates/`.
    - `content_parser.py`: content sections, figures, references, metadata extraction
-   - `content_parser_modules/`: reusable content extraction helpers for extraction orchestration, placeholders, text cleanup, front matter, captions, OOXML streams, body dispatch, source TOC, images, tables, formula labels/OMML/text items/repair strategies, headings, references, and section building
+   - `content_parser_modules/`: reusable content extraction helpers for extraction orchestration, placeholders, text cleanup, front matter, captions, OOXML streams, body dispatch, source TOC, images, tables, formula labels/OMML/text items/repair strategies, headings, references, and section building. Standalone/default extraction output stays under `Outputs/_content_parser_cli/` or `Outputs/_content_parser_extract/`, never under `Inputs/`.
    - `md_parser.py`: Markdown input parsing
-   - `md_parser_modules/`: Markdown parser helpers for content orchestration, format extraction, math tokens, image path resolution, tables, and text cleanup
+   - `md_parser_modules/`: Markdown parser helpers for content orchestration, format extraction, math tokens, image path resolution, tables, and text cleanup. Standalone CLI output defaults to `Outputs/_md_parser_cli/`.
    - `template_profiler.py`: stable template profile entry point
    - `template_profiler_modules/`: template capability/risk profile construction and report writing
    - `qa_visual.py`: optional PDF export/render QA
@@ -218,6 +219,7 @@ Example: template has no cross-references → generated script has no `B_ref()`.
 - PDF templates are best-effort format sources: instruction-style PDFs provide text rules, visual sample PDFs provide estimated geometry/styles, and scanned/textless PDFs must surface `PDF_TEMPLATE_UNSUPPORTED`.
 - When the user says "更新记忆" or asks to save durable progress, update the disk memory under `memory/` and validate with `python scripts/project_memory.py validate`.
 - Do not write private test data, generated DOCX/PDF/PNG, customer content, API keys, or raw chat logs into memory.
+- Standalone extractor/debug outputs must stay under `Outputs/_...`; never create derived JSON, Markdown reports, copied figures, or template assets beside private source files in `Inputs/` or `Templates/`.
 - `--qa-level visual` is the preferred delivery gate for developer/product checks. It requires Word COM for PDF export and Poppler tools (`pdfinfo`, `pdftotext`, `pdftoppm`) for page/text/sample checks; missing required render tools fail visual QA and make the pipeline exit nonzero.
 - Missing or remote Markdown images, and DOCX image extraction failures, must surface as QA errors rather than disappearing from `content.json`.
 - DOCX table-cell images must be surfaced in the content image stream; header/footer images from the content source are non-body content and must surface as `NON_BODY_IMAGE_UNSUPPORTED` unless product behavior explicitly changes.

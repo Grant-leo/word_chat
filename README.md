@@ -68,7 +68,7 @@
 
 Agent 内部优先使用项目的自动入口；普通用户不用自己输入 Python 命令。开发者需要手动复现时，可在高级场景下使用 `run_pipeline.py --agent-auto` 或显式传入模板/内容参数。
 
-如果流程在预检、QA、依赖或自动修复阶段中断，Agent 必须明确告诉用户下一步该做什么；预检阶段会写入 `Outputs/_agent_preflight_latest/agent_preflight_report.md`，正式运行后优先看 `agent_summary.md`。
+如果流程在预检、交互选择、QA、依赖或自动修复阶段中断，Agent 必须明确告诉用户下一步该做什么；预检阶段会写入 `Outputs/_agent_preflight_latest/agent_preflight_report.md`，正式运行后优先看 `agent_summary.md`。交互模式被取消或输入流中断时，下一步默认是改用 `python run_pipeline.py --agent-auto`。
 
 自动修复闭环会生成 `repair_loop_report.md/json`，最多运行有限轮次，只允许修改本次输出目录的 `build_generated.py`。如果连续修复没有减少 error，或遇到缺图、扫描 PDF、内容缺失等必须由用户补文件的问题，会停止并说明原因。即使自动 QA 已无 error，也不代表 100% 正确，最终仍建议用 Word/WPS 做视觉检查。
 
@@ -85,6 +85,8 @@ Outputs/日期_内容名/
 ├── agent_summary.md / agent_summary.json
 ├── qa_report.md / qa_report.json
 ├── qa_repair_plan.md / qa_repair_plan.json
+├── conformance_report.md / conformance_report.json <- strict/visual 时生成
+├── visual_report.md / visual_report.json           <- --qa-level visual 时生成
 ├── repair_loop_report.md / repair_loop_report.json   <- --auto-repair 时生成
 ├── template_profile.md / template_profile.json
 ├── 格式提取.md
@@ -100,6 +102,7 @@ Outputs/日期_内容名/
 - `agent_summary.md`：面向用户和 Agent 的最终摘要，先看它。
 - `qa_report.md`：是否有图片、公式、表格、占位符、内容缺失等问题。
 - `qa_repair_plan.md`：下一步该修哪里，适合直接交给 AI 继续处理。
+- `conformance_report.md` / `visual_report.md`：strict/visual QA 的中文报告，缺依赖或渲染失败时会给出下一步。
 - `build_generated.py`：本次文档的用户级微调脚本。
 - `template_profile.md`：模板能力和风险画像。
 - `内容提取.md`：按上下文展示正文、图片、表格和公式；不会把表格/图片误写成公式，也会避免重复列出同一张正文图片。
@@ -130,9 +133,9 @@ build_generated.py ─────────→ 最终论文.docx
 
 - `run_pipeline.py`：一键运行入口。
 - `run_pipeline.py --agent-auto`：Agent-first 自动入口；自动扫描、唯一选择、普通用户模式、自动修复、写出 `agent_summary.md/json`。
-- `format_extractor.py`：提取 DOCX/PDF 模板格式；PDF 会区分文字说明模板、精排样张模板、扫描/不可解析模板。
-- `content_parser.py`：提取 DOCX 内容。
-- `md_parser.py`：解析 Markdown 内容和格式说明。
+- `format_extractor.py`：提取 DOCX/PDF 模板格式；PDF 会区分文字说明模板、精排样张模板、扫描/不可解析模板；独立运行时默认写入 `Outputs/_format_extractor_cli/`，模板 assets 不写回 `Templates/`。
+- `content_parser.py`：提取 DOCX 内容；独立运行时默认写入 `Outputs/_content_parser_cli/`，图片不写回 `Inputs/`。
+- `md_parser.py`：解析 Markdown 内容和格式说明；独立运行时默认写入 `Outputs/_md_parser_cli/`。
 - `script_generator.py`：生成构建脚本。
 - `latex_omath.py`：LaTeX / 文本公式转原生 Word 公式。
 - `qa_checker.py`：结构 QA。
@@ -171,11 +174,13 @@ build_generated.py ─────────→ 最终论文.docx
 
 ## 当前验证基线
 
-截至 2026-05-29：
+截至 2026-05-31：
 
-- 合成回归：`150 passed, 0 failed`
+- 合成回归：`159 passed, 0 failed`
 - 自动修复闭环回归：可修复 QA error、连续无改善停止、needs_user_file 停止、strict/visual QA 依赖缺失、visual 参数保持、报告路径脱敏均已覆盖
 - Agent-first 自动入口：`--agent-auto` 可自动扫描单候选模板/内容，默认普通用户自动修复，并写出 `agent_summary.md/json`
+- 小白中断体验：交互取消、EOF、预检失败、QA/依赖失败都会给出下一步，相关报告文案已中文化
+- 输出边界：独立 `format_extractor.py` / `content_parser.py` / `md_parser.py` 默认写入 `Outputs/_...`，不污染 `Inputs/` 或 `Templates/`
 - PDF 模板端到端 strict QA：合成文字说明 PDF 模板 + DOCX 内容，`passed`
 - PDF 极端压力测试：9 个场景覆盖大写扩展名、精排样张、横向页面、稀疏说明、扫描/损坏/空白/过短 PDF，`9/9` 符合预期
 - 端到端 strict QA：5 个复杂测试文本 × 3 个模板，`15/15 passed`

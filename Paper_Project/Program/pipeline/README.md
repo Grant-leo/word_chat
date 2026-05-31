@@ -14,6 +14,8 @@ tracked engine.
 - `qa_checker.py`, `qa_conformance.py`, and `qa_visual.py` verify generated output.
 - `regression_suite.py` is the synthetic engine regression gate.
 - `RELEASE_VALIDATION.md` is the publish-before-release validation checklist.
+- Standalone extractor CLIs write debug artifacts under `Outputs/_...` by default so `Inputs/` and `Templates/` remain source-only.
+- Interactive cancellation/EOF and QA/dependency interruptions must always surface a concrete next step for ordinary users.
 
 ## Runner Helpers
 
@@ -37,10 +39,12 @@ CLI, output, verification, and QA details in a focused package:
 
 ## Verification Baseline
 
-Current baseline as of 2026-05-29:
+Current baseline as of 2026-05-31:
 
-- Synthetic regression after the latest architecture and novice-flow fixes: `150 passed, 0 failed`.
+- Synthetic regression after the latest architecture and novice-flow fixes: `159 passed, 0 failed`.
 - Agent-first flow: `--agent-auto` scans local inputs, auto-selects only single candidates, defaults to user auto-repair, and writes `agent_summary.md/json`.
+- Novice interruption coverage: interactive cancellation/EOF, missing preflight inputs, QA dependency failures, and auto-repair blockers all route to a next action.
+- Output-boundary coverage: standalone/default `format_extractor`, `content_parser`, and `md_parser` outputs stay under `Outputs/_...` instead of beside private source files.
 - Controlled auto-repair loop regression: repairable build-script error, no-improvement stop, needs-user-file stop, strict/visual dependency failure, visual option preservation, and sanitized report paths passed.
 - PDF template end-to-end strict QA: synthetic instruction PDF template + DOCX content passed.
 - PDF extreme stress gate: 9 cases covering uppercase extensions, visual samples, landscape pages, sparse instructions, scanned/corrupt/blank/too-short PDFs met expected outcomes.

@@ -190,7 +190,7 @@ def run(
     step('Phase 1/6: 提取模版格式')
     fmt_extractor = OPTIONAL_DEPS.extract_md_format if use_md_format else extract_format
     try:
-        fmt, md_text = double_verify(fmt_extractor, template_path, 'Format')
+        fmt, md_text = double_verify(fmt_extractor, template_path, 'Format', output_dir=out_dir)
     except VerificationError as exc:
         write_extraction_failure_report(
             out_dir,

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import io
 import sys
+import builtins
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,7 +29,7 @@ from pipeline_runner.context import (
 )
 from pipeline_runner.dependencies import load_optional_dependencies
 from pipeline_runner.execution import ScriptExecutionResult, run_generated_script
-from pipeline_runner.io import normalize_mode, scan_inputs
+from pipeline_runner.io import choose_file, choose_mode, normalize_mode, scan_inputs
 from pipeline_runner.qa import QADependencies, run_qa_phases
 from pipeline_runner.repair_loop import run_repair_loop
 from pipeline_runner.summary import build_completion_summary, write_agent_summary
@@ -195,6 +196,33 @@ def pipeline_io_helpers_scan_inputs_and_normalize_modes() -> None:
 
 
 @case
+def pipeline_interactive_interrupts_show_next_steps() -> None:
+    original_input = builtins.input
+
+    def assert_interrupt_guidance(func, input_exc):
+        def raising_input(_prompt=""):
+            raise input_exc
+
+        builtins.input = raising_input
+        buffer = io.StringIO()
+        try:
+            with redirect_stdout(buffer):
+                try:
+                    func()
+                except SystemExit as exc:
+                    assert_true(exc.code == 1, f"interactive cancel exit code should be 1, got {exc.code}")
+                else:
+                    fail("interactive cancel did not exit")
+        finally:
+            builtins.input = original_input
+        text = buffer.getvalue()
+        assert_true("下一步" in text and "--agent-auto" in text, f"cancel guidance missing next step: {text}")
+
+    assert_interrupt_guidance(lambda: choose_file(["a.docx", "b.docx"], "模板"), KeyboardInterrupt())
+    assert_interrupt_guidance(lambda: choose_mode(default="user"), EOFError())
+
+
+@case
 def pipeline_cli_dispatches_md_parameter_and_single_file_modes() -> None:
     parser = build_arg_parser()
     calls: List[Dict[str, Any]] = []
@@ -350,6 +378,12 @@ def pipeline_context_resolves_inputs_outputs_and_workflow() -> None:
     assert_true(resolution.inputs.use_md_content is True, "markdown content flag was not set")
     assert_true(resolution.inputs.use_md_format is False, "PDF template should use format_extractor, not md_parser")
     assert_true(resolution.inputs.content_name == "paper", "content stem was not preserved")
+    missing = resolve_inputs("missing.docx", "paper.md", None, str(template_dir), str(inputs_dir))
+    assert_true(str(template_dir) not in str(missing.error), f"missing template error leaked absolute path: {missing.error}")
+    assert_true("Templates/missing.docx" in str(missing.error), f"missing template error lost next-step location: {missing.error}")
+    missing_abs = resolve_inputs(str(template_dir / "missing_abs.docx"), "paper.md", None, str(template_dir), str(inputs_dir))
+    assert_true(str(template_dir) not in str(missing_abs.error), f"absolute missing template error leaked path: {missing_abs.error}")
+    assert_true("missing_abs.docx" in str(missing_abs.error), f"absolute missing template error lost filename: {missing_abs.error}")
     assert_true(normalize_qa_level("bad-level") == "strict", "invalid QA level should fall back to strict")
 
     first_dir, first_name = create_unique_output_dir(str(outputs_dir), "paper", today="2026-05-26")
@@ -424,12 +458,12 @@ def pipeline_auto_repair_patches_build_script_and_reruns_qa() -> None:
     loop_report = json.loads((work / "repair_loop_report.json").read_text(encoding="utf-8"))
     assert_true(loop_report["rounds_run"] >= 1, "repair loop did not record a repair round")
     assert_true(
-        "Review remaining warnings in qa_report.md and repair_loop_report.md." not in loop_report.get("manual_check_required", []),
+        "查看 qa_report.md 和 repair_loop_report.md 中的剩余 warning，确认不会影响交付。" not in loop_report.get("manual_check_required", []),
         "zero-warning repair report should not ask users to review remaining warnings",
     )
     loop_text = (work / "repair_loop_report.md").read_text(encoding="utf-8")
     assert_true(
-        "and remaining warnings" not in loop_text,
+        "交付前查看 qa_report.md" not in loop_text,
         "zero-warning repair markdown should not tell users to inspect remaining warnings",
     )
     assert_true(private_file.read_bytes() == private_before, "auto repair modified a private input file")
@@ -1230,17 +1264,17 @@ def pipeline_agent_summary_localizes_manual_checks_and_skips_empty_warning_promp
             "final_errors": 0,
             "final_warnings": 0,
             "manual_check_required": [
-                "Open the final DOCX in Word/WPS for visual review.",
-                "Review remaining warnings in qa_report.md and repair_loop_report.md.",
+                "用 Word/WPS 打开最终 DOCX，核对分页、图片、公式、表格和目录。",
+                "查看 qa_report.md 和 repair_loop_report.md 中的剩余 warning，确认不会影响交付。",
             ],
-            "remaining_manual_note": "No remaining warnings were reported by the enabled QA levels.",
+            "remaining_manual_note": "当前启用的 QA 未报告剩余 warning。",
         },
     )
     json_path, md_path = write_agent_summary(str(work), "2026-05-29_manual", "最终论文.docx", "user")
     summary = json.loads(Path(json_path).read_text(encoding="utf-8"))
     text = Path(md_path).read_text(encoding="utf-8")
     assert_true(summary["manual_check_required"] == ["用 Word/WPS 打开最终 DOCX，核对分页、图片、公式、表格和目录。"], f"manual checks were noisy: {summary['manual_check_required']}")
-    assert_true("Review remaining warnings" not in text, "agent summary should not expose English warning boilerplate when no warnings remain")
+    assert_true("Review remaining warnings" not in text and "剩余 warning" not in text, "agent summary should not expose warning boilerplate when no warnings remain")
 
 
 @case

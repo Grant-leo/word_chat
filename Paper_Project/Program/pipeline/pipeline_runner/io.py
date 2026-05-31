@@ -4,6 +4,13 @@ from __future__ import annotations
 import os
 
 
+def _cancel_with_next_steps(context):
+    print(f"\n  已取消{context}。")
+    print("  下一步：普通用户建议让 Agent 运行: python run_pipeline.py --agent-auto")
+    print("  如果已知道文件名，也可以重跑: python run_pipeline.py --template <模板文件名> --content <内容文件名>")
+    raise SystemExit(1)
+
+
 def scan_inputs(folder, exts=(".docx", ".md")):
     """Return input files in a folder, excluding Word temp files."""
     if not os.path.isdir(folder):
@@ -33,9 +40,10 @@ def choose_file(files, label):
             if 0 <= idx < len(files):
                 return files[idx]
             print(f"  输入无效，请输入 1-{len(files)}")
-        except (ValueError, KeyboardInterrupt):
-            print("\n  已取消")
-            raise SystemExit(1)
+        except ValueError:
+            print(f"  输入无效，请输入 1-{len(files)}")
+        except (KeyboardInterrupt, EOFError):
+            _cancel_with_next_steps(f"选择{label}")
 
 
 def normalize_mode(mode):
@@ -51,9 +59,8 @@ def choose_mode(default="user"):
     prompt = f"请选择 (1-2，默认 {1 if default == 'user' else 2}): "
     try:
         choice = input(prompt).strip()
-    except KeyboardInterrupt:
-        print("\n  已取消")
-        raise SystemExit(1)
+    except (KeyboardInterrupt, EOFError):
+        _cancel_with_next_steps("选择工作模式")
     if not choice:
         return normalize_mode(default)
     if choice in ("2", "developer", "dev", "开发者"):

@@ -19,7 +19,7 @@ def build_arg_parser(default_golden_dir=None):
     parser.add_argument(
         "--agent-auto",
         action="store_true",
-        help="Agent-first mode: non-interactively scan/select single inputs, run user mode with auto-repair, and write agent_summary.md/json.",
+        help="Agent 自动入口：非交互扫描文件，唯一候选直接运行，普通用户模式会开启自动修复并写出 agent_summary.md/json。",
     )
     parser.add_argument(
         "--mode",
@@ -52,14 +52,14 @@ def build_arg_parser(default_golden_dir=None):
     parser.add_argument(
         "--auto-repair",
         action="store_true",
-        help="Run a bounded user-mode repair loop that may edit only Outputs/<run>/build_generated.py.",
+        help="普通用户自动修复闭环：只允许修改 Outputs/<本轮>/build_generated.py，并在每轮后重建与重跑 QA。",
     )
-    parser.add_argument("--repair-max-rounds", type=int, default=5, help="Maximum auto-repair rounds.")
+    parser.add_argument("--repair-max-rounds", type=int, default=5, help="自动修复最多运行轮数。")
     parser.add_argument(
         "--repair-stop-no-improve",
         type=int,
         default=2,
-        help="Stop after this many consecutive repair rounds without reducing QA errors.",
+        help="连续多少轮没有减少 QA error 后停止自动修复。",
     )
     return parser
 
@@ -313,6 +313,7 @@ def dispatch_cli(args, *, run_pipeline, template_dir, inputs_dir):
         if not template_file and not templates:
             print("\n[INFO] Templates/ 下没有 .docx 或 .pdf 模板文件。")
             print("  纯 MD 模式请用: python run_pipeline.py --md <文件名>")
+            print("  下一步：把模板放入 Templates/，或把格式+正文合一的 Markdown 放入 Inputs/ 后运行 --md。")
             md_files = scan_inputs(inputs_dir, exts=(".md",))
             if md_files:
                 print("\n  Inputs/ 下找到 .md 文件，可直接纯 MD 模式:")
@@ -321,6 +322,7 @@ def dispatch_cli(args, *, run_pipeline, template_dir, inputs_dir):
             raise SystemExit(1)
         if not content_file and not contents:
             print("\n[ERROR] Inputs/ 下没有 .docx 或 .md 内容文件，请放入内容文件后重试。")
+            print("  下一步：把正文 DOCX/Markdown 放入 Inputs/，然后运行 python run_pipeline.py --agent-auto。")
             raise SystemExit(1)
 
         if not template_file:

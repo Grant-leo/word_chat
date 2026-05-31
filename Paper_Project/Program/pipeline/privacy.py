@@ -17,6 +17,32 @@ def _norm(path: str) -> str:
     return str(path or "").replace("\\", "/")
 
 
+def _replace_root_path(text: str, label: str, root: str) -> str:
+    root_norm = _norm(os.path.abspath(root)).rstrip("/")
+    if not root_norm:
+        return text
+    pattern = re.compile(re.escape(root_norm) + r"(?P<tail>(?:/[^\s`'\"<>|]+)*)", re.I)
+
+    def repl(match: re.Match[str]) -> str:
+        tail = (match.group("tail") or "").lstrip("/")
+        return f"<{label}>/{tail}" if tail else f"<{label}>"
+
+    return pattern.sub(repl, text)
+
+
+def _replace_windows_abs_path(text: str) -> str:
+    pattern = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z]:/[^\s`'\"<>|]+)")
+
+    def repl(match: re.Match[str]) -> str:
+        path = match.group(1)
+        parts = path.split("/")
+        if len(parts) >= 3 and parts[1] in {"Inputs", "Outputs", "Templates"}:
+            return "/".join(parts[1:])
+        return "<ABS_PATH>/" + "/".join(parts[-2:])
+
+    return pattern.sub(repl, text)
+
+
 def sanitize_path(value: Any, project_root: str | None = None) -> Any:
     """Return a display-safe version of a filesystem path-like value."""
     if not isinstance(value, str):
@@ -35,19 +61,9 @@ def sanitize_path(value: Any, project_root: str | None = None) -> Any:
         roots.append(("HOME", home))
 
     for label, root in roots:
-        root_norm = _norm(os.path.abspath(root)).rstrip("/")
-        if text.lower().startswith(root_norm.lower()):
-            rel = text[len(root_norm):].lstrip("/")
-            return f"<{label}>/{rel}" if rel else f"<{label}>"
+        text = _replace_root_path(text, label, root)
 
-    drive_match = re.match(r"^[A-Za-z]:/", text)
-    if drive_match:
-        parts = text.split("/")
-        if len(parts) >= 2 and parts[1] in {"Inputs", "Outputs", "Templates"}:
-            return "/".join(parts[1:])
-        return "<ABS_PATH>/" + "/".join(parts[-2:])
-
-    return text
+    return _replace_windows_abs_path(text)
 
 
 def sanitize_value(value: Any, project_root: str | None = None) -> Any:

@@ -65,17 +65,32 @@ except ImportError:  # pragma: no cover - package-style imports
 __all__ = ["extract_content", "extract_format"]
 
 if __name__ == '__main__':
-    import sys
-    path = sys.argv[1] if len(sys.argv) > 1 else 'Inputs/test.md'
+    import argparse
+    from pathlib import Path
+
+    parser = argparse.ArgumentParser(description="Markdown 格式/内容提取工具（建议优先使用 run_pipeline.py）。")
+    parser.add_argument("md_path", nargs="?", default="Inputs/test.md", help="Markdown 文件路径。")
+    parser.add_argument(
+        "--output-dir",
+        default=str(Path("Outputs") / "_md_parser_cli"),
+        help="输出目录，默认 Outputs/_md_parser_cli，避免写入 Inputs/。",
+    )
+    args = parser.parse_args()
+    path = args.md_path
+    out_dir = Path(args.output_dir).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = Path(path).stem
 
     # Test format extraction
-    fmt, md_text = extract_format(path)
-    with open(path.replace('.md', '_format.json'), 'w', encoding='utf-8') as f:
+    fmt, md_text = extract_format(path, output_dir=str(out_dir))
+    format_json = out_dir / f'{stem}_format.json'
+    with open(format_json, 'w', encoding='utf-8') as f:
         json.dump(fmt, f, ensure_ascii=False, indent=2)
-    print(f'Format JSON → {path.replace(".md", "_format.json")}')
+    print(f'格式 JSON -> {format_json}')
 
     # Test content extraction
-    cnt = extract_content(path)
-    with open(path.replace('.md', '_content.json'), 'w', encoding='utf-8') as f:
+    cnt = extract_content(path, output_dir=str(out_dir))
+    content_json = out_dir / f'{stem}_content.json'
+    with open(content_json, 'w', encoding='utf-8') as f:
         json.dump(cnt, f, ensure_ascii=False, indent=2)
-    print(f'Content JSON → {path.replace(".md", "_content.json")}')
+    print(f'内容 JSON -> {content_json}')

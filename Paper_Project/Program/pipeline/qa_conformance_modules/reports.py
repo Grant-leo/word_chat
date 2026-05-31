@@ -21,7 +21,7 @@ def _write_json(path: str, value: Dict[str, Any]) -> None:
 def _next_action(mode: str, issues: List[Dict[str, Any]]) -> str:
     error_codes = {str(item.get("code") or "") for item in issues if item.get("severity") == "error"}
     if not error_codes:
-        return "Strict conformance passed for machine-checkable template requirements."
+        return "strict 合规 QA 的机器检查已通过；仍建议用 Word/WPS 打开最终 DOCX 做人工核对。"
     if error_codes & {"CONFORMANCE_INPUT_MISSING"}:
         return "重新运行完整流水线，确保 format.json、content.json、build_manifest.json 和最终 DOCX 都已生成。"
     if error_codes & {"DOCX_XML_UNREADABLE"}:
@@ -34,7 +34,7 @@ def _next_action(mode: str, issues: List[Dict[str, Any]]) -> str:
         return "按 conformance_report.md 的 detail 修复样式/页边距/表格线/图片尺寸，修复后重跑 strict QA。"
     if error_codes & {"OMML_WPS_COMPAT", "FORMULA_ERROR_TEXT"}:
         return "检查公式渲染链路和 latex_omath.py，确保公式输出为 WPS 兼容的原生 OOXML Math。"
-    return "Fix Outputs/<run>/build_generated.py and rerun it." if mode == "user" else "Fix core pipeline scripts and rerun the full pipeline."
+    return "普通用户模式：让 Agent 修复 Outputs/<本轮>/build_generated.py 后重跑。" if mode == "user" else "开发者模式：修复核心流水线脚本后重跑完整流水线。"
 
 
 def build_report(
@@ -58,26 +58,26 @@ def build_report(
 
 def report_to_markdown(report: Dict[str, Any]) -> str:
     lines = [
-        "# Conformance QA Report",
+        "# DOCX/XML 合规 QA 报告",
         "",
-        f"- Result: {'passed' if report.get('passed') else 'failed'}",
-        f"- Mode: `{report.get('mode')}`",
-        f"- Output: `{report.get('output_dir_name')}`",
-        f"- Next action: {report.get('next_action')}",
+        f"- 结果：{'通过' if report.get('passed') else '未通过'}",
+        f"- 模式：`{report.get('mode')}`",
+        f"- 输出目录：`{report.get('output_dir_name')}`",
+        f"- 下一步：{report.get('next_action')}",
         "",
-        "## Counts",
+        "## 统计",
         "",
     ]
     for key, value in sorted((report.get("counts") or {}).items()):
         lines.append(f"- `{key}`: {value}")
-    lines.extend(["", "## Issues", ""])
+    lines.extend(["", "## 问题", ""])
     if not report.get("issues"):
-        lines.append("- No conformance issues detected.")
+        lines.append("- 自动合规检查未发现问题。")
     else:
         for item in report.get("issues") or []:
             lines.append(f"- **{item.get('severity')}** `{item.get('code')}`: {item.get('message')}")
             if item.get("detail"):
-                lines.append(f"  Detail: `{item.get('detail')}`")
+                lines.append(f"  细节：`{item.get('detail')}`")
     lines.append("")
     return "\n".join(lines)
 

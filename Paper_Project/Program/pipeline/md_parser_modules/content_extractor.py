@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 
 try:
     from md_parser_modules.content_helpers import (
@@ -26,7 +27,11 @@ except ImportError:  # pragma: no cover - package-style imports
         _strip_md_formatting,
     )
 
-def extract_content(md_path, output_dir='Inputs'):
+def _default_output_dir():
+    return os.path.abspath(os.path.join(os.getcwd(), 'Outputs', '_md_parser_extract'))
+
+
+def extract_content(md_path, output_dir=None):
     """Extract content from MD file into content.json-compatible dict.
     Returns dict with same structure as content_parser.extract().
     """
@@ -38,8 +43,10 @@ def extract_content(md_path, output_dir='Inputs'):
 
     base = os.path.splitext(os.path.basename(md_path))[0]
     base_dir = os.path.dirname(os.path.abspath(md_path))
+    output_dir = output_dir or _default_output_dir()
     content_dir = os.path.join(output_dir, base)
     fig_dir = os.path.join(content_dir, 'figures')
+    shutil.rmtree(fig_dir, ignore_errors=True)
     os.makedirs(fig_dir, exist_ok=True)
 
     # Detect title

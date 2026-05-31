@@ -99,7 +99,7 @@ def _friendly_manual_check(item):
     lowered = text.lower()
     if "open the final docx" in lowered and "word/wps" in lowered:
         return "用 Word/WPS 打开最终 DOCX，核对分页、图片、公式、表格和目录。"
-    if "review remaining warnings" in lowered:
+    if "review remaining warnings" in lowered or "剩余 warning" in text:
         return "查看 QA 报告中的剩余 warning，并确认它们不会影响交付。"
     if "automatic qa convergence is not a 100%" in lowered:
         return "自动 QA 通过不等于 100% 保证，交付前仍需人工视觉核对。"
@@ -114,11 +114,11 @@ def _manual_checks(repair_report, next_actions):
             text = str(item or "").strip()
             if not text:
                 continue
-            if final_warnings == 0 and "remaining warnings" in text.lower():
+            if final_warnings == 0 and ("remaining warnings" in text.lower() or "剩余 warning" in text):
                 continue
             checks.append(_friendly_manual_check(text))
         remaining = str(repair_report.get("remaining_manual_note") or "").strip()
-        if remaining and "no remaining warnings" not in remaining.lower():
+        if remaining and "no remaining warnings" not in remaining.lower() and "未报告剩余 warning" not in remaining:
             checks.append(_friendly_manual_check(remaining))
     checks.extend(_friendly_manual_check(item) for item in next_actions)
     if not checks:
@@ -357,7 +357,7 @@ def build_completion_summary(folder_name, output_docx, mode):
 
   修复工作流:
     当前模式: {active_mode}
-    普通用户模式: 修改本次输出目录中的 build_generated.py，然后重跑该脚本
+    普通用户模式: 让 Agent 修改本次输出目录中的 build_generated.py，然后重跑该脚本
     自动修复模式: 使用 --auto-repair 后读取 repair_loop_report.md 查看每轮修改和停止原因
     开发者模式: 修改 Paper_Project/Program/pipeline/ 下的核心脚本后重跑完整流水线
     目录: 生成脚本会优先用 Word COM 解析正文标题页码；不可用时仍保留静态目录行

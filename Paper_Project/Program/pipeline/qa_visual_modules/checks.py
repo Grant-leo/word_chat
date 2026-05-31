@@ -30,7 +30,7 @@ def _issue(code: str, severity: str, message: str, detail: str = "") -> Dict[str
 def _next_action(issues: List[Dict[str, Any]]) -> str:
     error_codes = {str(item.get("code") or "") for item in issues if item.get("severity") == "error"}
     if not error_codes:
-        return "Visual QA passed for the machine-checkable PDF/render checks; still open the DOCX in Word/WPS for final review."
+        return "视觉 QA 的机器检查已通过；仍建议用 Word/WPS 打开最终 DOCX 做人工视觉核对。"
     if error_codes & {"PDF_EXPORT_FAILED"}:
         return "修复 Microsoft Word COM/PDF 导出环境后重跑 visual QA；若 DOCX 本身无法打开，先重新生成最终论文。"
     if error_codes & {"PDFINFO_UNAVAILABLE", "PDFTOTEXT_UNAVAILABLE", "SAMPLE_RENDER_FAILED", "ALL_PAGE_RENDER_FAILED"}:
@@ -142,7 +142,7 @@ def check_visual(
         "passed": passed,
         "output_dir_name": os.path.basename(out_dir),
         "counts": counts,
-        "issues": issues,
+        "issues": sanitize_value(issues, project_root),
         "artifacts": sanitize_value(artifacts, project_root),
         "next_action": _next_action(issues),
     }

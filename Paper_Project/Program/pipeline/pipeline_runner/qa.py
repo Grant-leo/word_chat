@@ -75,15 +75,15 @@ def _write_dependency_report(out_dir, *, report_name, mode, code, message, detai
     with open(os.path.join(out_dir, f"{report_name}.json"), "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
     lines = [
-        f"# {report_name.replace('_', ' ').title()}",
+        f"# {report_name.replace('_', ' ')}",
         "",
-        "- Result: failed",
-        f"- Issue: `{code}`",
-        f"- Message: {message}",
-        f"- Next action: {next_action}",
+        "- 结果：未通过",
+        f"- 问题码：`{code}`",
+        f"- 信息：{message}",
+        f"- 下一步：{next_action}",
     ]
     if detail:
-        lines.append(f"- Detail: `{detail}`")
+        lines.append(f"- 细节：`{detail}`")
     with open(os.path.join(out_dir, f"{report_name}.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     return report

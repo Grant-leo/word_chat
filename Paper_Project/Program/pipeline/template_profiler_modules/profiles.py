@@ -124,8 +124,8 @@ def _risk_flags(fmt: Dict[str, Any], text_blob: str) -> Dict[str, Any]:
         "pdf_template": bool(pdf_meta),
         "pdf_template_limited_confidence": bool(pdf_meta.get("warnings")) or pdf_meta.get("type") == "visual_sample_pdf",
         "pdf_template_unsupported": bool(pdf_meta.get("errors")) or pdf_meta.get("type") == "scanned_or_unsupported_pdf",
-        "mentions_formula_rules": bool(re.search(r"(鍏紡|formula)", text_blob, re.I)),
-        "mentions_reference_rules": bool(re.search(r"(鍙傝€冩枃鐚畖references?)", text_blob, re.I)),
+        "mentions_formula_rules": bool(re.search(r"(公式|formula)", text_blob, re.I)),
+        "mentions_reference_rules": bool(re.search(r"(参考文献|references?)", text_blob, re.I)),
     }
 
 

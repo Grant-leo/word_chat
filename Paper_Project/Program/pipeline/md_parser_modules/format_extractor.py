@@ -152,7 +152,7 @@ def _build_format_dict(md_path: str, fmt_text: str, page_override: Dict[str, Any
     }
 
 
-def extract_format(md_path: str) -> Tuple[Dict[str, Any], str]:
+def extract_format(md_path: str, output_dir=None) -> Tuple[Dict[str, Any], str]:
     """Extract format information from MD file.
     Returns (format_dict, md_text) — same signature as format_extractor.extract().
     """
@@ -209,4 +209,3 @@ def extract_format(md_path: str) -> Tuple[Dict[str, Any], str]:
 
     fmt_dict = _build_format_dict(md_path, fmt_text, page_override, header_override)
     return fmt_dict, raw
-

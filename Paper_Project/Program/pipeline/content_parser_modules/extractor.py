@@ -72,8 +72,13 @@ def _count_structured_body_tables(sections):
     return total
 
 
-def extract(docx_path, output_dir='Inputs'):
+def _default_output_dir():
+    return os.path.abspath(os.path.join(os.getcwd(), 'Outputs', '_content_parser_extract'))
+
+
+def extract(docx_path, output_dir=None):
     """Extract content from a content docx into structured JSON + copy images."""
+    output_dir = output_dir or _default_output_dir()
     doc = Document(docx_path)
     base = os.path.splitext(os.path.basename(docx_path))[0]
 

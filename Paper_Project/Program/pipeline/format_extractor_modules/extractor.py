@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 
 from docx import Document
 
@@ -19,13 +20,17 @@ except ImportError:  # pragma: no cover - package-style imports
     from .style_profiles import build_style_profiles as _build_style_profiles
     from .style_resolver import StyleResolver
 
-def extract(docx_path):
+def _default_output_dir():
+    return os.path.abspath(os.path.join(os.getcwd(), "Outputs", "_format_extractor_extract"))
+
+
+def extract(docx_path, output_dir=None):
     if str(docx_path).lower().endswith(".pdf"):
         return _extract_pdf_template(docx_path)
-    return extract_docx_template(docx_path)
+    return extract_docx_template(docx_path, output_dir=output_dir)
 
 
-def extract_docx_template(docx_path):
+def extract_docx_template(docx_path, output_dir=None):
     """Extract all template formatting. Returns (format_dict, markdown_report)."""
     doc = Document(docx_path)
     resolver = StyleResolver(doc)
@@ -186,7 +191,10 @@ def extract_docx_template(docx_path):
     md_lines.append(f'- 表格: JSON={len(fmt["tables"])} docx={len(doc.tables)} ✓')
     md_lines.append(f'- 节:   JSON={len(fmt["sections"])} docx={len(doc.sections)} ✓')
 
-    asset_dir = os.path.splitext(docx_path)[0] + "_assets"
+    base = os.path.splitext(os.path.basename(docx_path))[0]
+    asset_root = os.path.abspath(output_dir or _default_output_dir())
+    asset_dir = os.path.join(asset_root, f"{base}_assets")
+    shutil.rmtree(asset_dir, ignore_errors=True)
     fmt["_meta"]["assets_dir"] = os.path.abspath(asset_dir)
     fmt["cover"] = _extract_cover(doc, asset_dir)
 

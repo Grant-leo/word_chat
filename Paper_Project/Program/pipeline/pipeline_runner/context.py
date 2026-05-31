@@ -31,6 +31,13 @@ def normalize_qa_level(qa_level: str | None) -> str:
     return level if level in ("basic", "strict", "visual") else "strict"
 
 
+def _display_input_path(folder_label: str, requested: str) -> str:
+    requested = str(requested or "").replace(os.sep, "/")
+    if os.path.isabs(requested):
+        return os.path.basename(requested) or "<absolute path>"
+    return f"{folder_label}/{requested}".replace("//", "/")
+
+
 def resolve_inputs(template_file, content_file, md_file, template_dir, inputs_dir) -> InputResolution:
     """Resolve CLI filenames into concrete input paths."""
     if md_file:
@@ -38,7 +45,7 @@ def resolve_inputs(template_file, content_file, md_file, template_dir, inputs_di
         if not os.path.exists(md_path):
             md_path = os.path.join(inputs_dir, md_file)
         if not os.path.exists(md_path):
-            return InputResolution(error=f"[ERROR] MD 文件不存在: {md_file}")
+            return InputResolution(error=f"[ERROR] MD 文件不存在: {_display_input_path('Inputs', md_file)}")
         return InputResolution(
             inputs=ResolvedInputs(
                 template_path=md_path,
@@ -52,9 +59,9 @@ def resolve_inputs(template_file, content_file, md_file, template_dir, inputs_di
     template_path = template_file if os.path.isabs(template_file) else os.path.join(template_dir, template_file)
     content_path = content_file if os.path.isabs(content_file) else os.path.join(inputs_dir, content_file)
     if not os.path.exists(template_path):
-        return InputResolution(error=f"[ERROR] 模版文件不存在: {template_path}")
+        return InputResolution(error=f"[ERROR] 模版文件不存在: {_display_input_path('Templates', template_file)}")
     if not os.path.exists(content_path):
-        return InputResolution(error=f"[ERROR] 内容文件不存在: {content_path}")
+        return InputResolution(error=f"[ERROR] 内容文件不存在: {_display_input_path('Inputs', content_file)}")
     return InputResolution(
         inputs=ResolvedInputs(
             template_path=template_path,

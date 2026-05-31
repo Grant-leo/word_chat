@@ -23,6 +23,15 @@ def template_profile_sanitizes_private_source() -> None:
 
 
 @case
+def template_profile_detects_chinese_formula_and_reference_rules() -> None:
+    fmt = base_format()
+    fmt["paragraphs"].append({"text": "公式应居中书写，参考文献按 GB/T 7714 排列。"})
+    profile = profile_format(fmt)
+    assert_true(profile["risk_flags"]["mentions_formula_rules"] is True, "Chinese formula rules were not detected")
+    assert_true(profile["risk_flags"]["mentions_reference_rules"] is True, "Chinese reference rules were not detected")
+
+
+@case
 def format_extractor_stops_cover_before_spaced_abstract_heading() -> None:
     work = new_workdir("format_cover_stop_abstract")
     docx = work / "cover_stop.docx"
@@ -32,7 +41,7 @@ def format_extractor_stops_cover_before_spaced_abstract_heading() -> None:
     doc.add_paragraph("Template abstract sample paragraph should not be replayed as cover.")
     doc.save(docx)
 
-    fmt, _ = extract_docx_format(str(docx))
+    fmt, _ = extract_docx_format(str(docx), output_dir=str(work))
     cover_text = "\n".join(
         "".join(run.get("t", "") for run in el.get("r", []))
         for el in fmt.get("cover") or []
@@ -60,7 +69,7 @@ def pdf_instruction_template_extracts_profile() -> None:
         ],
     )
 
-    fmt, md = extract_docx_format(str(pdf))
+    fmt, md = extract_docx_format(str(pdf), output_dir=str(work))
     pdf_meta = fmt.get("_meta", {}).get("pdf_template") or {}
     profile = profile_format(fmt)
     assert_true(pdf_meta.get("type") == "instruction_pdf", f"unexpected pdf type: {pdf_meta}")
@@ -85,7 +94,7 @@ def pdf_sparse_instruction_template_warns_limited_confidence() -> None:
         ],
     )
 
-    fmt, _ = extract_docx_format(str(pdf))
+    fmt, _ = extract_docx_format(str(pdf), output_dir=str(work))
     pdf_meta = fmt.get("_meta", {}).get("pdf_template") or {}
     warnings = pdf_meta.get("warnings") or []
     assert_true(
@@ -114,7 +123,7 @@ def pdf_visual_template_extracts_lines_and_risk_profile() -> None:
         ],
     )
 
-    fmt, _ = extract_docx_format(str(pdf))
+    fmt, _ = extract_docx_format(str(pdf), output_dir=str(work))
     pdf_meta = fmt.get("_meta", {}).get("pdf_template") or {}
     profile = profile_format(fmt)
     assert_true(pdf_meta.get("type") == "visual_sample_pdf", f"unexpected pdf type: {pdf_meta}")
@@ -130,7 +139,7 @@ def pdf_scanned_template_surfaces_qa_error() -> None:
     work = new_workdir("pdf_scanned_template")
     pdf = work / "blank_scan.pdf"
     write_blank_pdf(pdf)
-    fmt, _ = extract_docx_format(str(pdf))
+    fmt, _ = extract_docx_format(str(pdf), output_dir=str(work))
     format_path = work / "format.json"
     format_path.write_text(json.dumps(fmt, ensure_ascii=False), encoding="utf-8")
 

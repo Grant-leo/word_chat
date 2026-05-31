@@ -8,13 +8,13 @@ from typing import Any, Dict
 
 def report_to_markdown(report: Dict[str, Any]) -> str:
     lines = [
-        "# Visual QA Report",
+        "# 视觉 QA 报告",
         "",
-        f"- Result: {'passed' if report.get('passed') else 'failed'}",
-        f"- Output: `{report.get('output_dir_name')}`",
-        f"- Next action: {report.get('next_action') or 'Open the DOCX/PDF render artifacts and inspect visual issues.'}",
+        f"- 结果：{'通过' if report.get('passed') else '未通过'}",
+        f"- 输出目录：`{report.get('output_dir_name')}`",
+        f"- 下一步：{report.get('next_action') or '打开最终 DOCX 和 PDF/PNG 渲染样张，检查视觉问题。'}",
         "",
-        "## Counts",
+        "## 统计",
         "",
     ]
     for key, value in sorted((report.get("counts") or {}).items()):
@@ -22,7 +22,7 @@ def report_to_markdown(report: Dict[str, Any]) -> str:
     artifacts = report.get("artifacts") or {}
     golden = artifacts.get("golden_baseline") or {}
     if golden:
-        lines.extend(["", "## Golden Baseline", ""])
+        lines.extend(["", "## 黄金基线", ""])
         lines.append(f"- `status`: {golden.get('status')}")
         if golden.get("key"):
             lines.append(f"- `key`: {golden.get('key')}")
@@ -30,15 +30,15 @@ def report_to_markdown(report: Dict[str, Any]) -> str:
             lines.append(f"- `path`: {golden.get('path')}")
         for issue in golden.get("issues") or []:
             lines.append(f"- `issue`: {issue}")
-    lines.extend(["", "## Issues", ""])
+    lines.extend(["", "## 问题", ""])
     issues = report.get("issues") or []
     if not issues:
-        lines.append("- No visual QA issues detected by automated checks.")
+        lines.append("- 自动视觉检查未发现问题。")
     else:
         for item in issues:
             lines.append(f"- **{item.get('severity')}** `{item.get('code')}`: {item.get('message')}")
             if item.get("detail"):
-                lines.append(f"  Detail: `{item.get('detail')}`")
+                lines.append(f"  细节：`{item.get('detail')}`")
     lines.append("")
     return "\n".join(lines)
 

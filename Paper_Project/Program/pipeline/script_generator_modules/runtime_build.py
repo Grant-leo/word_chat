@@ -50,8 +50,8 @@ def main():
     if page_map:
         build_document(page_map, native_toc=False)
     write_build_manifest()
-    suffix = 'static TOC pages resolved by Word COM' if page_map else 'static TOC generated without resolved page numbers'
-    print(f'Saved: {OUT}  ({suffix})')
+    suffix = '目录页码已由 Word COM 解析' if page_map else '已生成静态目录行，页码未由 Word COM 解析'
+    print(f'已保存: {os.path.basename(OUT)}  ({suffix})')
 
 
 if __name__ == '__main__':

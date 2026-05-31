@@ -357,7 +357,7 @@ def _write_dependency_report(
     message: str,
     detail: str,
 ) -> None:
-    next_action = (REPORT_BLOCKER_GUIDES.get(code) or {}).get("user_action") or "Install or fix the required QA dependency, then rerun the pipeline."
+    next_action = (REPORT_BLOCKER_GUIDES.get(code) or {}).get("user_action") or "安装或修复所需 QA 依赖后，重新运行完整流水线。"
     issue = {
         "code": code,
         "severity": "error",
@@ -376,15 +376,15 @@ def _write_dependency_report(
     }
     (out_path / f"{report_name}.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     lines = [
-        f"# {report_name.replace('_', ' ').title()}",
+        f"# {report_name.replace('_', ' ')}",
         "",
-        "- Result: failed",
-        f"- Issue: `{code}`",
-        f"- Message: {message}",
-        f"- Next action: {next_action}",
+        "- 结果：未通过",
+        f"- 问题码：`{code}`",
+        f"- 信息：{message}",
+        f"- 下一步：{next_action}",
     ]
     if detail:
-        lines.append(f"- Detail: `{detail}`")
+        lines.append(f"- 细节：`{detail}`")
     (out_path / f"{report_name}.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -662,9 +662,9 @@ def _finish(
     display_out = _report_display_path(out_path)
     display_docx = _join_report_path(display_out, output_docx_name)
     final_warnings = int(final.get("total_warnings") or 0)
-    manual_checks = ["Open the final DOCX in Word/WPS for visual review."]
+    manual_checks = ["用 Word/WPS 打开最终 DOCX，核对分页、图片、公式、表格和目录。"]
     if final_warnings:
-        manual_checks.append("Review remaining warnings in qa_report.md and repair_loop_report.md.")
+        manual_checks.append("查看 qa_report.md 和 repair_loop_report.md 中的剩余 warning，确认不会影响交付。")
     report = {
         "schema_version": 1,
         "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -682,9 +682,9 @@ def _finish(
         "final_error_codes": final.get("error_codes") or [],
         "final_warning_codes": final.get("warning_codes") or [],
         "warning_policy": (
-            "Remaining warnings do not block automatic QA convergence, but they can still affect delivery quality and must be reviewed in Word/WPS."
+            "剩余 warning 不会阻断自动 QA 收敛，但仍可能影响交付质量，交付前必须用 Word/WPS 人工确认。"
             if final_warnings
-            else "No remaining warnings were reported by the enabled QA levels."
+            else "当前启用的 QA 未报告剩余 warning。"
         ),
         "stop_detail": stop_detail,
         "blockers": blockers or [],
@@ -705,44 +705,44 @@ def _finish(
 
 def _report_to_markdown(report: Dict[str, Any]) -> str:
     lines = [
-        "# Auto Repair Loop Report",
+        "# 自动修复闭环报告",
         "",
-        f"- Status: `{report.get('status')}`",
-        f"- Result: `{'converged' if report.get('ok') else 'stopped'}`",
-        f"- Mode: `{report.get('mode')}`",
-        f"- QA level: `{report.get('qa_level')}`",
-        f"- Final DOCX: `{report.get('final_docx')}`",
-        f"- Final errors: `{report.get('final_errors')}`",
-        f"- Final warnings: `{report.get('final_warnings')}`",
+        f"- 状态：`{report.get('status')}`",
+        f"- 结果：`{'已收敛' if report.get('ok') else '已停止'}`",
+        f"- 模式：`{report.get('mode')}`",
+        f"- QA 等级：`{report.get('qa_level')}`",
+        f"- 最终 DOCX：`{report.get('final_docx')}`",
+        f"- 最终错误：`{report.get('final_errors')}`",
+        f"- 最终警告：`{report.get('final_warnings')}`",
     ]
     if report.get("stop_detail"):
-        lines.append(f"- Stop detail: {report.get('stop_detail')}")
-    lines.append(f"- Warning policy: {report.get('warning_policy')}")
+        lines.append(f"- 停止原因：{report.get('stop_detail')}")
+    lines.append(f"- warning 处理策略：{report.get('warning_policy')}")
     blockers = report.get("blockers") or []
     if blockers:
-        lines.extend(["", "## Needs User Input", ""])
+        lines.extend(["", "## 需要用户补充", ""])
         for item in blockers:
             lines.append(f"- `{item.get('code')}` ({item.get('auto_level')}): {item.get('user_action')}")
-    lines.extend(["", "## Rounds", ""])
+    lines.extend(["", "## 修复轮次", ""])
     for item in report.get("rounds") or []:
         lines.append(
-            f"- Round `{item.get('round')}` `{item.get('phase')}`: "
-            f"errors `{item.get('total_errors')}`, warnings `{item.get('total_warnings')}`, "
-            f"error codes `{', '.join(item.get('error_codes') or []) or '-'}`"
+            f"- 第 `{item.get('round')}` 轮 `{item.get('phase')}`："
+            f"错误 `{item.get('total_errors')}`，警告 `{item.get('total_warnings')}`，"
+            f"错误码 `{', '.join(item.get('error_codes') or []) or '-'}`"
         )
         for action in item.get("actions") or []:
-            lines.append(f"  - Action: `{action.get('kind')}` {action.get('summary') or action.get('code') or action.get('codes')}")
+            lines.append(f"  - 动作：`{action.get('kind')}` {action.get('summary') or action.get('code') or action.get('codes')}")
     lines.extend([
         "",
-        "## Manual Check",
+        "## 人工检查",
         "",
-        "- Automatic QA convergence is not a 100% correctness guarantee.",
-        "- Open the final DOCX in Word/WPS and visually inspect pagination, figures, formulas, and tables.",
+        "- 自动 QA 收敛不等于 100% 正确。",
+        "- 用 Word/WPS 打开最终 DOCX，核对分页、图片、公式、表格和目录。",
     ])
     if int(report.get("final_warnings") or 0):
-        lines.append("- Review remaining warnings in qa_report.md and repair_loop_report.md before delivery.")
+        lines.append("- 交付前查看 qa_report.md 和 repair_loop_report.md 中的剩余 warning。")
     else:
-        lines.append("- No remaining warnings were reported by the enabled QA levels.")
+        lines.append("- 当前启用的 QA 未报告剩余 warning。")
     lines.append("")
     return "\n".join(lines)
 

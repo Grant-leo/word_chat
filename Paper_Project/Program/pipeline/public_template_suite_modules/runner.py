@@ -167,7 +167,7 @@ def run_template(
         }
     )
 
-    fmt, fmt_md = extract_format(str(docx_path))
+    fmt, fmt_md = extract_format(str(docx_path), output_dir=str(template_run_dir))
     write_json(template_run_dir / "format.json", fmt)
     (template_run_dir / "format_report.md").write_text(fmt_md, encoding="utf-8")
     profile = write_profile(fmt, str(template_run_dir), project_root=str(ROOT))

@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
+from docx import Document
 from privacy import sanitize_value
 from qa_checker import check_output
 from regression_suite_modules.harness import assert_true, base_content, base_format, case, new_workdir, write_json
@@ -19,11 +21,13 @@ def privacy_sanitizes_absolute_paths() -> None:
     data = {
         "path": r"X:\workspace\project\Outputs\private\file.docx",
         "tmp": str(Path(tempfile.gettempdir()) / "abc" / "file.pdf"),
+        "embedded": r"Missing image: X:\workspace\project\Inputs\private\figure.png",
     }
     sanitized = sanitize_value(data, project_root=r"X:\workspace\project")
     text = json.dumps(sanitized, ensure_ascii=False)
     assert_true(r"X:\workspace" not in text and "project" not in text, "project path leaked")
     assert_true("<PROJECT>" in text and "<TEMP>" in text, "path labels missing")
+    assert_true("Missing image: <PROJECT>/Inputs/private/figure.png" in text, "embedded absolute path was not sanitized")
 
 
 @case
@@ -62,7 +66,18 @@ def visual_qa_fails_closed_without_pdf_tools() -> None:
     assert_true(report["passed"] is False, "visual QA passed without pdfinfo/text validation")
     assert_true("PDFINFO_UNAVAILABLE" in codes, "missing pdfinfo was not reported")
     assert_true("Poppler" in report.get("next_action", ""), f"visual QA did not guide dependency repair: {report}")
-    assert_true("Next action" in qa_visual.report_to_markdown(report), "visual report markdown should include next action")
+    assert_true("下一步" in qa_visual.report_to_markdown(report), "visual report markdown should include next action")
+
+
+@case
+def visual_qa_sanitizes_issue_details() -> None:
+    import qa_visual
+
+    work = new_workdir("visual_issue_privacy")
+    report = qa_visual.check_visual(str(work), output_docx_name="missing.docx", project_root=str(work))
+    text = json.dumps(report.get("issues") or [], ensure_ascii=False)
+    assert_true(str(work) not in text and str(work).replace("\\", "/") not in text, "visual QA issue leaked output path")
+    assert_true("<PROJECT>/missing.docx" in text, f"visual QA issue detail was not sanitized: {text}")
 
 
 @case
@@ -92,6 +107,159 @@ def run_pipeline_missing_inputs_returns_nonzero() -> None:
         timeout=60,
     )
     assert_true(result.returncode != 0, "run_pipeline returned success for missing inputs")
+
+
+@case
+def run_pipeline_help_localizes_agent_options() -> None:
+    root = PIPELINE_DIR.parents[2]
+    result = subprocess.run(
+        [sys.executable, str(root / "run_pipeline.py"), "--help"],
+        cwd=str(root),
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+    )
+    assert_true(result.returncode == 0, f"run_pipeline --help failed: {result.stderr}")
+    assert_true("Agent 自动入口" in result.stdout and "自动修复闭环" in result.stdout, "help text lost novice-friendly Chinese option descriptions")
+    assert_true("Agent-first mode" not in result.stdout and "Run a bounded" not in result.stdout, "help text still exposes old English option descriptions")
+
+
+@case
+def content_parser_cli_writes_outputs_outside_inputs() -> None:
+    work = new_workdir("content_parser_cli_output")
+    inputs = work / "Inputs"
+    out_dir = work / "Outputs" / "content_cli"
+    inputs.mkdir()
+    docx = inputs / "paper.docx"
+    doc = Document()
+    doc.add_paragraph("1 Introduction")
+    doc.add_paragraph("Body paragraph.")
+    doc.save(docx)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(PIPELINE_DIR / "content_parser.py"),
+            str(docx),
+            "--output-dir",
+            str(out_dir),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+    )
+    assert_true(result.returncode == 0, f"content_parser CLI failed: {result.stdout}\n{result.stderr}")
+    assert_true((out_dir / "paper_content.json").exists(), "content_parser CLI did not write JSON to output dir")
+    assert_true((out_dir / "paper" / "figures").exists(), "content_parser CLI did not place figures under output dir")
+    assert_true(not (inputs / "paper_content.json").exists(), "content_parser CLI wrote JSON beside input")
+    assert_true(not (inputs / "paper" / "figures").exists(), "content_parser CLI wrote figures under Inputs")
+
+
+@case
+def content_parser_default_extract_writes_outputs_outside_inputs() -> None:
+    from content_parser import extract as extract_docx_content
+
+    work = new_workdir("content_parser_default_output")
+    inputs = work / "Inputs"
+    inputs.mkdir()
+    docx = inputs / "paper.docx"
+    doc = Document()
+    doc.add_paragraph("1 Introduction")
+    doc.add_paragraph("Body paragraph.")
+    doc.save(docx)
+
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(work)
+        content = extract_docx_content(str(docx))
+    finally:
+        os.chdir(old_cwd)
+
+    images_dir = Path(content["_meta"]["images_dir"])
+    assert_true("Outputs" in images_dir.parts and "_content_parser_extract" in images_dir.parts, f"default images dir is unsafe: {images_dir}")
+    assert_true(not (inputs / "paper" / "figures").exists(), "default content extraction wrote figures under Inputs")
+
+
+@case
+def format_extractor_cli_writes_outputs_outside_templates() -> None:
+    work = new_workdir("format_extractor_cli_output")
+    templates = work / "Templates"
+    templates.mkdir()
+    docx = templates / "template.docx"
+    doc = Document()
+    doc.add_paragraph("Template heading")
+    doc.add_paragraph("Template body.")
+    doc.save(docx)
+
+    result = subprocess.run(
+        [sys.executable, str(PIPELINE_DIR / "format_extractor.py"), str(docx)],
+        cwd=str(work),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+    )
+    out_dir = work / "Outputs" / "_format_extractor_cli"
+    assert_true(result.returncode == 0, f"format_extractor CLI failed: {result.stdout}\n{result.stderr}")
+    assert_true((out_dir / "template_format.json").exists(), "format_extractor CLI did not write JSON to Outputs")
+    assert_true((out_dir / "template_格式提取.md").exists(), "format_extractor CLI did not write MD report to Outputs")
+    assert_true(not (templates / "template_format.json").exists(), "format_extractor CLI wrote JSON beside template")
+    assert_true(not (templates / "template_assets").exists(), "format_extractor CLI wrote assets beside template")
+
+
+@case
+def format_extractor_default_assets_stay_outside_templates() -> None:
+    from format_extractor import extract as extract_format
+
+    work = new_workdir("format_extractor_default_assets")
+    templates = work / "Templates"
+    templates.mkdir()
+    docx = templates / "template.docx"
+    doc = Document()
+    doc.add_paragraph("Template heading")
+    doc.save(docx)
+
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(work)
+        fmt, _ = extract_format(str(docx))
+    finally:
+        os.chdir(old_cwd)
+
+    assets_dir = Path(fmt["_meta"]["assets_dir"])
+    assert_true("Outputs" in assets_dir.parts and "_format_extractor_extract" in assets_dir.parts, f"default assets dir is unsafe: {assets_dir}")
+    assert_true(not (templates / "template_assets").exists(), "default format extraction wrote assets beside template")
+
+
+@case
+def md_parser_cli_writes_outputs_outside_inputs() -> None:
+    work = new_workdir("md_parser_cli_output")
+    inputs = work / "Inputs"
+    inputs.mkdir()
+    md = inputs / "paper.md"
+    md.write_text("# 格式说明\n\n正文：宋体，小四号。\n\n# 论文标题\n\n正文段落。\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, str(PIPELINE_DIR / "md_parser.py"), str(md)],
+        cwd=str(work),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+    )
+    out_dir = work / "Outputs" / "_md_parser_cli"
+    assert_true(result.returncode == 0, f"md_parser CLI failed: {result.stdout}\n{result.stderr}")
+    assert_true((out_dir / "paper_format.json").exists(), "md_parser CLI did not write format JSON to Outputs")
+    assert_true((out_dir / "paper_content.json").exists(), "md_parser CLI did not write content JSON to Outputs")
+    assert_true(not (inputs / "paper_format.json").exists(), "md_parser CLI wrote format JSON beside input")
+    assert_true(not (inputs / "paper_content.json").exists(), "md_parser CLI wrote content JSON beside input")
 
 
 @case

@@ -103,6 +103,10 @@ when there is a single valid choice, defaults to `user` mode, enables the
 bounded auto-repair loop, and writes `agent_summary.md/json`. If there are
 multiple candidates, ask the user for the file name only.
 
+If interactive selection is cancelled or stdin closes, do not leave the user
+waiting. Tell them to rerun with `python run_pipeline.py --agent-auto`, or with
+explicit `--template` / `--content` file names when the choices are known.
+
 If anything interrupts before or during the run, do not leave ordinary users
 waiting without direction. Read or write the relevant `agent_preflight_report.md`,
 `agent_summary.md`, or QA report, then state the next concrete action they
@@ -248,11 +252,11 @@ python run_pipeline.py --mode developer --qa-level visual --template <模板文�
 ## Core Ownership Map
 
 - `content_parser.py`: stable public content extraction entrypoint.
-- `content_parser_modules/`: reusable content extraction rules: extraction orchestration, placeholders, styles, text cleanup, front matter, captions, paragraph streams, body dispatch, source TOC, images, tables, formula label cleanup, source OMML extraction, text formula items, split-layout repair strategies, headings, references, and section building.
+- `content_parser_modules/`: reusable content extraction rules: extraction orchestration, placeholders, styles, text cleanup, front matter, captions, paragraph streams, body dispatch, source TOC, images, tables, formula label cleanup, source OMML extraction, text formula items, split-layout repair strategies, headings, references, and section building. Standalone/default extraction output stays under `Outputs/_content_parser_cli/` or `Outputs/_content_parser_extract/`, not under `Inputs/`.
 - `format_extractor.py`: stable DOCX/PDF template format extraction entry point.
-- `format_extractor_modules/`: PDF template parsing, OOXML metrics, style inheritance, semantic style profiles, cover assets, and cover table extraction.
+- `format_extractor_modules/`: PDF template parsing, OOXML metrics, style inheritance, semantic style profiles, cover assets, and cover table extraction. Standalone CLI output defaults to `Outputs/_format_extractor_cli/`, and template assets should not be written beside files in `Templates/`.
 - `md_parser.py`: Markdown format/content parsing.
-- `md_parser_modules/`: Markdown parser helpers for content extraction orchestration, format extraction, inline/display math tokens, image path resolution, table parsing, and text cleanup.
+- `md_parser_modules/`: Markdown parser helpers for content extraction orchestration, format extraction, inline/display math tokens, image path resolution, table parsing, and text cleanup. Standalone CLI output defaults to `Outputs/_md_parser_cli/`.
 - `template_profiler.py`: stable template capability/risk profile entry point.
 - `template_profiler_modules/`: template profile construction and report writing.
 - `script_generator.py`: stable public script generation entrypoint.
