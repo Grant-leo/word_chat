@@ -1150,6 +1150,50 @@ def pipeline_qa_terminal_labels_warning_only_reports() -> None:
 
 
 @case
+def pipeline_qa_writes_report_when_structural_dependency_missing() -> None:
+    work = new_workdir("pipeline_qa_missing_structural_report")
+    raw_detail = f"missing module at {work / 'private' / 'qa_checker.py'}"
+    write_workflow_mode(
+        str(work),
+        mode="developer",
+        template_path=str(work / "Templates" / "template.docx"),
+        content_path=str(work / "Inputs" / "content.docx"),
+        run_qa=True,
+        qa_level="basic",
+        golden_dir=None,
+        update_golden=False,
+        require_wps=False,
+    )
+
+    deps = QADependencies(
+        qa_check_and_write=None,
+        conformance_check_and_write=None,
+        visual_check_and_write=None,
+        optional_import_detail=lambda name: raw_detail,
+    )
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        ok = run_qa_phases(str(work), mode="developer", output_docx_name="最终论文.docx", qa_level="basic", project_root=str(work), deps=deps)
+    output = buf.getvalue()
+    report = json.loads((work / "qa_report.json").read_text(encoding="utf-8"))
+    plan = json.loads((work / "qa_repair_plan.json").read_text(encoding="utf-8"))
+    report_text = json.dumps(report, ensure_ascii=False)
+    plan_text = json.dumps(plan, ensure_ascii=False)
+    assert_true(not ok, "structural QA should fail closed when qa_checker dependency is missing")
+    assert_true((work / "qa_report.md").exists(), "missing structural dependency should write qa_report.md")
+    assert_true((work / "qa_repair_plan.md").exists(), "missing structural dependency should write qa_repair_plan.md")
+    assert_true((work / "qa_fix_prompt.txt").exists(), "missing structural dependency should write qa_fix_prompt.txt")
+    assert_true(report["issues"][0]["code"] == "STRUCTURAL_QA_UNAVAILABLE", f"wrong structural dependency issue: {report}")
+    assert_true(plan.get("resume_scope") == "full_pipeline", f"structural dependency repair plan should route to full pipeline: {plan}")
+    assert_true("run_pipeline.py" in plan.get("resume_command", ""), f"structural dependency plan should keep a rerun command: {plan}")
+    assert_true("--template template.docx --content content.docx" in plan.get("resume_command", ""), f"structural dependency rerun command lost file arguments: {plan}")
+    assert_true("qa_checker.py" in plan.get("next_action", ""), f"structural dependency plan lost concrete next action: {plan}")
+    assert_true(str(work) not in report_text and str(work) not in plan_text, "structural dependency handoff leaked an absolute path")
+    assert_true("<PROJECT>" in report_text and "<PROJECT>" in plan_text, f"structural dependency detail was not sanitized: {report} {plan}")
+    assert_true("qa_report.md" in output and "qa_repair_plan.md" in output, f"terminal output did not route to structural reports: {output}")
+
+
+@case
 def pipeline_qa_writes_report_when_conformance_dependency_missing() -> None:
     work = new_workdir("pipeline_qa_missing_conformance_report")
     raw_detail = f"missing module at {work / 'private' / 'qa_conformance.py'}"

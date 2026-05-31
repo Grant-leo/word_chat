@@ -15,6 +15,7 @@ REPORT_SPECS = (
 REPORT_LABELS = {key: label for key, label, _json_name, _md_name in REPORT_SPECS}
 
 REPORT_ISSUE_ACTIONS = {
+    "STRUCTURAL_QA_UNAVAILABLE": "修复结构 QA 依赖后重跑完整流水线；先查看 {report_path} 和 qa_repair_plan.md，确认 qa_checker.py / qa_checker_modules 的导入错误。",
     "CONFORMANCE_INPUT_MISSING": "重新运行完整流水线，确认 format.json、content.json、build_manifest.json 和最终 DOCX 都已生成；若仍失败，打开 {report_path} 查看缺失项。",
     "CONFORMANCE_QA_UNAVAILABLE": "修复 strict conformance QA 依赖后重跑；先查看 {report_path} 里的缺失模块或导入错误。",
     "DOCX_XML_UNREADABLE": "先确认最终 DOCX 能用 Word/WPS 正常打开；如果文件损坏，让 Agent 重新生成最终论文后再重跑 strict QA。",

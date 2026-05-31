@@ -115,6 +115,184 @@ def _write_dependency_report(out_dir, *, report_name, mode, code, message, detai
     return report
 
 
+def _quote_command_arg(value):
+    text = str(value)
+    if not text:
+        return '""'
+    if any(ch.isspace() for ch in text) or any(ch in text for ch in '"&|<>^'):
+        return '"' + text.replace('"', r'\"') + '"'
+    return text
+
+
+def _workflow_resume_command(out_dir, fallback_mode):
+    workflow_path = os.path.join(out_dir, "workflow_mode.json")
+    try:
+        with open(workflow_path, "r", encoding="utf-8") as f:
+            workflow = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return ""
+
+    mode = str(workflow.get("mode") or fallback_mode or "user")
+    template = workflow.get("template")
+    content = workflow.get("content")
+    md_file = workflow.get("md")
+    if not md_file and template and content and str(template).lower().endswith(".md") and template == content:
+        md_file = template
+
+    args = ["python", "run_pipeline.py", "--mode", mode]
+    if md_file:
+        args.extend(["--md", str(md_file)])
+    elif template and content:
+        args.extend(["--template", str(template), "--content", str(content)])
+    else:
+        return ""
+
+    qa_level = str(workflow.get("qa_level") or "").strip().lower()
+    if qa_level in {"basic", "strict", "visual"}:
+        args.extend(["--qa-level", qa_level])
+    if workflow.get("auto_repair"):
+        args.append("--auto-repair")
+        if workflow.get("repair_max_rounds"):
+            args.extend(["--repair-max-rounds", str(workflow.get("repair_max_rounds"))])
+        if workflow.get("repair_stop_no_improve"):
+            args.extend(["--repair-stop-no-improve", str(workflow.get("repair_stop_no_improve"))])
+    if workflow.get("require_wps"):
+        args.append("--require-wps")
+    if workflow.get("update_golden"):
+        args.append("--update-golden")
+    golden_dir = workflow.get("golden_dir")
+    if golden_dir:
+        args.extend(["--golden-dir", str(golden_dir)])
+    return " ".join(_quote_command_arg(arg) for arg in args)
+
+
+def _write_structural_dependency_handoff(out_dir, *, mode, detail, project_root=None):
+    detail = _safe_report_value(detail, project_root)
+    output_dir_name = os.path.basename(os.path.abspath(out_dir))
+    resume_command = _workflow_resume_command(out_dir, mode)
+    next_action = (
+        "结构 QA 无法运行。先修复 qa_checker.py 或 qa_checker_modules 的导入/依赖，"
+        "然后重新运行完整流水线；先查看 qa_report.md 和 qa_repair_plan.md。"
+    )
+    if resume_command:
+        next_action = f"{next_action} 修复后运行：`{resume_command}`"
+    issue = {
+        "code": "STRUCTURAL_QA_UNAVAILABLE",
+        "severity": "error",
+        "message": "Required structural QA is unavailable, so the pipeline cannot prove this DOCX is safe to deliver.",
+        "detail": detail,
+        "active_owner": "Paper_Project/Program/pipeline/qa_checker.py / qa_checker_modules",
+    }
+    step = {
+        "code": issue["code"],
+        "severity": "error",
+        "title": "结构 QA 不可用",
+        "why": "qa_checker.py 是必备结构 QA；缺失时不能把本轮输出标记为已通过。",
+        "detail": detail,
+        "counts": {},
+        "auto_level": "dependency_repair",
+        "target": issue["active_owner"],
+        "user_action": "让 Agent 修复结构 QA 依赖后重跑完整流水线；不要把这次输出当作已通过。",
+        "developer_action": "检查 qa_checker.py、qa_checker_modules 的导入错误和 Python 依赖，修复后重跑完整 regression 与真实流水线。",
+    }
+    plan = {
+        "schema_version": 1,
+        "passed": False,
+        "summary": "结构 QA 没有运行成功。流水线已停止，避免误报通过。",
+        "mode": mode,
+        "blocking_errors": 1,
+        "warnings": 0,
+        "output_dir": output_dir_name,
+        "next_action": next_action,
+        "resume_scope": "full_pipeline",
+        "resume_command": resume_command,
+        "open_first": ["qa_report.md", "qa_repair_plan.md", "qa_fix_prompt.txt"],
+        "commands": {"rerun_current_pipeline": resume_command, "rebuild_current_docx": ""},
+        "steps": [step],
+        "copy_to_ai_prompt": "\n".join(
+            [
+                "请修复本项目的结构 QA 依赖缺失问题。",
+                f"输出目录：{output_dir_name}",
+                "先阅读 `qa_report.md` 和 `qa_repair_plan.md`。",
+                f"下一步：{next_action}",
+                f"1. {step['code']}: {step['user_action']}",
+            ]
+        ),
+    }
+    report = {
+        "schema_version": 1,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "mode": mode,
+        "output_dir_name": output_dir_name,
+        "passed": False,
+        "counts": {},
+        "issues": [issue],
+        "next_action": next_action,
+        "repair_plan": plan,
+    }
+    report = _safe_report_value(report, project_root)
+    plan = report["repair_plan"]
+    issue = report["issues"][0]
+    step = plan["steps"][0]
+    report_lines = [
+        "# QA 检测报告",
+        "",
+        "- 结果：未通过",
+        f"- 问题码：`{issue['code']}`",
+        f"- 信息：{issue['message']}",
+        f"- 下一步：{report['next_action']}",
+        f"- 修复目标：`{issue['active_owner']}`",
+    ]
+    if issue.get("detail"):
+        report_lines.append(f"- 细节：`{issue['detail']}`")
+    report_lines.extend(
+        [
+            "",
+            "## 修复计划",
+            "",
+            "- 先打开 `qa_repair_plan.md`。",
+            "- 修复结构 QA 依赖后重新运行完整流水线。",
+            "",
+        ]
+    )
+    report_md = "\n".join(report_lines)
+    repair_lines = [
+        "# QA 修复向导",
+        "",
+        "- 结果：需要修复",
+        f"- 摘要：{plan['summary']}",
+        f"- 修复范围：`{plan['resume_scope']}`",
+        f"- 优先动作：{plan['next_action']}",
+        "",
+        "## 先打开这些文件",
+        "",
+        "- `qa_report.md`",
+        "- `qa_fix_prompt.txt`",
+        "",
+        "## 修复步骤",
+        "",
+        f"1. **{step['code']}**：{step['title']}",
+        f"   - 小白用户下一步：{step['user_action']}",
+        f"   - 开发者检查：{step['developer_action']}",
+        f"   - 修复目标：`{step['target']}`",
+    ]
+    if step.get("detail"):
+        repair_lines.append(f"   - 细节：`{step['detail']}`")
+    repair_lines.append("")
+    repair_md = "\n".join(repair_lines)
+    files = {
+        "qa_report.json": json.dumps(report, ensure_ascii=False, indent=2),
+        "qa_report.md": report_md,
+        "qa_repair_plan.json": json.dumps(plan, ensure_ascii=False, indent=2),
+        "qa_repair_plan.md": repair_md,
+        "qa_fix_prompt.txt": str(plan.get("copy_to_ai_prompt") or ""),
+    }
+    for filename, content in files.items():
+        with open(os.path.join(out_dir, filename), "w", encoding="utf-8") as f:
+            f.write(content if content.endswith("\n") else content + "\n")
+    return report
+
+
 def run_qa_phases(
     out_dir,
     *,
@@ -132,7 +310,17 @@ def run_qa_phases(
     failed_reports = []
 
     if deps.qa_check_and_write is None:
-        print(f'  [ERROR] qa_checker.py 不可用，无法执行必备 QA。{_optional_detail(deps, "qa_checker", project_root)}')
+        detail = _optional_detail(deps, "qa_checker", project_root)
+        print(f'  [ERROR] qa_checker.py 不可用，无法执行必备 QA。{detail}')
+        qa_report = _write_structural_dependency_handoff(
+            out_dir,
+            mode=mode,
+            detail=detail,
+            project_root=project_root,
+        )
+        print("  [ERROR] 结构 QA 依赖缺失，已写出 qa_report.md / qa_repair_plan.md / qa_fix_prompt.txt")
+        failed_reports.append(("Structural QA", "qa_report.md / qa_repair_plan.md", qa_report))
+        _print_failed_report_hint(qa_report, failed_reports)
         return False
 
     qa_report = deps.qa_check_and_write(out_dir, mode=mode, output_docx_name=output_docx_name)
