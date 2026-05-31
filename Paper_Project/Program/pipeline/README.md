@@ -26,10 +26,10 @@ CLI, output, verification, and QA details in a focused package:
 - `cli.py`: CLI arguments, banner, interactive/non-interactive dispatch, and Agent-first auto selection.
 - `context.py`: path resolution, QA-level normalization, output folder creation, workflow metadata, and Agent-auto flags.
 - `dependencies.py`: optional QA/template/Markdown imports and import-error details.
-- `artifacts.py`: `format.json`, `content.json`, and markdown handoff reports.
+- `artifacts.py`: `format.json`, `content.json`, markdown handoff reports, and QA-shaped build-failure reports.
 - `verification.py`: repeated extraction verification, arbitration, and stable-content convergence.
 - `template_phase.py`: template profile and template requirements report phase.
-- `build_phase.py`: generated-script creation and DOCX build execution.
+- `build_phase.py`: generated-script creation, DOCX build execution, and generated-script failure handoff.
 - `execution.py`: generated-script subprocess execution and UTF-8 output decoding.
 - `contracts.py`: lightweight JSON handoff structure checks.
 - `qa.py`: structural, strict, and visual QA orchestration.
@@ -41,9 +41,9 @@ CLI, output, verification, and QA details in a focused package:
 
 Current baseline as of 2026-05-31:
 
-- Synthetic regression after the latest parser/QA/high-risk fixes: `166 passed, 0 failed`.
+- Synthetic regression after the latest productized build-failure handoff fixes: `173 passed, 0 failed`.
 - Agent-first flow: `--agent-auto` scans local inputs, auto-selects only single candidates, defaults to user auto-repair, and writes `agent_summary.md/json`.
-- Novice interruption coverage: interactive cancellation/EOF, missing preflight inputs, QA dependency failures, and auto-repair blockers all route to a next action.
+- Novice interruption coverage: interactive cancellation/EOF, missing preflight inputs, generated-script build failures, QA dependency failures, and auto-repair blockers all route to a next action.
 - Output-boundary coverage: standalone/default `format_extractor`, `content_parser`, and `md_parser` outputs stay under `Outputs/_...` instead of beside private source files.
 - Controlled auto-repair loop regression: repairable build-script error, no-improvement stop, needs-user-file stop, strict/visual dependency failure, visual option preservation, and sanitized report paths passed.
 - PDF template end-to-end strict QA: synthetic instruction PDF template + DOCX content passed.

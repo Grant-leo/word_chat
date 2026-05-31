@@ -5,6 +5,24 @@ import json
 import os
 
 
+def _sanitize_report_value(value, project_root=None):
+    try:
+        from privacy import sanitize_value
+    except Exception:  # pragma: no cover - report hardening fallback
+        return value
+    try:
+        return sanitize_value(value, project_root=project_root)
+    except Exception:
+        return value
+
+
+def _truncate_detail(value, limit=4000):
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n...[truncated]"
+
+
 def write_extraction_failure_report(out_dir, *, mode, label, error, target):
     """Write a QA-shaped report when extraction verification cannot converge."""
     try:
@@ -40,6 +58,61 @@ def write_extraction_failure_report(out_dir, *, mode, label, error, target):
         "workflow_mode.json",
     ]
     report["repair_plan"].setdefault("commands", {})["rebuild_current_docx"] = ""
+    write_reports(report, out_dir)
+    return report
+
+
+def write_build_failure_report(
+    out_dir,
+    *,
+    mode,
+    stderr,
+    stdout="",
+    output_docx_name="最终论文.docx",
+    project_root=None,
+):
+    """Write a QA-shaped report when build_generated.py fails before QA."""
+    try:
+        from qa_checker_modules.repair import build_repair_plan
+        from qa_checker_modules.reports import write_reports
+    except ImportError:  # pragma: no cover - package-style imports
+        from ..qa_checker_modules.repair import build_repair_plan
+        from ..qa_checker_modules.reports import write_reports
+
+    detail_parts = []
+    if stderr:
+        detail_parts.append("stderr:\n" + str(stderr))
+    if stdout:
+        detail_parts.append("stdout:\n" + str(stdout))
+    detail = _sanitize_report_value(_truncate_detail("\n\n".join(detail_parts)), project_root)
+    active_owner = "Outputs/<run>/build_generated.py" if mode == "user" else "script_generator.py / script_generator_modules/runtime_build.py"
+    issue = {
+        "code": "MISSING_DOCX",
+        "severity": "error",
+        "message": f"生成脚本执行失败，`{output_docx_name}` 没有生成。",
+        "detail": detail,
+        "active_owner": active_owner,
+        "owner_user": "Outputs/<run>/build_generated.py",
+        "owner_developer": "script_generator.py / script_generator_modules/runtime_build.py",
+    }
+    report = {
+        "schema_version": 1,
+        "mode": mode,
+        "passed": False,
+        "counts": {},
+        "issues": [issue],
+        "output_dir_name": os.path.basename(os.path.abspath(out_dir)),
+    }
+    report["repair_plan"] = build_repair_plan(report, out_dir)
+    report["repair_plan"]["open_first"] = [
+        "qa_repair_plan.md",
+        "qa_report.md",
+        "build_generated.py",
+        "workflow_mode.json",
+        "格式提取.md",
+        "内容提取.md",
+    ]
+    report["next_action"] = report["repair_plan"].get("next_action") or "先打开 build_generated.py 查看构建错误，修复后重建当前 DOCX。"
     write_reports(report, out_dir)
     return report
 

@@ -38,7 +38,7 @@ if os.path.isdir(PIPELINE):
 from format_extractor import extract as extract_format
 from content_parser import extract as extract_content
 from script_generator import generate as generate_script
-from pipeline_runner.artifacts import write_content_artifacts, write_extraction_failure_report, write_format_artifacts
+from pipeline_runner.artifacts import write_build_failure_report, write_content_artifacts, write_extraction_failure_report, write_format_artifacts
 from pipeline_runner.build_phase import generate_and_build_docx_phase
 from pipeline_runner.cli import main_cli
 from pipeline_runner.contracts import (
@@ -251,6 +251,9 @@ def run(
         run_generated_script=run_generated_script,
         python_executable=sys.executable,
         step=step,
+        mode=mode,
+        project_root=BASE,
+        write_build_failure_report=write_build_failure_report,
     ):
         write_agent_summary(out_dir, folder_name, output_docx, mode, pipeline_status="failed", note="最终 DOCX 构建失败，请查看 build_generated.py 的执行错误。")
         return None

@@ -179,7 +179,7 @@ REPAIR_GUIDES = {
     "MISSING_DOCX": {
         "title": "最终 DOCX 没有生成",
         "why": "QA 没找到最终论文文件，通常是 `build_generated.py` 执行失败或输出文件名不一致。",
-        "user_action": "先查看终端中的构建错误；普通用户可让 AI 打开最新 `build_generated.py` 修复后重跑。",
+        "user_action": "先打开 `qa_repair_plan.md` 和 `qa_report.md` 看构建失败摘要；普通用户可让 AI 打开最新 `build_generated.py` 修复后重跑。",
         "developer_action": "检查 `pipeline_runner/build_phase.py`、生成脚本的 `OUT` 路径和异常输出。",
         "auto_level": "developer_fix",
     },

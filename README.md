@@ -68,7 +68,7 @@
 
 Agent 内部优先使用项目的自动入口；普通用户不用自己输入 Python 命令。开发者需要手动复现时，可在高级场景下使用 `run_pipeline.py --agent-auto` 或显式传入模板/内容参数。
 
-如果流程在预检、交互选择、QA、依赖或自动修复阶段中断，Agent 必须明确告诉用户下一步该做什么；预检阶段会写入 `Outputs/_agent_preflight_latest/agent_preflight_report.md`，多候选时会列出“可以直接回复：使用 Templates/... 作为模板 / 使用 Inputs/... 作为内容”的候选句。正式运行后优先看 `agent_summary.md`。结构/strict/visual QA 失败时，`agent_summary.md/json` 会直接列出前几个问题码和“小白用户下一步”，`conformance_report.md` 和 `visual_report.md` 也会针对占位符、Word 域、PDF 页数、不可读页面等常见阻断给出具体下一步。交互模式被取消或输入流中断时，下一步默认是改用 `python run_pipeline.py --agent-auto`。
+如果流程在预检、交互选择、构建最终 DOCX、QA、依赖或自动修复阶段中断，Agent 必须明确告诉用户下一步该做什么；预检阶段会写入 `Outputs/_agent_preflight_latest/agent_preflight_report.md`，多候选时会列出“可以直接回复：使用 Templates/... 作为模板 / 使用 Inputs/... 作为内容”的候选句。正式运行后优先看 `agent_summary.md`。如果 `build_generated.py` 执行失败，流水线也会写出 `qa_report.md/json`、`qa_repair_plan.md/json` 和 `qa_fix_prompt.txt`，并把下一步指向本次 `build_generated.py`。结构/strict/visual QA 失败时，`agent_summary.md/json` 会直接列出前几个问题码和“小白用户下一步”，`conformance_report.md` 和 `visual_report.md` 也会针对占位符、Word 域、PDF 页数、不可读页面等常见阻断给出具体下一步。交互模式被取消或输入流中断时，下一步默认是改用 `python run_pipeline.py --agent-auto`。
 
 自动修复闭环会生成 `repair_loop_report.md/json`，最多运行有限轮次，只允许修改本次输出目录的 `build_generated.py`。如果连续修复没有减少 error，或遇到缺图、扫描 PDF、内容缺失等必须由用户补文件的问题，会停止并说明原因。即使自动 QA 已无 error，也不代表 100% 正确，最终仍建议用 Word/WPS 做视觉检查。
 
@@ -176,10 +176,10 @@ build_generated.py ─────────→ 最终论文.docx
 
 截至 2026-05-31：
 
-- 合成回归：`172 passed, 0 failed`
+- 合成回归：`173 passed, 0 failed`
 - 自动修复闭环回归：可修复 QA error、连续无改善停止、needs_user_file 停止、strict/visual QA 依赖缺失、visual 参数保持、报告路径脱敏均已覆盖
 - Agent-first 自动入口：`--agent-auto` 可自动扫描单候选模板/内容；多候选时预检报告会把每个候选转成可直接回复给 Agent 的句子；默认普通用户自动修复，并写出 `agent_summary.md/json`
-- 小白中断体验：交互取消、EOF、预检失败、QA/依赖失败都会给出下一步，`agent_summary.md/json` 会聚合结构/strict/visual QA 的问题码和具体修复动作，`qa_report.md/json` 顶部也会点名首个结构 QA 问题码和动作；strict/visual 报告会针对占位符、Word 域、PDF 页数无效、页面图片不可读等问题给出更具体的下一步
+- 小白中断体验：交互取消、EOF、预检失败、生成脚本构建失败、QA/依赖失败都会给出下一步，`agent_summary.md/json` 会聚合结构/strict/visual QA 的问题码和具体修复动作，构建失败也会生成 `qa_report.md/json`、`qa_repair_plan.md/json` 和 `qa_fix_prompt.txt`；`qa_report.md/json` 顶部会点名首个结构 QA 问题码和动作；strict/visual 报告会针对占位符、Word 域、PDF 页数无效、页面图片不可读等问题给出更具体的下一步
 - 输出边界：独立 `format_extractor.py` / `content_parser.py` / `md_parser.py` 默认写入 `Outputs/_...`，不污染 `Inputs/` 或 `Templates/`
 - PDF 模板端到端 strict QA：合成文字说明 PDF 模板 + DOCX 内容，`passed`
 - PDF 极端压力测试：9 个场景覆盖大写扩展名、精排样张、横向页面、稀疏说明、扫描/损坏/空白/过短 PDF，`9/9` 符合预期

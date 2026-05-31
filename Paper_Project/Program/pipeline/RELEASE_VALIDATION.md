@@ -56,12 +56,14 @@ python Paper_Project\Program\pipeline\regression_suite.py --filter pipeline_qa_p
 python Paper_Project\Program\pipeline\regression_suite.py --filter pipeline_qa_writes_report_when_conformance_dependency_missing
 python Paper_Project\Program\pipeline\regression_suite.py --filter pipeline_qa_writes_report_when_visual_dependency_missing
 python Paper_Project\Program\pipeline\regression_suite.py --filter pipeline_auto_repair_blocks_unrepairable_visual_errors
+python Paper_Project\Program\pipeline\regression_suite.py --filter run_pipeline_writes_repair_plan_for_build_failure
 python Paper_Project\Program\pipeline\regression_suite.py --filter qa_repair_guides_cover_registered_issue_codes
 ```
 
 Pass criteria:
 
 - Every failed QA phase writes a matching Markdown/JSON report.
+- Generated-script build failures write `qa_report`, `qa_repair_plan`, `qa_fix_prompt`, and `agent_summary` with a concrete `MISSING_DOCX` next action.
 - Terminal output points to the correct report.
 - `--agent-auto` auto-selects only single candidates, refuses ambiguous choices, and writes `agent_summary.md/json`.
 - Registered structural QA issue codes have user-facing repair guides.

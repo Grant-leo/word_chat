@@ -1667,6 +1667,80 @@ def run_pipeline_writes_repair_plan_for_verification_failure() -> None:
 
 
 @case
+def run_pipeline_writes_repair_plan_for_build_failure() -> None:
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    import run_pipeline as runner
+
+    work = new_workdir("run_pipeline_build_failure")
+    template_dir = work / "Templates"
+    inputs_dir = work / "Inputs"
+    outputs_dir = work / "Outputs"
+    template_dir.mkdir()
+    inputs_dir.mkdir()
+    outputs_dir.mkdir()
+    (template_dir / "template.docx").write_text("template", encoding="utf-8")
+    (inputs_dir / "content.docx").write_text("content", encoding="utf-8")
+
+    original = {
+        "TEMPLATE_DIR": runner.TEMPLATE_DIR,
+        "INPUTS_DIR": runner.INPUTS_DIR,
+        "OUTPUTS_DIR": runner.OUTPUTS_DIR,
+        "double_verify": runner.double_verify,
+        "generate_script": runner.generate_script,
+        "run_generated_script": runner.run_generated_script,
+    }
+
+    def fake_verify(_extractor, _path, label, **_kwargs):
+        if label == "Format":
+            return base_format(), "# Format"
+        return base_content(["Body text"])
+
+    def fake_generate(_fmt_json_path, _cnt_json_path, out_dir, _output_docx_name):
+        Path(out_dir, "build_generated.py").write_text("raise RuntimeError('synthetic build failure')\n", encoding="utf-8")
+        return 45
+
+    def failing_build(_gen_py_path, _out_dir, python_executable):
+        return ScriptExecutionResult(
+            returncode=1,
+            stdout="",
+            stderr=f"Traceback synthetic failure at {work}\\private\\source.docx",
+        )
+
+    try:
+        runner.TEMPLATE_DIR = str(template_dir)
+        runner.INPUTS_DIR = str(inputs_dir)
+        runner.OUTPUTS_DIR = str(outputs_dir)
+        runner.double_verify = fake_verify
+        runner.generate_script = fake_generate
+        runner.run_generated_script = failing_build
+        result = runner.run("template.docx", "content.docx", mode="user", run_qa=True)
+    finally:
+        runner.TEMPLATE_DIR = original["TEMPLATE_DIR"]
+        runner.INPUTS_DIR = original["INPUTS_DIR"]
+        runner.OUTPUTS_DIR = original["OUTPUTS_DIR"]
+        runner.double_verify = original["double_verify"]
+        runner.generate_script = original["generate_script"]
+        runner.run_generated_script = original["run_generated_script"]
+
+    assert_true(result is None, "pipeline should stop cleanly on generated-script build failure")
+    out_dirs = sorted(outputs_dir.iterdir())
+    assert_true(out_dirs, "pipeline did not create an output directory for the build failure")
+    out_dir = out_dirs[-1]
+    report = json.loads((out_dir / "qa_report.json").read_text(encoding="utf-8"))
+    assert_true(report["issues"][0]["code"] == "MISSING_DOCX", f"build failure should be routed as missing final DOCX: {report}")
+    assert_true(str(work) not in report["issues"][0].get("detail", ""), f"build failure detail leaked an absolute private path: {report}")
+    plan = json.loads((out_dir / "qa_repair_plan.json").read_text(encoding="utf-8"))
+    assert_true(plan.get("resume_scope") == "current_docx", f"build failure should route to current DOCX rebuild: {plan}")
+    assert_true("build_generated.py" in plan.get("resume_command", ""), f"build failure plan should provide rebuild command: {plan}")
+    assert_true("build_generated.py" in plan.get("open_first", []), f"build failure plan should ask users to open build_generated.py first: {plan}")
+    assert_true("qa_repair_plan" in plan.get("next_action", "") or "qa_report" in plan.get("next_action", ""), f"build failure next action should point users to the standard report handoff: {plan}")
+    summary = json.loads((out_dir / "agent_summary.json").read_text(encoding="utf-8"))
+    action_text = "\n".join(summary.get("next_actions") or summary.get("manual_check_required") or [])
+    assert_true("MISSING_DOCX" in action_text and "build_generated.py" in action_text and "qa_repair_plan" in action_text, f"agent summary lost the build-failure next step: {summary}")
+
+
+@case
 def run_pipeline_agent_auto_writes_preflight_report_for_missing_file() -> None:
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
