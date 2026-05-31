@@ -12,7 +12,7 @@ from public_template_suite_modules.scenarios import DEFAULT_TEMPLATES
 
 
 def safe_download_url(value: Any) -> bool:
-    if not isinstance(value, str) or not value.startswith(("http://", "https://")):
+    if not isinstance(value, str) or not value.startswith("https://"):
         return False
     if any(token in value for token in ("????", "\ufffd")):
         return False
@@ -37,7 +37,7 @@ def read_manifest() -> Dict[str, Any]:
                 for key, value in item.items():
                     if value in (None, ""):
                         continue
-                    if key == "download_url" and base.get("download_url") and not safe_download_url(value):
+                    if key == "download_url" and not safe_download_url(value):
                         continue
                     clean[key] = value
                 base.update(clean)
@@ -61,6 +61,21 @@ def sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def expected_sha256(item: Dict[str, Any]) -> str:
+    value = item.get("sha256") or item.get("expected_sha256")
+    if not value:
+        return ""
+    value = str(value).strip().lower()
+    if len(value) != 64 or any(ch not in "0123456789abcdef" for ch in value):
+        raise RuntimeError(f"invalid sha256 for {item.get('id')}")
+    return value
+
+
+def verify_expected_sha256(path: Path, expected: str) -> None:
+    if expected and sha256_file(path).lower() != expected:
+        raise RuntimeError(f"local template sha256 mismatch: {path.name}")
+
+
 def resolve_existing_file(item: Dict[str, Any]) -> Optional[Path]:
     raw = item.get("file")
     if not raw:
@@ -76,8 +91,10 @@ def resolve_existing_file(item: Dict[str, Any]) -> Optional[Path]:
 
 
 def download_template(item: Dict[str, Any], force: bool = False) -> Path:
+    expected = expected_sha256(item)
     existing = resolve_existing_file(item)
     if existing and existing.exists() and not force:
+        verify_expected_sha256(existing, expected)
         return existing
 
     FILES_DIR.mkdir(parents=True, exist_ok=True)
@@ -89,6 +106,7 @@ def download_template(item: Dict[str, Any], force: bool = False) -> Path:
         name = f"{item.get('id', 'template')}.docx"
     path = FILES_DIR / name
     if path.exists() and path.stat().st_size > 2000 and not force:
+        verify_expected_sha256(path, expected)
         return path
     url = item.get("download_url") or item.get("url")
     if not safe_download_url(url):
@@ -98,6 +116,8 @@ def download_template(item: Dict[str, Any], force: bool = False) -> Path:
         data = resp.read()
     if len(data) < 2000 or not data.startswith(b"PK"):
         raise RuntimeError(f"downloaded file is not a DOCX zip: {len(data)} bytes")
+    if expected and hashlib.sha256(data).hexdigest().lower() != expected:
+        raise RuntimeError(f"downloaded file sha256 mismatch for {item.get('id')}")
     path.write_bytes(data)
     return path
 

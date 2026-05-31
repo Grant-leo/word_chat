@@ -14,6 +14,12 @@ from pathlib import Path
 import re
 from typing import Any, Callable, Dict, List
 
+try:
+    from privacy import sanitize_value
+except Exception:  # pragma: no cover - best-effort report hardening
+    def sanitize_value(value, project_root=None):
+        return value
+
 
 NEEDS_USER_AUTO_LEVELS = {
     "needs_user_file",
@@ -306,6 +312,7 @@ def _run_qa_state(
             code="CONFORMANCE_QA_UNAVAILABLE",
             message="strict conformance QA is required but qa_conformance.py is unavailable.",
             detail=_optional_detail(deps, "qa_conformance"),
+            project_root=project_root,
         )
         return _read_state(out_path, qa_level)
     if qa_level in ("strict", "visual"):
@@ -323,6 +330,7 @@ def _run_qa_state(
             code="VISUAL_QA_UNAVAILABLE",
             message="visual QA is required but qa_visual.py is unavailable.",
             detail=_optional_detail(deps, "qa_visual"),
+            project_root=project_root,
         )
         return _read_state(out_path, qa_level)
     if qa_level == "visual":
@@ -356,8 +364,12 @@ def _write_dependency_report(
     code: str,
     message: str,
     detail: str,
+    project_root: str | None = None,
 ) -> None:
     next_action = (REPORT_BLOCKER_GUIDES.get(code) or {}).get("user_action") or "安装或修复所需 QA 依赖后，重新运行完整流水线。"
+    message = _safe_report_value(message, project_root)
+    detail = _safe_report_value(detail, project_root)
+    next_action = _safe_report_value(next_action, project_root)
     issue = {
         "code": code,
         "severity": "error",
@@ -386,6 +398,13 @@ def _write_dependency_report(
     if detail:
         lines.append(f"- 细节：`{detail}`")
     (out_path / f"{report_name}.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _safe_report_value(value: Any, project_root: str | None = None) -> Any:
+    try:
+        return sanitize_value(value, project_root)
+    except Exception:
+        return value
 
 
 def _read_state(out_path: Path, qa_level: str) -> Dict[str, Any]:

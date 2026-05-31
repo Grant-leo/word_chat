@@ -4,9 +4,9 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-import shutil
 
 try:
+    from path_safety import ensure_safe_output_dir, safe_rmtree_generated_child
     from md_parser_modules.content_helpers import (
         _RE_BACKMATTER_HEADING,
         _RE_REF_HEADING,
@@ -17,6 +17,7 @@ try:
         _strip_md_formatting,
     )
 except ImportError:  # pragma: no cover - package-style imports
+    from ..path_safety import ensure_safe_output_dir, safe_rmtree_generated_child
     from .content_helpers import (
         _RE_BACKMATTER_HEADING,
         _RE_REF_HEADING,
@@ -43,10 +44,10 @@ def extract_content(md_path, output_dir=None):
 
     base = os.path.splitext(os.path.basename(md_path))[0]
     base_dir = os.path.dirname(os.path.abspath(md_path))
-    output_dir = output_dir or _default_output_dir()
+    output_dir = ensure_safe_output_dir(output_dir or _default_output_dir())
     content_dir = os.path.join(output_dir, base)
     fig_dir = os.path.join(content_dir, 'figures')
-    shutil.rmtree(fig_dir, ignore_errors=True)
+    safe_rmtree_generated_child(fig_dir, output_dir, allowed_names={"figures"})
     os.makedirs(fig_dir, exist_ok=True)
 
     # Detect title

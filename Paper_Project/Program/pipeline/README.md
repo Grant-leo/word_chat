@@ -126,6 +126,8 @@ the entrypoint preserves legacy monkeypatch hooks used by regression tests.
 execution runners, Markdown report writers, default public template metadata,
 synthetic non-private scenarios, and generated PNG test assets. Downloads and
 run outputs still stay under ignored `TestData/PublicTemplates/` paths.
+Template downloads must use HTTPS, and manifest entries may pin `sha256` (or
+`expected_sha256`) so local/downloaded DOCX files are verified before use.
 
 ## Formula Converter Modules
 

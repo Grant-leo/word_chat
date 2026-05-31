@@ -596,19 +596,20 @@ def pipeline_auto_repair_strict_requires_conformance_dependency() -> None:
     work = new_workdir("pipeline_auto_repair_missing_conformance")
     _write_repair_loop_fixture(work)
     _fake_repair_report(str(work), code="NO_ISSUE", severity="info")
+    raw_detail = f"missing dependency detail at {work / 'private' / 'qa_conformance.py'}"
 
     deps = QADependencies(
         qa_check_and_write=lambda out_dir, mode="user", output_docx_name="final.docx": _fake_repair_report(out_dir, code="NO_ISSUE", severity="info"),
         conformance_check_and_write=None,
         visual_check_and_write=None,
-        optional_import_detail=lambda name: "missing dependency detail",
+        optional_import_detail=lambda name: raw_detail,
     )
     result = run_repair_loop(
         str(work),
         mode="user",
         output_docx_name="final.docx",
         qa_level="strict",
-        project_root=str(REPO_ROOT),
+        project_root=str(work),
         max_rounds=1,
         stop_no_improve=1,
         deps=deps,
@@ -621,6 +622,9 @@ def pipeline_auto_repair_strict_requires_conformance_dependency() -> None:
     assert_true("CONFORMANCE_QA_UNAVAILABLE" in report["final_error_codes"], f"missing conformance error was not recorded: {report}")
     assert_true(report["blockers"] and report["blockers"][0]["code"] == "CONFORMANCE_QA_UNAVAILABLE", "missing conformance dependency should be a blocker")
     assert_true("conformance_report.md" in conformance_report.get("next_action", ""), f"dependency report did not explain next action: {conformance_report}")
+    conformance_text = json.dumps(conformance_report, ensure_ascii=False)
+    assert_true(str(work) not in conformance_text, "repair dependency report leaked an absolute path")
+    assert_true("<PROJECT>" in conformance_text, f"repair dependency report did not sanitize detail: {conformance_report}")
 
 
 @case
@@ -1034,6 +1038,7 @@ def pipeline_qa_points_to_conformance_report_when_strict_fails() -> None:
 @case
 def pipeline_qa_writes_report_when_conformance_dependency_missing() -> None:
     work = new_workdir("pipeline_qa_missing_conformance_report")
+    raw_detail = f"missing module at {work / 'private' / 'qa_conformance.py'}"
 
     def passing_qa(out_dir, mode, output_docx_name):
         return {"passed": True, "issues": [], "counts": {}, "mode": mode, "repair_plan": {"steps": [], "passed": True}}
@@ -1042,16 +1047,19 @@ def pipeline_qa_writes_report_when_conformance_dependency_missing() -> None:
         qa_check_and_write=passing_qa,
         conformance_check_and_write=None,
         visual_check_and_write=None,
-        optional_import_detail=lambda name: "missing module",
+        optional_import_detail=lambda name: raw_detail,
     )
     buf = io.StringIO()
     with redirect_stdout(buf):
         ok = run_qa_phases(str(work), mode="developer", output_docx_name="最终论文.docx", qa_level="strict", project_root=str(work), deps=deps)
     output = buf.getvalue()
     report = json.loads((work / "conformance_report.json").read_text(encoding="utf-8"))
+    report_text = json.dumps(report, ensure_ascii=False)
     assert_true(not ok, "strict QA should fail closed when conformance dependency is missing")
     assert_true((work / "conformance_report.md").exists(), "missing conformance dependency should write markdown report")
     assert_true(report["issues"][0]["code"] == "CONFORMANCE_QA_UNAVAILABLE", f"wrong dependency issue: {report}")
+    assert_true(str(work) not in report_text, "QA dependency report leaked an absolute path")
+    assert_true("<PROJECT>" in report_text, f"QA dependency report did not sanitize detail: {report}")
     assert_true("conformance_report.md" in output, f"terminal output did not route to conformance report: {output}")
 
 

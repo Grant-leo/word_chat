@@ -1,6 +1,7 @@
 ﻿"""Privacy, visual QA, and CLI regression cases."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -186,6 +187,95 @@ def content_parser_default_extract_writes_outputs_outside_inputs() -> None:
 
 
 @case
+def extractors_reject_source_output_dirs() -> None:
+    from content_parser import extract as extract_docx_content
+    from format_extractor import extract as extract_format
+    from md_parser import extract_content as extract_md_content
+
+    work = new_workdir("extractor_output_dir_guard")
+    inputs = work / "Inputs"
+    templates = work / "Templates"
+    inputs.mkdir()
+    templates.mkdir()
+
+    content_docx = inputs / "paper.docx"
+    doc = Document()
+    doc.add_paragraph("1 Introduction")
+    doc.add_paragraph("Body paragraph.")
+    doc.save(content_docx)
+
+    template_docx = templates / "template.docx"
+    template = Document()
+    template.add_paragraph("Template body.")
+    template.save(template_docx)
+
+    md = inputs / "paper.md"
+    md.write_text("# Title\n\nBody paragraph.\n", encoding="utf-8")
+
+    def expect_unsafe(call):
+        try:
+            call()
+        except ValueError as exc:
+            assert_true("Unsafe output_dir" in str(exc), f"unexpected safety error: {exc}")
+            return
+        raise AssertionError("extractor accepted a source output directory")
+
+    expect_unsafe(lambda: extract_docx_content(str(content_docx), output_dir=str(inputs)))
+    expect_unsafe(lambda: extract_docx_content(str(content_docx), output_dir=str(inputs / "Generated")))
+    expect_unsafe(lambda: extract_format(str(template_docx), output_dir=str(templates)))
+    expect_unsafe(lambda: extract_md_content(str(md), output_dir=str(inputs)))
+
+
+@case
+def extractor_cli_unsafe_output_shows_next_step() -> None:
+    work = new_workdir("extractor_cli_unsafe_output")
+    inputs = work / "Inputs"
+    inputs.mkdir()
+    docx = inputs / "paper.docx"
+    doc = Document()
+    doc.add_paragraph("1 Introduction")
+    doc.add_paragraph("Body paragraph.")
+    doc.save(docx)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(PIPELINE_DIR / "content_parser.py"),
+            str(docx),
+            "--output-dir",
+            str(inputs),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+    )
+    assert_true(result.returncode == 2, f"unsafe output dir should fail clearly: {result.stdout}\n{result.stderr}")
+    assert_true("[NEXT]" in result.stdout and "Outputs/" in result.stdout, f"unsafe output dir lacked next step: {result.stdout}")
+
+    md = inputs / "paper.md"
+    md.write_text("# Title\n\nBody paragraph.\n", encoding="utf-8")
+    md_result = subprocess.run(
+        [
+            sys.executable,
+            str(PIPELINE_DIR / "md_parser.py"),
+            str(md),
+            "--output-dir",
+            str(inputs),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+    )
+    assert_true(md_result.returncode == 2, f"unsafe MD output dir should fail clearly: {md_result.stdout}\n{md_result.stderr}")
+    assert_true("[NEXT]" in md_result.stdout and "Outputs/" in md_result.stdout, f"unsafe MD output dir lacked next step: {md_result.stdout}")
+    assert_true(not (inputs / "paper_format.json").exists(), "unsafe MD output dir wrote format JSON before failing")
+
+
+@case
 def format_extractor_cli_writes_outputs_outside_templates() -> None:
     work = new_workdir("format_extractor_cli_output")
     templates = work / "Templates"
@@ -260,6 +350,27 @@ def md_parser_cli_writes_outputs_outside_inputs() -> None:
     assert_true((out_dir / "paper_content.json").exists(), "md_parser CLI did not write content JSON to Outputs")
     assert_true(not (inputs / "paper_format.json").exists(), "md_parser CLI wrote format JSON beside input")
     assert_true(not (inputs / "paper_content.json").exists(), "md_parser CLI wrote content JSON beside input")
+
+
+@case
+def public_template_download_requires_https_and_verifies_sha256() -> None:
+    from public_template_suite_modules.storage import download_template, safe_download_url
+
+    work = new_workdir("public_template_download_guard")
+    local = work / "template.docx"
+    local.write_bytes(b"PK" + b"x" * 3000)
+    digest = hashlib.sha256(local.read_bytes()).hexdigest()
+
+    assert_true(safe_download_url("https://example.com/template.docx"), "HTTPS template URL should be accepted")
+    assert_true(not safe_download_url("http://example.com/template.docx"), "HTTP template URL should be rejected")
+    assert_true(download_template({"id": "local", "file": str(local), "sha256": digest}) == local, "matching local sha256 should pass")
+
+    try:
+        download_template({"id": "local", "file": str(local), "sha256": "0" * 64})
+    except RuntimeError as exc:
+        assert_true("sha256 mismatch" in str(exc), f"unexpected checksum error: {exc}")
+    else:
+        raise AssertionError("template download accepted a sha256 mismatch")
 
 
 @case

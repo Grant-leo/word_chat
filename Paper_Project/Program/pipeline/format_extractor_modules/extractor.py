@@ -3,17 +3,18 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shutil
 
 from docx import Document
 
 try:
+    from path_safety import ensure_safe_output_dir, safe_rmtree_generated_child
     from format_extractor_modules.cover import extract_cover as _extract_cover
     from format_extractor_modules.ooxml import ALIGN_MAP, paragraph_metrics as _paragraph_metrics
     from format_extractor_modules.pdf_template import extract_pdf_template as _extract_pdf_template
     from format_extractor_modules.style_profiles import build_style_profiles as _build_style_profiles
     from format_extractor_modules.style_resolver import StyleResolver
 except ImportError:  # pragma: no cover - package-style imports
+    from ..path_safety import ensure_safe_output_dir, safe_rmtree_generated_child
     from .cover import extract_cover as _extract_cover
     from .ooxml import ALIGN_MAP, paragraph_metrics as _paragraph_metrics
     from .pdf_template import extract_pdf_template as _extract_pdf_template
@@ -192,9 +193,9 @@ def extract_docx_template(docx_path, output_dir=None):
     md_lines.append(f'- 节:   JSON={len(fmt["sections"])} docx={len(doc.sections)} ✓')
 
     base = os.path.splitext(os.path.basename(docx_path))[0]
-    asset_root = os.path.abspath(output_dir or _default_output_dir())
+    asset_root = ensure_safe_output_dir(output_dir or _default_output_dir())
     asset_dir = os.path.join(asset_root, f"{base}_assets")
-    shutil.rmtree(asset_dir, ignore_errors=True)
+    safe_rmtree_generated_child(asset_dir, asset_root, allowed_suffixes=("_assets",))
     fmt["_meta"]["assets_dir"] = os.path.abspath(asset_dir)
     fmt["cover"] = _extract_cover(doc, asset_dir)
 

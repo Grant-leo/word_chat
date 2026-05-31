@@ -6,8 +6,10 @@ from pathlib import Path
 
 try:
     from format_extractor_modules.extractor import extract
+    from path_safety import ensure_safe_output_dir
 except ImportError:  # pragma: no cover - package-style imports
     from .format_extractor_modules.extractor import extract
+    from .path_safety import ensure_safe_output_dir
 
 __all__ = ["extract"]
 
@@ -25,9 +27,19 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     path = args.template_path
-    out_dir = Path(args.output_dir).resolve()
+    try:
+        out_dir = Path(ensure_safe_output_dir(args.output_dir))
+    except ValueError as exc:
+        print(f"[ERROR] {exc}")
+        print("[NEXT] 请把 --output-dir 改到 Outputs/ 下的新目录，然后重新运行本命令。")
+        raise SystemExit(2)
     out_dir.mkdir(parents=True, exist_ok=True)
-    fmt, md = extract(path, output_dir=str(out_dir))
+    try:
+        fmt, md = extract(path, output_dir=str(out_dir))
+    except ValueError as exc:
+        print(f"[ERROR] {exc}")
+        print("[NEXT] 请把 --output-dir 改到 Outputs/ 下的新目录，然后重新运行本命令。")
+        raise SystemExit(2)
     source = Path(path)
     json_path = str(out_dir / f"{source.stem}_format.json")
     with open(json_path, "w", encoding="utf-8") as handle:

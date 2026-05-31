@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shutil
 
 from docx import Document
 
 try:
+    from path_safety import ensure_safe_output_dir, safe_rmtree_generated_child
     from content_parser_modules.placeholders import (
         is_unfilled_placeholder_text as _is_unfilled_placeholder_text,
         placeholder_samples as _placeholder_samples,
@@ -22,6 +22,7 @@ try:
         postprocess_section_paragraphs,
     )
 except ImportError:  # pragma: no cover - package-style imports
+    from ..path_safety import ensure_safe_output_dir, safe_rmtree_generated_child
     from .placeholders import (
         is_unfilled_placeholder_text as _is_unfilled_placeholder_text,
         placeholder_samples as _placeholder_samples,
@@ -78,7 +79,7 @@ def _default_output_dir():
 
 def extract(docx_path, output_dir=None):
     """Extract content from a content docx into structured JSON + copy images."""
-    output_dir = output_dir or _default_output_dir()
+    output_dir = ensure_safe_output_dir(output_dir or _default_output_dir())
     doc = Document(docx_path)
     base = os.path.splitext(os.path.basename(docx_path))[0]
 
@@ -86,7 +87,7 @@ def extract(docx_path, output_dir=None):
     # verification passes do not accumulate stale/duplicated files.
     content_dir = os.path.join(output_dir, base)
     fig_dir = os.path.join(content_dir, 'figures')
-    shutil.rmtree(fig_dir, ignore_errors=True)
+    safe_rmtree_generated_child(fig_dir, output_dir, allowed_names={"figures"})
     os.makedirs(fig_dir, exist_ok=True)
     image_registry = ImageRegistry(fig_dir, f'{base}_img')
 

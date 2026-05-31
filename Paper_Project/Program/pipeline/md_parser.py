@@ -5,6 +5,7 @@ import json
 
 try:
     from md_parser_modules.content_extractor import extract_content
+    from path_safety import ensure_safe_output_dir
     from md_parser_modules.content_helpers import (
         _RE_BACKMATTER_HEADING,
         _RE_REF_HEADING,
@@ -34,6 +35,7 @@ try:
     )
 except ImportError:  # pragma: no cover - package-style imports
     from .md_parser_modules.content_extractor import extract_content
+    from .path_safety import ensure_safe_output_dir
     from .md_parser_modules.content_helpers import (
         _RE_BACKMATTER_HEADING,
         _RE_REF_HEADING,
@@ -77,7 +79,12 @@ if __name__ == '__main__':
     )
     args = parser.parse_args()
     path = args.md_path
-    out_dir = Path(args.output_dir).resolve()
+    try:
+        out_dir = Path(ensure_safe_output_dir(args.output_dir))
+    except ValueError as exc:
+        print(f"[ERROR] {exc}")
+        print("[NEXT] 请把 --output-dir 改到 Outputs/ 下的新目录，然后重新运行本命令。")
+        raise SystemExit(2)
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = Path(path).stem
 
@@ -89,7 +96,12 @@ if __name__ == '__main__':
     print(f'格式 JSON -> {format_json}')
 
     # Test content extraction
-    cnt = extract_content(path, output_dir=str(out_dir))
+    try:
+        cnt = extract_content(path, output_dir=str(out_dir))
+    except ValueError as exc:
+        print(f"[ERROR] {exc}")
+        print("[NEXT] 请把 --output-dir 改到 Outputs/ 下的新目录，然后重新运行本命令。")
+        raise SystemExit(2)
     content_json = out_dir / f'{stem}_content.json'
     with open(content_json, 'w', encoding='utf-8') as f:
         json.dump(cnt, f, ensure_ascii=False, indent=2)

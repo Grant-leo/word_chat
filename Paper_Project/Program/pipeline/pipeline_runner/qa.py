@@ -9,6 +9,12 @@ import os
 from .contracts import validate_qa_report
 from .reports import print_contract_issues, print_repair_hint
 
+try:
+    from privacy import sanitize_value
+except Exception:  # pragma: no cover - best-effort report hardening
+    def sanitize_value(value, project_root=None):
+        return value
+
 
 @dataclass(frozen=True)
 class QADependencies:
@@ -18,10 +24,17 @@ class QADependencies:
     optional_import_detail: object
 
 
-def _optional_detail(deps: QADependencies, name: str) -> str:
+def _safe_report_value(value, project_root=None):
+    try:
+        return sanitize_value(value, project_root)
+    except Exception:
+        return value
+
+
+def _optional_detail(deps: QADependencies, name: str, project_root=None) -> str:
     if deps.optional_import_detail is None:
         return ""
-    return deps.optional_import_detail(name)
+    return str(_safe_report_value(deps.optional_import_detail(name), project_root) or "")
 
 
 def _issue_counts(report):
@@ -61,7 +74,10 @@ def _print_failed_report_hint(qa_report, failed_reports):
     print("  [ERROR] QA 未通过。已保留输出目录和最终论文初稿；请按失败报告修复后重跑。")
 
 
-def _write_dependency_report(out_dir, *, report_name, mode, code, message, detail, next_action):
+def _write_dependency_report(out_dir, *, report_name, mode, code, message, detail, next_action, project_root=None):
+    message = _safe_report_value(message, project_root)
+    detail = _safe_report_value(detail, project_root)
+    next_action = _safe_report_value(next_action, project_root)
     report = {
         "schema_version": 1,
         "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -69,7 +85,7 @@ def _write_dependency_report(out_dir, *, report_name, mode, code, message, detai
         "output_dir_name": os.path.basename(os.path.abspath(out_dir)),
         "passed": False,
         "counts": {},
-        "issues": [{"code": code, "severity": "error", "message": message, "detail": detail}],
+        "issues": [_safe_report_value({"code": code, "severity": "error", "message": message, "detail": detail}, project_root)],
         "next_action": next_action,
     }
     with open(os.path.join(out_dir, f"{report_name}.json"), "w", encoding="utf-8") as f:
@@ -106,7 +122,7 @@ def run_qa_phases(
     failed_reports = []
 
     if deps.qa_check_and_write is None:
-        print(f'  [ERROR] qa_checker.py 不可用，无法执行必备 QA。{_optional_detail(deps, "qa_checker")}')
+        print(f'  [ERROR] qa_checker.py 不可用，无法执行必备 QA。{_optional_detail(deps, "qa_checker", project_root)}')
         return False
 
     qa_report = deps.qa_check_and_write(out_dir, mode=mode, output_docx_name=output_docx_name)
@@ -119,7 +135,7 @@ def run_qa_phases(
 
     if qa_level in ("strict", "visual"):
         if deps.conformance_check_and_write is None:
-            detail = _optional_detail(deps, "qa_conformance")
+            detail = _optional_detail(deps, "qa_conformance", project_root)
             print(f'  [ERROR] qa_conformance.py 不可用，无法执行 strict conformance QA。{detail}')
             conformance = _write_dependency_report(
                 out_dir,
@@ -129,6 +145,7 @@ def run_qa_phases(
                 message="strict conformance QA is required but qa_conformance.py is unavailable.",
                 detail=detail,
                 next_action="修复 strict conformance QA 依赖后重跑；先查看 conformance_report.md。",
+                project_root=project_root,
             )
             failed_reports.append(("Conformance QA", "conformance_report.md", conformance))
             _print_failed_report_hint(qa_report, failed_reports)
@@ -147,7 +164,7 @@ def run_qa_phases(
 
     if qa_level == "visual":
         if deps.visual_check_and_write is None:
-            detail = _optional_detail(deps, "qa_visual")
+            detail = _optional_detail(deps, "qa_visual", project_root)
             print(f'  [ERROR] qa_visual.py 不可用，无法执行 visual QA。{detail}')
             visual = _write_dependency_report(
                 out_dir,
@@ -157,6 +174,7 @@ def run_qa_phases(
                 message="visual QA is required but qa_visual.py is unavailable.",
                 detail=detail,
                 next_action="修复 visual QA 依赖后重跑；先查看 visual_report.md。",
+                project_root=project_root,
             )
             failed_reports.append(("Visual QA", "visual_report.md", visual))
             _print_failed_report_hint(qa_report, failed_reports)
