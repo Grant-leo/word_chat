@@ -1113,6 +1113,43 @@ def pipeline_qa_points_to_conformance_report_when_strict_fails() -> None:
 
 
 @case
+def pipeline_qa_terminal_labels_warning_only_reports() -> None:
+    work = new_workdir("pipeline_qa_warning_terminal")
+
+    def warning_qa(out_dir, mode, output_docx_name):
+        return {
+            "passed": True,
+            "issues": [
+                {
+                    "severity": "warning",
+                    "code": "REFERENCES_MISSING",
+                    "message": "references missing",
+                    "active_owner": "content_parser.py",
+                }
+            ],
+            "counts": {},
+            "mode": mode,
+            "next_action": "QA 已通过但有警告需要人工确认。优先处理 `REFERENCES_MISSING`：请补参考文献或确认无需参考文献。",
+            "repair_plan": {"steps": [], "passed": True},
+        }
+
+    deps = QADependencies(
+        qa_check_and_write=warning_qa,
+        conformance_check_and_write=None,
+        visual_check_and_write=None,
+        optional_import_detail=lambda name: "",
+    )
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        ok = run_qa_phases(str(work), mode="developer", output_docx_name="最终论文.docx", qa_level="basic", project_root=str(work), deps=deps)
+    output = buf.getvalue()
+    assert_true(ok, "warning-only structural QA should not block the pipeline")
+    assert_true("通过但有警告" in output, f"terminal summary hid warning-only status: {output}")
+    assert_true("下一步" in output and "REFERENCES_MISSING" in output, f"terminal warning summary should show next action and code: {output}")
+    assert_true("请补参考文献" in output, f"terminal warning summary lost beginner action: {output}")
+
+
+@case
 def pipeline_qa_writes_report_when_conformance_dependency_missing() -> None:
     work = new_workdir("pipeline_qa_missing_conformance_report")
     raw_detail = f"missing module at {work / 'private' / 'qa_conformance.py'}"

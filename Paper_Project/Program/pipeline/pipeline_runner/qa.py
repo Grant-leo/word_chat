@@ -40,19 +40,29 @@ def _optional_detail(deps: QADependencies, name: str, project_root=None) -> str:
 def _issue_counts(report):
     issues = report.get("issues") or []
     error_count = sum(1 for item in issues if item.get("severity") == "error")
-    return issues, error_count
+    warning_count = sum(1 for item in issues if item.get("severity") == "warning")
+    return issues, error_count, warning_count
 
 
 def _print_report_summary(label, report, *, show_owner=False, report_file="qa_report.md"):
-    issues, error_count = _issue_counts(report)
-    status = "通过" if report.get("passed") else "未通过"
-    print(f"  [{label}] {status}: {error_count} error(s), {len(issues)} issue(s)")
+    issues, error_count, warning_count = _issue_counts(report)
+    if not report.get("passed"):
+        status = "未通过"
+    elif warning_count:
+        status = "通过但有警告"
+    else:
+        status = "通过"
+    print(f"  [{label}] {status}: {error_count} error(s), {warning_count} warning(s), {len(issues)} issue(s)")
     for item in issues[:8]:
         print(f'   - {item.get("severity")} {item.get("code")}: {item.get("message")}')
         if show_owner:
             print(f'     修复目标: {item.get("active_owner")}')
     if len(issues) > 8:
         print(f"   ... 还有 {len(issues) - 8} 项，请看 {report_file}")
+    if report.get("passed") and warning_count:
+        next_action = str(report.get("next_action") or "").strip()
+        if next_action:
+            print(f"     下一步: {next_action[:220]}")
 
 
 def _print_failed_report_hint(qa_report, failed_reports):
