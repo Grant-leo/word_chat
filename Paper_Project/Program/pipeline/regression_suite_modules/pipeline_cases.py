@@ -1246,6 +1246,35 @@ def pipeline_agent_summary_failed_before_docx_does_not_blame_missing_later_qa() 
 
 
 @case
+def pipeline_agent_summary_surfaces_structural_repair_steps() -> None:
+    work = new_workdir("pipeline_agent_summary_repair_steps")
+    write_workflow_mode(
+        str(work),
+        mode="user",
+        template_path="template.docx",
+        content_path="content.md",
+        run_qa=True,
+        qa_level="basic",
+        golden_dir=None,
+        update_golden=False,
+        require_wps=False,
+        auto_repair=True,
+        agent_auto=True,
+    )
+    (work / "最终论文.docx").write_bytes(b"synthetic")
+    _fake_repair_report(str(work), code="CONTENT_IMAGE_MISSING", message="missing markdown image")
+
+    json_path, md_path = write_agent_summary(str(work), "2026-05-31_missing_image", "最终论文.docx", "user")
+    summary = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    text = Path(md_path).read_text(encoding="utf-8")
+    action_text = "\n".join(summary.get("next_actions") or [])
+
+    assert_true("CONTENT_IMAGE_MISSING" in action_text, f"summary lost the structural issue code: {summary}")
+    assert_true("把缺失图片放回" in action_text, f"summary did not surface the beginner action: {summary}")
+    assert_true("CONTENT_IMAGE_MISSING" in text and "把缺失图片放回" in text, "agent summary markdown should show the concrete repair step")
+
+
+@case
 def pipeline_agent_summary_localizes_manual_checks_and_skips_empty_warning_prompt() -> None:
     work = new_workdir("pipeline_agent_summary_manual_checks")
     write_workflow_mode(

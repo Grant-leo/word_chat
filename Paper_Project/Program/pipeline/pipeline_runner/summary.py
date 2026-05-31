@@ -30,6 +30,30 @@ def _issue_counts(report):
     return errors, warnings, len(issues)
 
 
+def _repair_step_actions(label, report, limit=5):
+    repair_plan = report.get("repair_plan") or {}
+    steps = repair_plan.get("steps") or []
+    if not steps:
+        return []
+    errors = [item for item in steps if item.get("severity") == "error"]
+    warnings = [item for item in steps if item.get("severity") == "warning"]
+    ordered = errors + warnings + [item for item in steps if item not in errors and item not in warnings]
+    actions = []
+    for step in ordered[:limit]:
+        code = str(step.get("code") or "").strip()
+        user_action = str(step.get("user_action") or "").strip()
+        title = str(step.get("title") or "").strip()
+        if user_action:
+            prefix = f"{label} `{code}`" if code else label
+            actions.append(f"{prefix}：{user_action}")
+        elif title:
+            prefix = f"{label} `{code}`" if code else label
+            actions.append(f"{prefix}：{title}")
+    if len(ordered) > limit:
+        actions.append(f"{label} 还有 {len(ordered) - limit} 项问题；请继续按对应报告逐项处理。")
+    return actions
+
+
 def _rel_output(folder_name, *parts):
     normalized_parts = [str(part).replace(os.sep, "/") for part in parts if part]
     return "/".join(["Outputs", folder_name, *normalized_parts])
@@ -48,8 +72,12 @@ def _report_summary(out_dir, folder_name):
             total_errors += errors
             total_warnings += warnings
             next_action = str(report.get("next_action") or "").strip()
-            if next_action and not report.get("passed"):
-                next_actions.append(f"{label}: {next_action}")
+            if not report.get("passed"):
+                step_actions = _repair_step_actions(label, report)
+                if step_actions:
+                    next_actions.extend(step_actions)
+                elif next_action:
+                    next_actions.append(f"{label}: {next_action}")
         reports[key] = {
             "label": label,
             "exists": exists,
@@ -206,6 +234,7 @@ def build_agent_summary(
             "report": _rel_output(folder_name, "repair_loop_report.md"),
         },
         "reports": reports,
+        "next_actions": next_actions,
         "manual_check_required": manual_checks,
     }
 
