@@ -36,7 +36,7 @@ from pipeline_runner.summary import build_completion_summary, write_agent_summar
 from pipeline_runner.template_phase import write_template_profile_phase, write_template_requirements_phase
 from pipeline_runner.verification import VerificationError, _merge_content_results, double_verify
 
-from regression_suite_modules.generated_pdf import poppler_available, write_text_pdf
+from regression_suite_modules.generated_pdf import poppler_available, write_blank_pdf, write_text_pdf
 from regression_suite_modules.harness import (
     PNG_1X1,
     assert_true,
@@ -1232,6 +1232,60 @@ def pipeline_runs_pdf_template_end_to_end_strict() -> None:
     assert_true((result_dir / "最终论文.docx").exists(), "PDF template E2E did not build final DOCX")
     qa = json.loads((result_dir / "qa_report.json").read_text(encoding="utf-8"))
     assert_true(qa.get("passed") is True, f"PDF template E2E strict QA failed: {qa.get('issues')}")
+
+
+@case
+def pipeline_blocks_scanned_pdf_template_before_generation() -> None:
+    if not poppler_available():
+        return
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    import run_pipeline as root_runner
+
+    work = new_workdir("pipeline_scanned_pdf_template_blocker")
+    template_dir = work / "Templates"
+    inputs_dir = work / "Inputs"
+    outputs_dir = work / "Outputs"
+    template_dir.mkdir()
+    inputs_dir.mkdir()
+    outputs_dir.mkdir()
+
+    write_blank_pdf(template_dir / "scanned_template.pdf")
+
+    content_doc = Document()
+    content_doc.add_heading("Scanned PDF Template Demo", level=0)
+    content_doc.add_paragraph("This body should not be processed because the PDF template is unsupported.")
+    content_doc.save(inputs_dir / "paper.docx")
+
+    old_dirs = (root_runner.TEMPLATE_DIR, root_runner.INPUTS_DIR, root_runner.OUTPUTS_DIR)
+    try:
+        root_runner.TEMPLATE_DIR = str(template_dir)
+        root_runner.INPUTS_DIR = str(inputs_dir)
+        root_runner.OUTPUTS_DIR = str(outputs_dir)
+        result = root_runner.run("scanned_template.pdf", "paper.docx", mode="developer", qa_level="strict")
+    finally:
+        root_runner.TEMPLATE_DIR, root_runner.INPUTS_DIR, root_runner.OUTPUTS_DIR = old_dirs
+
+    assert_true(result is None, "scanned PDF template should stop the pipeline before generation")
+    out_dirs = sorted(outputs_dir.iterdir())
+    assert_true(out_dirs, "scanned PDF template should still create a report handoff directory")
+    out_dir = out_dirs[-1]
+    assert_true((out_dir / "qa_report.json").exists(), "scanned PDF blocker should write qa_report.json")
+    assert_true((out_dir / "qa_repair_plan.json").exists(), "scanned PDF blocker should write qa_repair_plan.json")
+    assert_true((out_dir / "agent_summary.json").exists(), "scanned PDF blocker should write agent_summary.json")
+    assert_true(not (out_dir / "build_generated.py").exists(), "unsupported PDF template should not generate build_generated.py")
+    assert_true(not (out_dir / "最终论文.docx").exists(), "unsupported PDF template should not build a misleading final DOCX")
+
+    report = json.loads((out_dir / "qa_report.json").read_text(encoding="utf-8"))
+    codes = {item.get("code") for item in report.get("issues") or []}
+    assert_true("PDF_TEMPLATE_UNSUPPORTED" in codes, f"scanned PDF blocker should report PDF_TEMPLATE_UNSUPPORTED: {report}")
+    assert_true("PDF_TEMPLATE_UNSUPPORTED" in report.get("next_action", ""), f"qa_report should name the PDF issue in next_action: {report}")
+    plan = json.loads((out_dir / "qa_repair_plan.json").read_text(encoding="utf-8"))
+    assert_true(plan.get("resume_scope") == "input_files", f"scanned PDF should route users to replace/OCR the template: {plan}")
+    assert_true("DOCX" in plan.get("next_action", "") or "OCR" in plan.get("next_action", ""), f"scanned PDF next action should name DOCX/OCR route: {plan}")
+    summary = json.loads((out_dir / "agent_summary.json").read_text(encoding="utf-8"))
+    action_text = "\n".join(summary.get("next_actions") or summary.get("manual_check_required") or [])
+    assert_true("PDF_TEMPLATE_UNSUPPORTED" in action_text and ("OCR" in action_text or "DOCX" in action_text), f"agent summary lost scanned-PDF next step: {summary}")
 
 
 @case

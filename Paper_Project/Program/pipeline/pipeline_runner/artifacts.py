@@ -117,6 +117,57 @@ def write_build_failure_report(
     return report
 
 
+def write_format_blocker_report_if_needed(fmt_json_path, out_dir, *, mode):
+    """Fail closed on template-format blockers before content extraction/build."""
+    try:
+        from qa_checker_modules.format_phase import run_format_checks
+        from qa_checker_modules.registry import OWNER_BY_CODE, REPAIR_GUIDES
+        from qa_checker_modules.report_phase import build_report
+        from qa_checker_modules.reports import write_reports
+    except ImportError:  # pragma: no cover - package-style imports
+        from ..qa_checker_modules.format_phase import run_format_checks
+        from ..qa_checker_modules.registry import OWNER_BY_CODE, REPAIR_GUIDES
+        from ..qa_checker_modules.report_phase import build_report
+        from ..qa_checker_modules.reports import write_reports
+
+    issues = []
+    counts = {}
+
+    def add(code, severity, message, detail=""):
+        guide = REPAIR_GUIDES.get(code) or {}
+        auto_level = str(guide.get("auto_level") or "")
+        owner_user = "User input/template file" if auto_level.startswith("needs_user") else "Outputs/<run>/build_generated.py"
+        owner_developer = OWNER_BY_CODE.get(code, "format_extractor.py")
+        issues.append(
+            {
+                "code": code,
+                "severity": severity,
+                "message": message,
+                "detail": detail,
+                "owner_user": owner_user,
+                "owner_developer": owner_developer,
+                "active_owner": owner_user if mode == "user" else owner_developer,
+            }
+        )
+
+    run_format_checks({"format": fmt_json_path}, counts, add)
+    blocking_codes = {"PDF_TEMPLATE_UNSUPPORTED"}
+    if not any(item.get("severity") == "error" and item.get("code") in blocking_codes for item in issues):
+        return None
+
+    report = build_report(out_dir, mode, counts, issues)
+    report["repair_plan"]["open_first"] = [
+        "qa_repair_plan.md",
+        "qa_report.md",
+        "格式提取.md",
+        "template_profile.md",
+        "workflow_mode.json",
+    ]
+    report["repair_plan"].setdefault("commands", {})["rebuild_current_docx"] = ""
+    write_reports(report, out_dir)
+    return report
+
+
 def _math_count(item):
     count = len(item.get("math") or [])
     if count:

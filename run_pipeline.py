@@ -38,7 +38,7 @@ if os.path.isdir(PIPELINE):
 from format_extractor import extract as extract_format
 from content_parser import extract as extract_content
 from script_generator import generate as generate_script
-from pipeline_runner.artifacts import write_build_failure_report, write_content_artifacts, write_extraction_failure_report, write_format_artifacts
+from pipeline_runner.artifacts import write_build_failure_report, write_content_artifacts, write_extraction_failure_report, write_format_artifacts, write_format_blocker_report_if_needed
 from pipeline_runner.build_phase import generate_and_build_docx_phase
 from pipeline_runner.cli import main_cli
 from pipeline_runner.contracts import (
@@ -210,6 +210,12 @@ def run(
     # ── Phase 2: Template profile ──
     step('Phase 2/6: 生成模板画像')
     write_template_profile_phase(fmt, out_dir, project_root=BASE, write_template_profile=OPTIONAL_DEPS.write_template_profile)
+    format_blocker = write_format_blocker_report_if_needed(fmt_json_path, out_dir, mode=mode)
+    if format_blocker:
+        write_agent_summary(out_dir, folder_name, "最终论文.docx", mode, pipeline_status="failed", note="模板格式不可用，请先更换 DOCX 模板、文字说明 PDF，或 OCR 后重跑。")
+        print('  [ERROR] 模板格式不可用，已生成 qa_report.md / qa_repair_plan.md。')
+        print(f'  [NEXT] {format_blocker.get("next_action")}')
+        return None
 
     # ── Phase 2: Content ──
     step('Phase 3/6: 提取文本内容')
