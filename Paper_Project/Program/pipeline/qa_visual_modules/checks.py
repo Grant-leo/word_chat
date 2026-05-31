@@ -27,6 +27,24 @@ def _issue(code: str, severity: str, message: str, detail: str = "") -> Dict[str
     return {"code": code, "severity": severity, "message": message, "detail": detail}
 
 
+def _float_or_none(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _page_size_differs(a_width: Any, a_height: Any, b_width: Any, b_height: Any, *, tolerance_pt: float = 2.0) -> bool:
+    aw = _float_or_none(a_width)
+    ah = _float_or_none(a_height)
+    bw = _float_or_none(b_width)
+    bh = _float_or_none(b_height)
+    if aw is None or ah is None or bw is None or bh is None:
+        return False
+    return abs(aw - bw) > tolerance_pt or abs(ah - bh) > tolerance_pt
+
+
 def _next_action(issues: List[Dict[str, Any]]) -> str:
     error_codes = {str(item.get("code") or "") for item in issues if item.get("severity") == "error"}
     warning_codes = {str(item.get("code") or "") for item in issues if item.get("severity") == "warning"}
@@ -52,6 +70,8 @@ def _next_action(issues: List[Dict[str, Any]]) -> str:
         return "WPS 导出的 PDF 没有有效页面；先用 WPS 打开最终 DOCX 和导出的 PDF 检查是否为空白，修复后重跑 visual QA。"
     if error_codes & {"WPS_PAGE_COUNT_MISMATCH"}:
         return "分别打开 Word 与 WPS 导出的 PDF 比对分页差异；确认是兼容性差异还是排版脚本问题。修复后重跑 visual QA。"
+    if error_codes & {"WPS_PAGE_SIZE_MISMATCH"}:
+        return "分别打开 Word 与 WPS 导出的 PDF 比对纸张大小、页面尺寸和横竖方向；修复模板页面设置或 WPS 兼容性问题后重跑 visual QA。"
     if error_codes & {"GOLDEN_BASELINE_MISMATCH"}:
         return "打开 visual_report.md 和 visual_qa/samples/ 对比页面；确认变化正确则用 --update-golden 更新基线，否则继续修复排版。"
     if error_codes & {"MISSING_DOCX"}:
@@ -70,6 +90,8 @@ def _next_action(issues: List[Dict[str, Any]]) -> str:
         return "visual QA 通过但 WPS PDF 页面信息不可读；需要 WPS 校验时先确认 WPS 导出的 PDF 能打开，再修复 PDF/Poppler 环境并重跑 visual QA。"
     if warning_codes & {"WPS_PAGE_COUNT_INVALID"}:
         return "visual QA 通过但 WPS 导出的 PDF 没有有效页面；需要 WPS 校验时先用 WPS 打开 DOCX/PDF 检查是否为空白，修复后重跑 visual QA。"
+    if warning_codes & {"WPS_PAGE_SIZE_MISMATCH"}:
+        return "visual QA 通过但 WPS 与 Word 的页面尺寸不同；需要 WPS 校验时比对纸张大小和横竖方向，修复后重跑 visual QA。"
     if warning_codes:
         return "visual QA 通过但仍有 warning；打开 visual_report.md 按问题码确认是否影响交付，必要时修复后重跑 visual QA。"
     return "打开 visual_report.md 和 visual_qa/samples/，按页面样张定位排版问题后重跑流水线。"
@@ -165,6 +187,23 @@ def check_visual(
                     issues.append(_issue("WPS_PAGE_COUNT_INVALID", wps_severity, "WPS-rendered PDF has no valid pages."))
                 elif page_count and int(wps_info.get("pages")) != page_count:
                     issues.append(_issue("WPS_PAGE_COUNT_MISMATCH", "error", "WPS-rendered PDF page count differs from Word-rendered PDF.", f"word={page_count} wps={wps_info.get('pages')}"))
+                elif _page_size_differs(
+                    info.get("page_width_pt"),
+                    info.get("page_height_pt"),
+                    wps_info.get("page_width_pt"),
+                    wps_info.get("page_height_pt"),
+                ):
+                    issues.append(
+                        _issue(
+                            "WPS_PAGE_SIZE_MISMATCH",
+                            "error",
+                            "WPS-rendered PDF page size differs from Word-rendered PDF.",
+                            (
+                                f"word={info.get('page_width_pt')}x{info.get('page_height_pt')} "
+                                f"wps={wps_info.get('page_width_pt')}x{wps_info.get('page_height_pt')}"
+                            ),
+                        )
+                    )
             except Exception as exc:
                 severity = "error" if require_wps else "warning"
                 issues.append(_issue("WPS_EXPORT_UNAVAILABLE", severity, "WPS PDF export could not be completed.", str(exc)))

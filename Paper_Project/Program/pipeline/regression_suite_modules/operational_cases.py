@@ -113,6 +113,49 @@ def visual_qa_fails_closed_when_required_wps_pdfinfo_fails() -> None:
 
 
 @case
+def visual_qa_fails_closed_when_wps_page_size_differs() -> None:
+    from qa_visual_modules import checks as visual_checks
+
+    work = new_workdir("visual_wps_page_size_mismatch")
+    (work / "final.docx").write_bytes(b"not a real docx; export is monkeypatched")
+    word_pdf = work / "word.pdf"
+    wps_pdf = work / "wps.pdf"
+    word_pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+    wps_pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+
+    original_export = visual_checks._export_pdf
+    original_wps_export = visual_checks._export_wps_pdf
+    original_pdfinfo = visual_checks._pdfinfo
+    original_pages_text = visual_checks._pdf_pages_text
+    original_render = visual_checks._render_samples
+    try:
+        visual_checks._export_pdf = lambda _docx, _visual_dir: str(word_pdf)
+        visual_checks._export_wps_pdf = lambda _docx, _visual_dir: str(wps_pdf)
+
+        def fake_pdfinfo(path):
+            if Path(path).name == "wps.pdf":
+                return {"available": True, "pages": 3, "page_width_pt": 841.9, "page_height_pt": 595.3}
+            return {"available": True, "pages": 3, "page_width_pt": 595.3, "page_height_pt": 841.9}
+
+        visual_checks._pdfinfo = fake_pdfinfo
+        visual_checks._pdf_pages_text = lambda _pdf, _visual_dir: ["cover", "目录", "1 Introduction"]
+        visual_checks._render_samples = lambda _pdf, _visual_dir, pages: [str(work / f"page_{page}.png") for page in pages]
+        report = visual_checks.check_visual(str(work), output_docx_name="final.docx", require_wps=False, render_all_pages=False)
+    finally:
+        visual_checks._export_pdf = original_export
+        visual_checks._export_wps_pdf = original_wps_export
+        visual_checks._pdfinfo = original_pdfinfo
+        visual_checks._pdf_pages_text = original_pages_text
+        visual_checks._render_samples = original_render
+
+    codes = [item["code"] for item in report["issues"]]
+    assert_true(report["passed"] is False, f"WPS page-size mismatch should fail visual QA even when WPS is optional: {report}")
+    assert_true("WPS_PAGE_SIZE_MISMATCH" in codes, f"WPS page-size mismatch was not reported: {report}")
+    action = report.get("next_action", "")
+    assert_true("WPS" in action and ("纸张" in action or "页面尺寸" in action) and "重跑 visual QA" in action, f"WPS page-size mismatch lacked a concrete next action: {report}")
+
+
+@case
 def visual_qa_sanitizes_issue_details() -> None:
     import qa_visual
 

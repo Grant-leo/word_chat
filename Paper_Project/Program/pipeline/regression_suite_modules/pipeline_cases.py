@@ -1000,6 +1000,54 @@ def pipeline_auto_repair_wps_page_mismatch_has_visual_rerun_handoff() -> None:
 
 
 @case
+def pipeline_auto_repair_wps_page_size_mismatch_has_visual_rerun_handoff() -> None:
+    work = new_workdir("pipeline_auto_repair_wps_page_size_mismatch")
+    _write_repair_loop_fixture(work)
+
+    def passing_qa(out_dir, mode="user", output_docx_name="final.docx"):
+        return _fake_repair_report(out_dir, code="NO_ISSUE", severity="info")
+
+    def passing_conformance(out_dir, mode="user", output_docx_name="final.docx", project_root=""):
+        return _write_conformance_report(out_dir, passed=True)
+
+    def failing_visual(out_dir, output_docx_name="final.docx", project_root="", render_all_pages=True, require_wps=False, golden_dir=None, update_golden=False):
+        report = {
+            "schema_version": 1,
+            "mode": "user",
+            "passed": False,
+            "counts": {},
+            "issues": [{"severity": "error", "code": "WPS_PAGE_SIZE_MISMATCH", "message": "page size mismatch", "detail": "word=595.3x841.9 wps=841.9x595.3"}],
+            "next_action": "Compare Word and WPS paper sizes.",
+        }
+        Path(out_dir, "visual_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        return report
+
+    deps = QADependencies(
+        qa_check_and_write=passing_qa,
+        conformance_check_and_write=passing_conformance,
+        visual_check_and_write=failing_visual,
+        optional_import_detail=lambda name: "",
+    )
+    result = run_repair_loop(
+        str(work),
+        mode="user",
+        output_docx_name="final.docx",
+        qa_level="visual",
+        project_root=str(REPO_ROOT),
+        max_rounds=2,
+        stop_no_improve=1,
+        deps=deps,
+        run_generated_script=run_generated_script,
+        python_executable=sys.executable,
+    )
+    report = json.loads((work / "repair_loop_report.json").read_text(encoding="utf-8"))
+    assert_true(not result.ok, "WPS page-size mismatch should stop auto repair")
+    assert_true(result.status == "stopped_needs_user_input", f"WPS page-size mismatch should require manual confirmation: {result.status}")
+    assert_true(report["blockers"] and report["blockers"][0]["code"] == "WPS_PAGE_SIZE_MISMATCH", f"WPS page-size mismatch should be a blocker: {report}")
+    assert_true("WPS" in report.get("next_action", "") and "重跑 visual QA" in report.get("next_action", ""), f"WPS page-size mismatch handoff should tell users to rerun visual QA: {report}")
+
+
+@case
 def pipeline_auto_repair_report_paths_are_sanitized() -> None:
     work = new_workdir("pipeline_auto_repair_sanitized_paths")
     build_path = _write_repair_loop_fixture(work)
@@ -1586,6 +1634,9 @@ def pipeline_strict_and_visual_reports_surface_specific_next_actions() -> None:
     wps_mismatch = visual_next_action([{"code": "WPS_PAGE_COUNT_MISMATCH", "severity": "error", "message": "wps pages differ"}])
     assert_true("WPS" in wps_mismatch and "分页差异" in wps_mismatch and "重跑 visual QA" in wps_mismatch, f"WPS mismatch action should tell users how to resume: {wps_mismatch}")
 
+    wps_page_size = visual_next_action([{"code": "WPS_PAGE_SIZE_MISMATCH", "severity": "error", "message": "wps page size differs"}])
+    assert_true("WPS" in wps_page_size and ("纸张" in wps_page_size or "页面尺寸" in wps_page_size) and "重跑 visual QA" in wps_page_size, f"WPS page-size mismatch action should tell users how to resume: {wps_page_size}")
+
     wps_pdfinfo = visual_next_action([{"code": "WPS_PDFINFO_FAILED", "severity": "error", "message": "wps pdfinfo failed"}])
     assert_true("WPS" in wps_pdfinfo and "PDF" in wps_pdfinfo and "重跑 visual QA" in wps_pdfinfo, f"WPS PDF metadata action should tell users how to resume: {wps_pdfinfo}")
 
@@ -2049,6 +2100,52 @@ def pipeline_agent_summary_surfaces_wps_mismatch_rerun_step() -> None:
     assert_true("WPS_PAGE_COUNT_MISMATCH" in action_text, f"summary lost the WPS mismatch issue code: {summary}")
     assert_true("重跑 visual QA" in action_text, f"summary should tell users to rerun visual QA after WPS mismatch repair: {summary}")
     assert_true("WPS_PAGE_COUNT_MISMATCH" in text and "重跑 visual QA" in text, "agent summary markdown should show the WPS rerun step")
+
+
+@case
+def pipeline_agent_summary_surfaces_wps_page_size_rerun_step() -> None:
+    work = new_workdir("pipeline_agent_summary_wps_page_size")
+    write_workflow_mode(
+        str(work),
+        mode="developer",
+        template_path="template.docx",
+        content_path="content.docx",
+        run_qa=True,
+        qa_level="visual",
+        golden_dir=None,
+        update_golden=False,
+        require_wps=True,
+        auto_repair=False,
+        agent_auto=True,
+    )
+    (work / "最终论文.docx").write_bytes(b"synthetic")
+    write_json(work / "qa_report.json", {"passed": True, "issues": [], "counts": {}, "next_action": "ok"})
+    write_json(work / "conformance_report.json", {"passed": True, "issues": [], "counts": {}, "next_action": "ok"})
+    write_json(
+        work / "visual_report.json",
+        {
+            "passed": False,
+            "issues": [
+                {
+                    "code": "WPS_PAGE_SIZE_MISMATCH",
+                    "severity": "error",
+                    "message": "WPS page size differs",
+                    "detail": "word=595.3x841.9 wps=841.9x595.3",
+                }
+            ],
+            "counts": {},
+            "next_action": "",
+        },
+    )
+
+    json_path, md_path = write_agent_summary(str(work), "2026-06-01_wps_page_size", "最终论文.docx", "developer")
+    summary = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    text = Path(md_path).read_text(encoding="utf-8")
+    action_text = "\n".join(summary.get("next_actions") or [])
+
+    assert_true("WPS_PAGE_SIZE_MISMATCH" in action_text, f"summary lost the WPS page-size issue code: {summary}")
+    assert_true(("纸张" in action_text or "页面尺寸" in action_text) and "重跑 visual QA" in action_text, f"summary should tell users to rerun visual QA after WPS page-size repair: {summary}")
+    assert_true("WPS_PAGE_SIZE_MISMATCH" in text and "重跑 visual QA" in text, "agent summary markdown should show the WPS page-size rerun step")
 
 
 @case

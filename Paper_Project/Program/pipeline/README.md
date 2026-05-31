@@ -39,13 +39,13 @@ CLI, output, verification, and QA details in a focused package:
 
 ## Verification Baseline
 
-Current baseline as of 2026-05-31:
+Current baseline as of 2026-06-01:
 
-- Synthetic regression after the latest auto-repair resume-handoff fixes: `175 passed, 0 failed`.
+- Synthetic regression after the latest WPS page-size visual fail-closed fixes: `196 passed, 0 failed`.
 - Agent-first flow: `--agent-auto` scans local inputs, auto-selects only single candidates, defaults to user auto-repair, and writes `agent_summary.md/json`.
 - Novice interruption coverage: interactive cancellation/EOF, missing preflight inputs, generated-script build failures, QA dependency failures, and auto-repair blockers all route to a next action.
 - Output-boundary coverage: standalone/default `format_extractor`, `content_parser`, and `md_parser` outputs stay under `Outputs/_...` instead of beside private source files.
-- Controlled auto-repair loop regression: repairable build-script error, no-improvement stop, rebuild-failure stop, needs-user-file stop, strict/visual dependency failure, visual option preservation, summary next-action promotion, and sanitized report paths passed.
+- Controlled auto-repair loop regression: repairable build-script error, no-improvement stop, rebuild-failure stop, needs-user-file stop, strict/visual dependency failure, WPS page-count/page-size visual blockers, visual option preservation, summary next-action promotion, and sanitized report paths passed.
 - PDF template end-to-end strict QA: synthetic instruction PDF template + DOCX content passed.
 - PDF extreme stress gate: 9 cases covering uppercase extensions, visual samples, landscape pages, sparse instructions, scanned/corrupt/blank/too-short PDFs met expected outcomes.
 - Public-template compatibility suite: 5 public templates × 5 synthetic scenarios = `25/25` passed.
@@ -119,7 +119,7 @@ stays a thin entrypoint.
 `qa_visual_modules/` owns optional render QA helpers behind
 `qa_visual.check_visual`: Word/WPS PDF export, Poppler text/page rendering,
 sample page selection, rendered image statistics, golden-baseline comparison,
-WPS PDF metadata/page-count validation, and visual QA report writers. `checks.py` owns render QA orchestration while
+WPS PDF metadata/page-count/page-size validation, and visual QA report writers. `checks.py` owns render QA orchestration while
 the entrypoint preserves legacy monkeypatch hooks used by regression tests.
 
 ## Public Template Suite Modules

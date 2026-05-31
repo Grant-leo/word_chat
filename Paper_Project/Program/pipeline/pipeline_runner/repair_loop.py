@@ -125,6 +125,10 @@ REPORT_BLOCKER_GUIDES = {
         "auto_level": "needs_user_confirmation",
         "user_action": "分别打开 Word 与 WPS 导出的 PDF 比对分页差异；确认是兼容性差异还是排版脚本问题。修复后重跑 visual QA。",
     },
+    "WPS_PAGE_SIZE_MISMATCH": {
+        "auto_level": "needs_user_confirmation",
+        "user_action": "分别打开 Word 与 WPS 导出的 PDF 比对纸张大小、页面尺寸和横竖方向；确认是模板页面设置、WPS 兼容性差异还是排版脚本问题。修复后重跑 visual QA。",
+    },
     "GOLDEN_BASELINE_MISMATCH": {
         "auto_level": "needs_user_confirmation",
         "user_action": "打开 visual_report.md 和 visual_qa/samples/ 对比页面；确认变化正确后用 --update-golden 更新基线，或继续修复排版。",
