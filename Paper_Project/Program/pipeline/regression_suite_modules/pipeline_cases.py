@@ -953,6 +953,53 @@ def pipeline_auto_repair_blocks_unrepairable_visual_errors() -> None:
 
 
 @case
+def pipeline_auto_repair_wps_page_mismatch_has_visual_rerun_handoff() -> None:
+    work = new_workdir("pipeline_auto_repair_wps_mismatch")
+    _write_repair_loop_fixture(work)
+
+    def passing_qa(out_dir, mode="user", output_docx_name="final.docx"):
+        return _fake_repair_report(out_dir, code="NO_ISSUE", severity="info")
+
+    def passing_conformance(out_dir, mode="user", output_docx_name="final.docx", project_root=""):
+        return _write_conformance_report(out_dir, passed=True)
+
+    def failing_visual(out_dir, output_docx_name="final.docx", project_root="", render_all_pages=True, require_wps=False, golden_dir=None, update_golden=False):
+        report = {
+            "schema_version": 1,
+            "mode": "user",
+            "passed": False,
+            "counts": {},
+            "issues": [{"severity": "error", "code": "WPS_PAGE_COUNT_MISMATCH", "message": "page mismatch", "detail": "word=10 wps=11"}],
+            "next_action": "Compare Word and WPS PDFs.",
+        }
+        Path(out_dir, "visual_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        return report
+
+    deps = QADependencies(
+        qa_check_and_write=passing_qa,
+        conformance_check_and_write=passing_conformance,
+        visual_check_and_write=failing_visual,
+        optional_import_detail=lambda name: "",
+    )
+    result = run_repair_loop(
+        str(work),
+        mode="user",
+        output_docx_name="final.docx",
+        qa_level="visual",
+        project_root=str(REPO_ROOT),
+        max_rounds=2,
+        stop_no_improve=1,
+        deps=deps,
+        run_generated_script=run_generated_script,
+        python_executable=sys.executable,
+    )
+    report = json.loads((work / "repair_loop_report.json").read_text(encoding="utf-8"))
+    assert_true(not result.ok, "WPS page mismatch should stop auto repair")
+    assert_true(report["blockers"] and report["blockers"][0]["code"] == "WPS_PAGE_COUNT_MISMATCH", f"WPS mismatch should be a blocker: {report}")
+    assert_true("重跑 visual QA" in report.get("next_action", ""), f"WPS mismatch handoff should tell users to rerun visual QA: {report}")
+
+
+@case
 def pipeline_auto_repair_report_paths_are_sanitized() -> None:
     work = new_workdir("pipeline_auto_repair_sanitized_paths")
     build_path = _write_repair_loop_fixture(work)
@@ -1536,6 +1583,9 @@ def pipeline_strict_and_visual_reports_surface_specific_next_actions() -> None:
     unreadable_pages = visual_next_action([{"code": "PAGE_IMAGE_UNREADABLE", "severity": "error", "message": "bad png"}])
     assert_true("不可读页面" in unreadable_pages and "重跑 visual QA" in unreadable_pages, f"unreadable-page visual action is too generic: {unreadable_pages}")
 
+    wps_mismatch = visual_next_action([{"code": "WPS_PAGE_COUNT_MISMATCH", "severity": "error", "message": "wps pages differ"}])
+    assert_true("WPS" in wps_mismatch and "分页差异" in wps_mismatch and "重跑 visual QA" in wps_mismatch, f"WPS mismatch action should tell users how to resume: {wps_mismatch}")
+
     missing_golden = visual_next_action([{"code": "GOLDEN_BASELINE_MISSING", "severity": "warning", "message": "no baseline"}])
     assert_true("黄金基线" in missing_golden and "--update-golden" in missing_golden, f"warning-only visual action should still guide users: {missing_golden}")
     assert_true("机器检查已通过" not in missing_golden, f"warning-only visual action should not sound fully done: {missing_golden}")
@@ -1947,6 +1997,52 @@ def pipeline_agent_summary_surfaces_visual_warning_steps() -> None:
     assert_true("GOLDEN_BASELINE_MISSING" in action_text, f"summary lost the visual warning code: {summary}")
     assert_true("--update-golden" in action_text and "visual QA" in action_text, f"summary did not surface a visual warning next action: {summary}")
     assert_true("GOLDEN_BASELINE_MISSING" in text, "agent summary markdown should show the visual warning code")
+
+
+@case
+def pipeline_agent_summary_surfaces_wps_mismatch_rerun_step() -> None:
+    work = new_workdir("pipeline_agent_summary_wps_mismatch")
+    write_workflow_mode(
+        str(work),
+        mode="developer",
+        template_path="template.docx",
+        content_path="content.docx",
+        run_qa=True,
+        qa_level="visual",
+        golden_dir=None,
+        update_golden=False,
+        require_wps=True,
+        auto_repair=False,
+        agent_auto=True,
+    )
+    (work / "最终论文.docx").write_bytes(b"synthetic")
+    write_json(work / "qa_report.json", {"passed": True, "issues": [], "counts": {}, "next_action": "ok"})
+    write_json(work / "conformance_report.json", {"passed": True, "issues": [], "counts": {}, "next_action": "ok"})
+    write_json(
+        work / "visual_report.json",
+        {
+            "passed": False,
+            "issues": [
+                {
+                    "code": "WPS_PAGE_COUNT_MISMATCH",
+                    "severity": "error",
+                    "message": "WPS page count differs",
+                    "detail": "word=10 wps=11",
+                }
+            ],
+            "counts": {},
+            "next_action": "Compare Word and WPS PDFs.",
+        },
+    )
+
+    json_path, md_path = write_agent_summary(str(work), "2026-06-01_wps_mismatch", "最终论文.docx", "developer")
+    summary = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    text = Path(md_path).read_text(encoding="utf-8")
+    action_text = "\n".join(summary.get("next_actions") or [])
+
+    assert_true("WPS_PAGE_COUNT_MISMATCH" in action_text, f"summary lost the WPS mismatch issue code: {summary}")
+    assert_true("重跑 visual QA" in action_text, f"summary should tell users to rerun visual QA after WPS mismatch repair: {summary}")
+    assert_true("WPS_PAGE_COUNT_MISMATCH" in text and "重跑 visual QA" in text, "agent summary markdown should show the WPS rerun step")
 
 
 @case

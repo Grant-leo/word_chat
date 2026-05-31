@@ -51,7 +51,7 @@ REPORT_ISSUE_ACTIONS = {
     "MANY_BLANK_PAGE_IMAGES": "打开 visual_qa/samples/ 核对空白样张；如果是异常空白，修复分页或 PDF 渲染后重跑 visual QA。",
     "GOLDEN_BASELINE_MISMATCH": "打开 visual_report.md 和 visual_qa/samples/ 对比页面；确认变化正确则用 --update-golden 更新基线，否则继续修复排版。",
     "GOLDEN_BASELINE_MISSING": "首次建立视觉基线时可用 --update-golden 生成；如果不需要基线，取消 golden 参数后重跑 visual QA。",
-    "WPS_PAGE_COUNT_MISMATCH": "分别打开 Word 与 WPS 导出的 PDF 比对分页差异，确认是兼容性差异还是排版脚本问题后再修复。",
+    "WPS_PAGE_COUNT_MISMATCH": "分别打开 Word 与 WPS 导出的 PDF 比对分页差异，确认是兼容性差异还是排版脚本问题。修复后重跑 visual QA。",
     "WPS_EXPORT_UNAVAILABLE": "若启用了 --require-wps，安装/配置 WPS COM；否则可取消 --require-wps 后重跑 visual QA。",
 }
 

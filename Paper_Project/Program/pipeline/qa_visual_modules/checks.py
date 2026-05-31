@@ -47,7 +47,7 @@ def _next_action(issues: List[Dict[str, Any]]) -> str:
     if error_codes & {"WPS_EXPORT_UNAVAILABLE"}:
         return "安装/配置 WPS COM，或取消 --require-wps 后重跑 visual QA。"
     if error_codes & {"WPS_PAGE_COUNT_MISMATCH"}:
-        return "分别打开 Word 与 WPS 导出的 PDF 比对分页差异；确认是兼容性差异还是排版脚本问题后再修复。"
+        return "分别打开 Word 与 WPS 导出的 PDF 比对分页差异；确认是兼容性差异还是排版脚本问题。修复后重跑 visual QA。"
     if error_codes & {"GOLDEN_BASELINE_MISMATCH"}:
         return "打开 visual_report.md 和 visual_qa/samples/ 对比页面；确认变化正确则用 --update-golden 更新基线，否则继续修复排版。"
     if error_codes & {"MISSING_DOCX"}:

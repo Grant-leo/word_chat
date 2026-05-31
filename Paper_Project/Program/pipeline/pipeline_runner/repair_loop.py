@@ -111,7 +111,7 @@ REPORT_BLOCKER_GUIDES = {
     },
     "WPS_PAGE_COUNT_MISMATCH": {
         "auto_level": "needs_user_confirmation",
-        "user_action": "分别打开 Word 与 WPS 导出的 PDF 比对分页差异；确认是兼容性差异还是排版脚本问题后再修复。",
+        "user_action": "分别打开 Word 与 WPS 导出的 PDF 比对分页差异；确认是兼容性差异还是排版脚本问题。修复后重跑 visual QA。",
     },
     "GOLDEN_BASELINE_MISMATCH": {
         "auto_level": "needs_user_confirmation",
