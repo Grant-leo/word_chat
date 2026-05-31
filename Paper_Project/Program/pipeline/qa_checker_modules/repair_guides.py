@@ -8,6 +8,13 @@ REPAIR_GUIDES = {
         "developer_action": "检查 `format_extractor_modules/pdf_template.py` 的 Poppler 探测、文本抽取和扫描件错误上报。",
         "auto_level": "needs_user_file",
     },
+    "PDF_TEMPLATE_DEPENDENCY_MISSING": {
+        "title": "PDF 模板解析缺少 Poppler 工具",
+        "why": "PDF 模板需要本机 Poppler 命令行工具 `pdfinfo` 和 `pdftotext` 才能读取页数、纸张尺寸和可复制文字；工具缺失时不能判断模板是不是可用。",
+        "user_action": "先让 Agent 或开发者安装/修复 Poppler，并确认 `pdfinfo`、`pdftotext` 已在 PATH 中可运行；修复后重跑完整流水线。若暂时无法安装，请改用 DOCX 模板。",
+        "developer_action": "检查 Poppler 安装路径、PATH 环境变量，以及 `format_extractor_modules/pdf_template.py` 的工具探测。",
+        "auto_level": "needs_environment",
+    },
     "PDF_TEMPLATE_LIMITED_CONFIDENCE": {
         "title": "PDF 模板格式为估计结果",
         "why": "精排 PDF 不含 Word 样式树，流水线只能根据页面尺寸、文字位置、字号和样本文本估计格式。",

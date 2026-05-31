@@ -41,18 +41,19 @@ CLI, output, verification, and QA details in a focused package:
 
 Current baseline as of 2026-06-01:
 
-- Synthetic regression after the scanned-PDF early-blocker fix: `209 passed, 0 failed`.
+- Synthetic regression after the PDF-template dependency blocker fix: `210 passed, 0 failed`.
 - Agent-first flow: `--agent-auto` scans local inputs, auto-selects only single candidates, defaults to user auto-repair, and writes `agent_summary.md/json`.
 - Novice interruption coverage: interactive cancellation/EOF, missing preflight inputs, generated-script build failures, QA dependency failures, and auto-repair blockers all route to a next action.
 - Content-summary coverage: `内容提取.md` renders structured `role="image"` items, including table-cell images, as `[图片]` instead of opaque `[结构化内容]`.
 - Output-boundary coverage: standalone/default `format_extractor`, `content_parser`, and `md_parser` outputs stay under `Outputs/_...` instead of beside private source files.
 - Controlled auto-repair loop regression: repairable build-script error, no-improvement stop, rebuild-failure stop, needs-user-file stop, strict/visual dependency failure, WPS page-count/page-size/text-page/sample-image visual blockers, visual option preservation, summary next-action promotion, and sanitized report paths passed.
 - PDF template end-to-end strict QA: synthetic instruction PDF template + DOCX content passed.
+- PDF template dependency handoff: missing `pdfinfo` / `pdftotext` stops after template profiling and before `build_generated.py`, while writing `PDF_TEMPLATE_DEPENDENCY_MISSING` QA/agent reports with `resume_scope=environment` and Poppler repair/rerun next steps.
 - Scanned/textless PDF template handoff: unsupported PDF templates stop after template profiling and before `build_generated.py`, while writing `PDF_TEMPLATE_UNSUPPORTED` QA/agent reports with DOCX/text-PDF/OCR next steps.
 - PDF extreme stress gate: 9 cases covering uppercase extensions, visual samples, landscape pages, sparse instructions, scanned/corrupt/blank/too-short PDFs met expected outcomes.
 - Public-template compatibility suite: 5 public templates × 5 synthetic scenarios = `25/25` passed.
 - Local DOCX strict QA matrix: 5 DOCX templates × 5 DOCX contents = `25/25` passed.
-- PDF boundary probe: 3 parseable PDF templates passed strict QA; 2 unsupported/scanned-style PDFs failed closed with `PDF_TEMPLATE_UNSUPPORTED` guidance.
+- PDF boundary probe: parseable PDF templates passed strict QA; missing Poppler tools fail closed with `PDF_TEMPLATE_DEPENDENCY_MISSING`; unsupported/scanned-style PDFs fail closed with `PDF_TEMPLATE_UNSUPPORTED` guidance.
 - High-risk pipeline matrix: pure Markdown strict, missing Markdown image, header/footer image boundary, user auto-repair, DOCX/PDF visual smoke, and dense media/math strict checks all matched expectations (`7/7`).
 - Fresh-folder novice smoke test: DOCX template + plain DOCX content + `--auto-repair --qa-level visual` converged with structural, strict, and visual QA all at zero errors.
 
@@ -66,10 +67,13 @@ orchestration, keeping `format_extractor.py` as a thin stable entrypoint.
 
 PDF templates are handled as best-effort format sources. Instruction-style PDFs
 are parsed as text rules, visual sample PDFs estimate page geometry and styles
-from Poppler text bounding boxes, and scanned/textless PDFs surface
-`PDF_TEMPLATE_UNSUPPORTED` after template profiling and before content
-extraction or script generation, so users are routed to DOCX/text-PDF/OCR
-input repair instead of receiving a misleading default-formatted DOCX.
+from Poppler text bounding boxes. Missing Poppler tools surface
+`PDF_TEMPLATE_DEPENDENCY_MISSING` after template profiling with
+`resume_scope=environment`, so users are told to repair `pdfinfo`/`pdftotext`
+and rerun. Scanned/textless PDFs surface `PDF_TEMPLATE_UNSUPPORTED` before
+content extraction or script generation, so users are routed to
+DOCX/text-PDF/OCR input repair instead of receiving a misleading
+default-formatted DOCX.
 
 `content_parser_modules/` owns reusable content extraction rules behind
 `content_parser.extract`: placeholders, style helpers, text cleanup, front

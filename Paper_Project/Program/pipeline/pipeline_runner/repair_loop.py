@@ -32,12 +32,14 @@ NEEDS_USER_AUTO_LEVELS = {
     "needs_user_confirmation",
     "optional_user_input",
 }
+ENVIRONMENT_AUTO_LEVELS = {"needs_environment"}
 NEEDS_USER_CODES = {
     "CONTENT_EMPTY",
     "CONTENT_IMAGE_MISSING",
     "IMAGE_EXTRACT_FAILED",
     "NON_BODY_IMAGE_UNSUPPORTED",
     "PDF_TEMPLATE_UNSUPPORTED",
+    "PDF_TEMPLATE_DEPENDENCY_MISSING",
     "MISSING_CONTENT_JSON",
     "MISSING_FORMAT_JSON",
 }
@@ -625,7 +627,7 @@ def _blocking_steps(state: Dict[str, Any]) -> List[Dict[str, Any]]:
         code = str(step.get("code") or "")
         auto_level = str(step.get("auto_level") or "")
         severity = str(step.get("severity") or "")
-        if code in error_codes and severity == "error" and (auto_level in NEEDS_USER_AUTO_LEVELS or code in NEEDS_USER_CODES):
+        if code in error_codes and severity == "error" and (auto_level in NEEDS_USER_AUTO_LEVELS or auto_level in ENVIRONMENT_AUTO_LEVELS or code in NEEDS_USER_CODES):
             blockers.append(
                 {
                     "code": code,
@@ -657,6 +659,8 @@ def _blocking_steps(state: Dict[str, Any]) -> List[Dict[str, Any]]:
 def _blocker_stop_reason(blockers: List[Dict[str, Any]]) -> tuple[str, str]:
     levels = {str(item.get("auto_level") or "") for item in blockers}
     codes = {str(item.get("code") or "") for item in blockers}
+    if levels and levels <= ENVIRONMENT_AUTO_LEVELS:
+        return "stopped_dependency_or_environment", "Dependency or environment repair is required before automatic repair can continue."
     if (levels and levels <= {"needs_user_file"}) or (codes and codes <= NEEDS_USER_CODES):
         return "stopped_needs_user_file", "User file/input is required before automatic repair can continue."
     return "stopped_needs_user_input", "User confirmation, dependency repair, or manual inspection is required before automatic repair can continue."
@@ -944,7 +948,12 @@ def _repair_loop_handoff(
         code = str(first.get("code") or "").strip()
         action = str(first.get("user_action") or "").strip() or str(first.get("detail") or "").strip()
         prefix = f"优先处理 `{code}`：{action}" if code else action
-        scope = "input_files" if status == "stopped_needs_user_file" else "manual_or_dependency"
+        if status == "stopped_needs_user_file":
+            scope = "input_files"
+        elif status == "stopped_dependency_or_environment":
+            scope = "environment"
+        else:
+            scope = "manual_or_dependency"
         command = str(final.get("repair_resume_command") or final.get("workflow_resume_command") or "").strip()
         route = "补齐或更换输入文件后重新运行完整流水线。" if scope == "input_files" else "完成依赖修复、人工确认或环境修复后重新运行对应 QA。"
         if command:

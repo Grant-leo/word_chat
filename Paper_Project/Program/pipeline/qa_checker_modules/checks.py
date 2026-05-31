@@ -33,6 +33,7 @@ USER_INPUT_AUTO_LEVELS = {
     "needs_user_confirmation",
     "optional_user_input",
 }
+ENVIRONMENT_AUTO_LEVELS = {"needs_environment"}
 USER_INPUT_CODES = {
     "CONTENT_EMPTY",
     "CONTENT_IMAGE_MISSING",
@@ -46,6 +47,8 @@ USER_INPUT_CODES = {
 
 def _user_owner_for_code(code: str) -> str:
     auto_level = str((REPAIR_GUIDES.get(code) or {}).get("auto_level") or "")
+    if auto_level in ENVIRONMENT_AUTO_LEVELS:
+        return "Local environment / Poppler"
     if code in USER_INPUT_CODES or auto_level in USER_INPUT_AUTO_LEVELS:
         return "User input/template file"
     return "Outputs/<run>/build_generated.py"

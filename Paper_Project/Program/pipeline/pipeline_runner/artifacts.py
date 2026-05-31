@@ -136,7 +136,12 @@ def write_format_blocker_report_if_needed(fmt_json_path, out_dir, *, mode):
     def add(code, severity, message, detail=""):
         guide = REPAIR_GUIDES.get(code) or {}
         auto_level = str(guide.get("auto_level") or "")
-        owner_user = "User input/template file" if auto_level.startswith("needs_user") else "Outputs/<run>/build_generated.py"
+        if auto_level == "needs_environment":
+            owner_user = "Local environment / Poppler"
+        elif auto_level.startswith("needs_user"):
+            owner_user = "User input/template file"
+        else:
+            owner_user = "Outputs/<run>/build_generated.py"
         owner_developer = OWNER_BY_CODE.get(code, "format_extractor.py")
         issues.append(
             {
@@ -151,7 +156,7 @@ def write_format_blocker_report_if_needed(fmt_json_path, out_dir, *, mode):
         )
 
     run_format_checks({"format": fmt_json_path}, counts, add)
-    blocking_codes = {"PDF_TEMPLATE_UNSUPPORTED"}
+    blocking_codes = {"PDF_TEMPLATE_UNSUPPORTED", "PDF_TEMPLATE_DEPENDENCY_MISSING"}
     if not any(item.get("severity") == "error" and item.get("code") in blocking_codes for item in issues):
         return None
 

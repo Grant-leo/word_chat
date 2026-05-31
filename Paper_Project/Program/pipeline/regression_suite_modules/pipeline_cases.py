@@ -1289,6 +1289,67 @@ def pipeline_blocks_scanned_pdf_template_before_generation() -> None:
 
 
 @case
+def pipeline_blocks_pdf_template_when_poppler_missing_with_dependency_guidance() -> None:
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    import run_pipeline as root_runner
+    import format_extractor_modules.pdf_template as pdf_template
+
+    work = new_workdir("pipeline_pdf_template_poppler_missing")
+    template_dir = work / "Templates"
+    inputs_dir = work / "Inputs"
+    outputs_dir = work / "Outputs"
+    template_dir.mkdir()
+    inputs_dir.mkdir()
+    outputs_dir.mkdir()
+
+    write_text_pdf(
+        template_dir / "requirements.pdf",
+        [
+            ("Format requirements", 16, 72, 780),
+            ("Page A4 margins top 2.5 cm bottom 2.5 cm left 3.0 cm right 2.5 cm", 11, 72, 742),
+            ("Body font Times New Roman 12 pt justified line spacing 1.5", 11, 72, 718),
+            ("Heading 1 font SimHei 16 pt bold centered", 11, 72, 694),
+        ],
+    )
+
+    content_doc = Document()
+    content_doc.add_heading("Missing Poppler PDF Template Demo", level=0)
+    content_doc.add_paragraph("This body should not be processed while PDF template dependencies are missing.")
+    content_doc.save(inputs_dir / "paper.docx")
+
+    old_dirs = (root_runner.TEMPLATE_DIR, root_runner.INPUTS_DIR, root_runner.OUTPUTS_DIR)
+    old_which = pdf_template.shutil.which
+    try:
+        root_runner.TEMPLATE_DIR = str(template_dir)
+        root_runner.INPUTS_DIR = str(inputs_dir)
+        root_runner.OUTPUTS_DIR = str(outputs_dir)
+        pdf_template.shutil.which = lambda _name: None
+        result = root_runner.run("requirements.pdf", "paper.docx", mode="developer", qa_level="strict")
+    finally:
+        root_runner.TEMPLATE_DIR, root_runner.INPUTS_DIR, root_runner.OUTPUTS_DIR = old_dirs
+        pdf_template.shutil.which = old_which
+
+    assert_true(result is None, "missing Poppler should stop the pipeline before generation")
+    out_dirs = sorted(outputs_dir.iterdir())
+    assert_true(out_dirs, "missing Poppler should still create a report handoff directory")
+    out_dir = out_dirs[-1]
+    assert_true(not (out_dir / "build_generated.py").exists(), "missing Poppler should not generate build_generated.py")
+    assert_true(not (out_dir / "最终论文.docx").exists(), "missing Poppler should not build a misleading final DOCX")
+
+    report = json.loads((out_dir / "qa_report.json").read_text(encoding="utf-8"))
+    codes = {item.get("code") for item in report.get("issues") or []}
+    assert_true("PDF_TEMPLATE_DEPENDENCY_MISSING" in codes, f"missing Poppler should have a dependency-specific code: {report}")
+    assert_true("Poppler" in report.get("next_action", "") and "重跑" in report.get("next_action", ""), f"qa_report should tell users to fix Poppler and rerun: {report}")
+    plan = json.loads((out_dir / "qa_repair_plan.json").read_text(encoding="utf-8"))
+    assert_true(plan.get("resume_scope") == "environment", f"missing Poppler should route to environment repair: {plan}")
+    assert_true("Poppler" in plan.get("next_action", "") and plan.get("resume_command"), f"repair plan should keep a rerun command after Poppler repair: {plan}")
+    summary = json.loads((out_dir / "agent_summary.json").read_text(encoding="utf-8"))
+    action_text = "\n".join(summary.get("next_actions") or summary.get("manual_check_required") or [])
+    assert_true("PDF_TEMPLATE_DEPENDENCY_MISSING" in action_text and "Poppler" in action_text, f"agent summary lost Poppler repair guidance: {summary}")
+
+
+@case
 def pipeline_dependencies_loads_optional_modules_and_reports_missing() -> None:
     def marker(name):
         return lambda *args, **kwargs: name

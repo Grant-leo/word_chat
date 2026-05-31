@@ -17,6 +17,7 @@ NEEDS_USER_AUTO_LEVELS = {
     "needs_user_confirmation",
     "optional_user_input",
 }
+ENVIRONMENT_AUTO_LEVELS = {"needs_environment"}
 
 
 def _load_json(path: str) -> Dict[str, Any]:
@@ -97,6 +98,8 @@ def _parse_count_detail(detail: str) -> Dict[str, int]:
 
 
 def _default_owner(code: str, auto_level: str, mode: str) -> str:
+    if auto_level in ENVIRONMENT_AUTO_LEVELS:
+        return "Local environment / Poppler"
     if auto_level in NEEDS_USER_AUTO_LEVELS:
         return "User input/template file"
     if mode == "user":
@@ -148,6 +151,7 @@ def _resume_route(
     mode: str,
     steps: list[Dict[str, Any]],
     all_errors_need_user: bool,
+    all_errors_need_environment: bool,
     commands: Dict[str, str],
 ) -> Dict[str, str]:
     if passed and steps:
@@ -161,6 +165,12 @@ def _resume_route(
             "resume_scope": "final_review",
             "resume_command": "",
             "route": "QA 已通过。仍建议用 WPS/Word 打开最终 DOCX 做视觉核对。",
+        }
+    if all_errors_need_environment:
+        return {
+            "resume_scope": "environment",
+            "resume_command": commands.get("rerun_current_pipeline") or "",
+            "route": "先安装或修复本机依赖/命令行工具，不要只改输入文件或 `build_generated.py`；确认依赖可用后重新运行完整流水线。",
         }
     if all_errors_need_user:
         return {
@@ -186,9 +196,10 @@ def _next_action(
     mode: str,
     steps: list[Dict[str, Any]],
     all_errors_need_user: bool,
+    all_errors_need_environment: bool,
     commands: Dict[str, str],
 ) -> Dict[str, str]:
-    route = _resume_route(passed, mode, steps, all_errors_need_user, commands)
+    route = _resume_route(passed, mode, steps, all_errors_need_user, all_errors_need_environment, commands)
     action = _leading_action(_leading_step(steps)) if steps else ""
     parts = []
     if action:
@@ -214,9 +225,10 @@ def build_repair_plan(report: Dict[str, Any], out_dir: str) -> Dict[str, Any]:
     commands = _workflow_commands(out_dir, mode)
     error_steps = [step for step in steps if step.get("severity") == "error"]
     all_errors_need_user = bool(error_steps) and all(str(step.get("auto_level") or "") in NEEDS_USER_AUTO_LEVELS for step in error_steps)
-    if all_errors_need_user:
+    all_errors_need_environment = bool(error_steps) and all(str(step.get("auto_level") or "") in ENVIRONMENT_AUTO_LEVELS for step in error_steps)
+    if all_errors_need_user or all_errors_need_environment:
         commands["rebuild_current_docx"] = ""
-    next_action = _next_action(bool(report.get("passed")), mode, steps, all_errors_need_user, commands)
+    next_action = _next_action(bool(report.get("passed")), mode, steps, all_errors_need_user, all_errors_need_environment, commands)
     if errors:
         summary = f"QA 发现 {len(errors)} 个阻断错误和 {len(warnings)} 个警告。最终 DOCX 已保留，但交付前需要按修复计划处理。"
     elif warnings:
@@ -234,7 +246,9 @@ def build_repair_plan(report: Dict[str, Any], out_dir: str) -> Dict[str, Any]:
     if next_action.get("next_action"):
         user_prompt_lines.append(f"下一步：{next_action['next_action']}")
     if mode == "user":
-        if all_errors_need_user:
+        if all_errors_need_environment:
+            user_prompt_lines.append("当前是 user 模式，但本轮需要先修复本机依赖/命令行工具；不要只修改 `build_generated.py`。")
+        elif all_errors_need_user:
             user_prompt_lines.append("当前是 user 模式，本轮需要先指导用户补充或更换输入文件；不要只修改 `build_generated.py`。")
         else:
             user_prompt_lines.append("当前是 user 模式，优先只修改本次输出目录里的 `build_generated.py` 或指导用户修正输入文件。")

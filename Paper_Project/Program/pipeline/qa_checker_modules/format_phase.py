@@ -31,7 +31,19 @@ def run_format_checks(paths: Dict[str, str], counts: Dict[str, Any], add: AddIss
                 counts["pdf_template_text_chars"] = pdf_meta.get("text_chars", 0)
                 pdf_errors = pdf_meta.get("errors") or []
                 pdf_warnings = pdf_meta.get("warnings") or []
-                if pdf_meta.get("type") == "scanned_or_unsupported_pdf" or pdf_errors:
+                missing_pdf_tools = [
+                    str(item)
+                    for item in pdf_warnings
+                    if str(item).startswith(("PDFINFO_MISSING", "PDFTOTEXT_MISSING"))
+                ]
+                if missing_pdf_tools:
+                    add(
+                        "PDF_TEMPLATE_DEPENDENCY_MISSING",
+                        "error",
+                        "PDF 模板解析缺少 Poppler 命令行工具。",
+                        "; ".join(missing_pdf_tools),
+                    )
+                elif pdf_meta.get("type") == "scanned_or_unsupported_pdf" or pdf_errors:
                     detail = "; ".join(str(item) for item in pdf_errors) or "PDF 模板没有可提取文字。"
                     add(
                         "PDF_TEMPLATE_UNSUPPORTED",

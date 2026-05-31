@@ -12,6 +12,7 @@ except ImportError:  # pragma: no cover - package-style imports
 
 
 NEEDS_USER_AUTO_LEVELS = {"needs_user_file", "needs_user_input", "needs_user_confirmation", "optional_user_input"}
+ENVIRONMENT_AUTO_LEVELS = {"needs_environment"}
 
 
 def _leading_step_action(steps: List[Dict[str, Any]]) -> str:
@@ -40,6 +41,9 @@ def _next_action(passed: bool, mode: str, issues: List[Dict[str, Any]], repair_p
         return "通过 QA。仍建议用 WPS/Word 做最终视觉核对。"
     error_steps = [step for step in steps if step.get("severity") == "error"]
     leading_action = _leading_step_action(steps)
+    if error_steps and all(str(step.get("auto_level") or "") in ENVIRONMENT_AUTO_LEVELS for step in error_steps):
+        suffix = f" {leading_action}" if leading_action else " 请安装或修复缺失的本机依赖后重跑完整流水线。"
+        return f"需要先修复本机依赖：{suffix.strip()}"
     if error_steps and all(str(step.get("auto_level") or "") in NEEDS_USER_AUTO_LEVELS for step in error_steps):
         suffix = f" {leading_action}" if leading_action else " 请按 qa_repair_plan.md 提供缺失图片、可提取模板、OCR 后 PDF，或修正源内容后重跑。"
         return f"需要用户确认或补充输入文件：{suffix.strip()}"
