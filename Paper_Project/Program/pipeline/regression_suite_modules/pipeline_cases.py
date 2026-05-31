@@ -1275,6 +1275,97 @@ def pipeline_agent_summary_surfaces_structural_repair_steps() -> None:
 
 
 @case
+def pipeline_agent_summary_surfaces_conformance_issue_steps() -> None:
+    work = new_workdir("pipeline_agent_summary_conformance_steps")
+    write_workflow_mode(
+        str(work),
+        mode="user",
+        template_path="template.docx",
+        content_path="content.docx",
+        run_qa=True,
+        qa_level="strict",
+        golden_dir=None,
+        update_golden=False,
+        require_wps=False,
+        auto_repair=True,
+        agent_auto=True,
+    )
+    (work / "最终论文.docx").write_bytes(b"synthetic")
+    write_json(work / "qa_report.json", {"passed": True, "issues": [], "counts": {}, "next_action": "ok"})
+    write_json(
+        work / "conformance_report.json",
+        {
+            "passed": False,
+            "issues": [
+                {
+                    "code": "STYLE_MISMATCH",
+                    "severity": "error",
+                    "message": "paragraph style mismatch",
+                    "detail": "body: eastAsia font Times New Roman != 宋体",
+                }
+            ],
+            "counts": {},
+            "next_action": "Fix generic conformance mismatch.",
+        },
+    )
+
+    json_path, md_path = write_agent_summary(str(work), "2026-05-31_conformance", "最终论文.docx", "user")
+    summary = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    text = Path(md_path).read_text(encoding="utf-8")
+    action_text = "\n".join(summary.get("next_actions") or [])
+
+    assert_true("STYLE_MISMATCH" in action_text, f"summary lost the conformance issue code: {summary}")
+    assert_true("conformance_report.md" in action_text and "重跑 strict QA" in action_text, f"summary did not surface a strict-QA next action: {summary}")
+    assert_true("STYLE_MISMATCH" in text, "agent summary markdown should show the conformance issue code")
+
+
+@case
+def pipeline_agent_summary_surfaces_visual_issue_steps() -> None:
+    work = new_workdir("pipeline_agent_summary_visual_steps")
+    write_workflow_mode(
+        str(work),
+        mode="developer",
+        template_path="template.docx",
+        content_path="content.docx",
+        run_qa=True,
+        qa_level="visual",
+        golden_dir=None,
+        update_golden=False,
+        require_wps=False,
+        auto_repair=False,
+        agent_auto=True,
+    )
+    (work / "最终论文.docx").write_bytes(b"synthetic")
+    write_json(work / "qa_report.json", {"passed": True, "issues": [], "counts": {}, "next_action": "ok"})
+    write_json(work / "conformance_report.json", {"passed": True, "issues": [], "counts": {}, "next_action": "ok"})
+    write_json(
+        work / "visual_report.json",
+        {
+            "passed": False,
+            "issues": [
+                {
+                    "code": "PDFINFO_UNAVAILABLE",
+                    "severity": "error",
+                    "message": "pdfinfo is not available",
+                    "detail": "",
+                }
+            ],
+            "counts": {},
+            "next_action": "Install render tools.",
+        },
+    )
+
+    json_path, md_path = write_agent_summary(str(work), "2026-05-31_visual", "最终论文.docx", "developer")
+    summary = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    text = Path(md_path).read_text(encoding="utf-8")
+    action_text = "\n".join(summary.get("next_actions") or [])
+
+    assert_true("PDFINFO_UNAVAILABLE" in action_text, f"summary lost the visual issue code: {summary}")
+    assert_true("Poppler" in action_text and "visual QA" in action_text, f"summary did not surface a visual-QA next action: {summary}")
+    assert_true("PDFINFO_UNAVAILABLE" in text, "agent summary markdown should show the visual issue code")
+
+
+@case
 def pipeline_agent_summary_localizes_manual_checks_and_skips_empty_warning_prompt() -> None:
     work = new_workdir("pipeline_agent_summary_manual_checks")
     write_workflow_mode(

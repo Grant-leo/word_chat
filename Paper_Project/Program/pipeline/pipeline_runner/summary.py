@@ -14,6 +14,41 @@ REPORT_SPECS = (
 
 REPORT_LABELS = {key: label for key, label, _json_name, _md_name in REPORT_SPECS}
 
+REPORT_ISSUE_ACTIONS = {
+    "CONFORMANCE_INPUT_MISSING": "重新运行完整流水线，确认 format.json、content.json、build_manifest.json 和最终 DOCX 都已生成；若仍失败，打开 {report_path} 查看缺失项。",
+    "DOCX_XML_UNREADABLE": "先确认最终 DOCX 能用 Word/WPS 正常打开；如果文件损坏，让 Agent 重新生成最终论文后再重跑 strict QA。",
+    "PAGE_GEOMETRY_MISMATCH": "打开 {report_path} 查看页边距/纸张 detail，确认模板页面设置后重跑 strict QA。",
+    "CONTENT_PARAGRAPH_MISSING": "对照 内容提取.md 和最终 DOCX 找缺失段落；普通用户先让 Agent 修本次 build_generated.py，开发者再检查正文遍历引擎并重跑 strict QA。",
+    "STYLE_MISMATCH": "打开 {report_path} 查看样式 detail；普通用户先让 Agent 修本次 build_generated.py，开发者再检查样式生成规则并重跑 strict QA。",
+    "RENDER_COUNT_MISMATCH": "查看 build_manifest.json 的图片/表格/公式渲染数量，定位被跳过的生成分支后重跑 strict QA。",
+    "TABLE_NOT_FOUND": "对照 内容提取.md、build_manifest.json 和最终 DOCX 找缺失表格，修复表格渲染分支后重跑 strict QA。",
+    "TABLE_BORDER_MISMATCH": "打开 {report_path} 查看三线表 detail，修复表格边框规则后重跑 strict QA。",
+    "IMAGE_COUNT_MISMATCH": "对照 内容提取.md、figures/ 和 build_manifest.json 找缺失图片，修复图片输入或渲染分支后重跑 strict QA。",
+    "IMAGE_LAYOUT_MISMATCH": "打开 {report_path} 查看图片尺寸/版心 detail，修复图片缩放或居中规则后重跑 strict QA。",
+    "FORMULA_COUNT_MISMATCH": "对照 内容提取.md 和 build_manifest.json 找缺失公式，修复公式渲染分支后重跑 strict QA。",
+    "OMML_WPS_COMPAT": "检查公式 OOXML，确保每个数学 run 有 WPS 兼容的 m:rPr；修复后重跑 strict QA。",
+    "FORMULA_ERROR_TEXT": "最终 DOCX 里还残留公式转换错误文本；检查对应公式源文本或 latex_omath.py，修复后重跑 strict QA。",
+    "PLACEHOLDER_TEXT_LEFT": "最终 DOCX 里还残留模板占位符；补齐输入信息或过滤占位符后重跑 strict QA。",
+    "WORD_FIELD_ERROR": "最终 DOCX 里还残留 Word 域错误；更新/修复目录、交叉引用或页码字段后重跑 strict QA。",
+    "MISSING_DOCX": "先修复构建阶段，确保最终论文 DOCX 生成后再运行 visual QA。",
+    "PDF_EXPORT_FAILED": "先确认最终 DOCX 能用 Word 打开，再修复 Word COM/PDF 导出环境并重跑 visual QA。",
+    "PDFINFO_UNAVAILABLE": "安装或修复 Poppler 命令行工具（pdfinfo、pdftotext、pdftoppm）后重跑 visual QA。",
+    "PDFINFO_FAILED": "打开 visual_report.md 查看 pdfinfo 错误；修复 PDF 导出文件或 Poppler 环境后重跑 visual QA。",
+    "PDF_PAGE_COUNT_INVALID": "PDF 导出后没有有效页面；先用 Word 打开 DOCX 检查文件，再重新导出并重跑 visual QA。",
+    "PDFTOTEXT_UNAVAILABLE": "安装或修复 Poppler 命令行工具（pdfinfo、pdftotext、pdftoppm）后重跑 visual QA。",
+    "PDFTOTEXT_FAILED": "打开 visual_report.md 查看 pdftotext 错误；修复 PDF 导出或 Poppler 环境后重跑 visual QA。",
+    "SAMPLE_RENDER_FAILED": "安装或修复 Poppler 的 pdftoppm 后重跑 visual QA，并检查 visual_qa/samples/ 是否生成。",
+    "ALL_PAGE_RENDER_FAILED": "安装或修复 Poppler 的 pdftoppm 后重跑 visual QA；若仍失败，先打开导出的 PDF 检查是否损坏。",
+    "PAGE_IMAGE_UNREADABLE": "打开 visual_report.md 查看不可读页面，修复 PDF 渲染或页面图片生成后重跑 visual QA。",
+    "MANY_BLANK_PAGES": "打开导出的 PDF 核对空白页；如果是异常空白，修复分页/分节逻辑后重跑 visual QA。",
+    "TOC_TEXT_NOT_FOUND": "打开导出的 PDF 核对目录页；如果目录缺失，检查 TOC 生成或 Word 字段更新后重跑 visual QA。",
+    "MANY_BLANK_PAGE_IMAGES": "打开 visual_qa/samples/ 核对空白样张；如果是异常空白，修复分页或 PDF 渲染后重跑 visual QA。",
+    "GOLDEN_BASELINE_MISMATCH": "打开 visual_report.md 和 visual_qa/samples/ 对比页面；确认变化正确则用 --update-golden 更新基线，否则继续修复排版。",
+    "GOLDEN_BASELINE_MISSING": "首次建立视觉基线时可用 --update-golden 生成；如果不需要基线，取消 golden 参数后重跑 visual QA。",
+    "WPS_PAGE_COUNT_MISMATCH": "分别打开 Word 与 WPS 导出的 PDF 比对分页差异，确认是兼容性差异还是排版脚本问题后再修复。",
+    "WPS_EXPORT_UNAVAILABLE": "若启用了 --require-wps，安装/配置 WPS COM；否则可取消 --require-wps 后重跑 visual QA。",
+}
+
 
 def _read_json(path, default=None):
     try:
@@ -54,6 +89,39 @@ def _repair_step_actions(label, report, limit=5):
     return actions
 
 
+def _issue_actions(label, report, report_path, limit=5):
+    issues = report.get("issues") or []
+    if not issues:
+        return []
+    errors = [item for item in issues if item.get("severity") == "error"]
+    warnings = [item for item in issues if item.get("severity") == "warning"]
+    ordered = errors + warnings + [item for item in issues if item not in errors and item not in warnings]
+    actions = []
+    seen = set()
+    next_action = str(report.get("next_action") or "").strip()
+    for issue in ordered:
+        code = str(issue.get("code") or "").strip()
+        key = code or str(issue.get("message") or "").strip()
+        if key in seen:
+            continue
+        seen.add(key)
+        action_template = REPORT_ISSUE_ACTIONS.get(code)
+        if action_template:
+            action = action_template.format(report_path=report_path)
+        elif next_action:
+            action = f"{next_action} 请打开 {report_path} 查看 detail，并在处理后重跑对应 QA。"
+        else:
+            action = f"打开 {report_path} 查看 detail，按问题码逐项处理后重跑对应 QA。"
+        prefix = f"{label} `{code}`" if code else label
+        actions.append(f"{prefix}：{action}")
+        if len(actions) >= limit:
+            break
+    remaining = len({str(item.get("code") or item.get("message") or "") for item in ordered}) - len(actions)
+    if remaining > 0:
+        actions.append(f"{label} 还有 {remaining} 类问题；请继续按对应报告逐项处理。")
+    return actions
+
+
 def _rel_output(folder_name, *parts):
     normalized_parts = [str(part).replace(os.sep, "/") for part in parts if part]
     return "/".join(["Outputs", folder_name, *normalized_parts])
@@ -66,6 +134,7 @@ def _report_summary(out_dir, folder_name):
     next_actions = []
     for key, label, json_name, md_name in REPORT_SPECS:
         report = _read_json(os.path.join(out_dir, json_name), default={})
+        report_path = _rel_output(folder_name, md_name)
         exists = bool(report)
         errors, warnings, total = _issue_counts(report) if exists else (0, 0, 0)
         if exists:
@@ -74,8 +143,10 @@ def _report_summary(out_dir, folder_name):
             next_action = str(report.get("next_action") or "").strip()
             if not report.get("passed"):
                 step_actions = _repair_step_actions(label, report)
-                if step_actions:
-                    next_actions.extend(step_actions)
+                issue_actions = [] if step_actions else _issue_actions(label, report, report_path)
+                report_actions = step_actions or issue_actions
+                if report_actions:
+                    next_actions.extend(report_actions)
                 elif next_action:
                     next_actions.append(f"{label}: {next_action}")
         reports[key] = {
@@ -85,7 +156,7 @@ def _report_summary(out_dir, folder_name):
             "errors": errors,
             "warnings": warnings,
             "issues": total,
-            "report": _rel_output(folder_name, md_name),
+            "report": report_path,
         }
     return reports, total_errors, total_warnings, next_actions
 

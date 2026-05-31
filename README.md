@@ -68,7 +68,7 @@
 
 Agent 内部优先使用项目的自动入口；普通用户不用自己输入 Python 命令。开发者需要手动复现时，可在高级场景下使用 `run_pipeline.py --agent-auto` 或显式传入模板/内容参数。
 
-如果流程在预检、交互选择、QA、依赖或自动修复阶段中断，Agent 必须明确告诉用户下一步该做什么；预检阶段会写入 `Outputs/_agent_preflight_latest/agent_preflight_report.md`，正式运行后优先看 `agent_summary.md`。结构 QA 失败时，`agent_summary.md/json` 会直接列出前几个问题码和“小白用户下一步”，不用先在多个报告里来回找。交互模式被取消或输入流中断时，下一步默认是改用 `python run_pipeline.py --agent-auto`。
+如果流程在预检、交互选择、QA、依赖或自动修复阶段中断，Agent 必须明确告诉用户下一步该做什么；预检阶段会写入 `Outputs/_agent_preflight_latest/agent_preflight_report.md`，正式运行后优先看 `agent_summary.md`。结构/strict/visual QA 失败时，`agent_summary.md/json` 会直接列出前几个问题码和“小白用户下一步”，不用先在多个报告里来回找。交互模式被取消或输入流中断时，下一步默认是改用 `python run_pipeline.py --agent-auto`。
 
 自动修复闭环会生成 `repair_loop_report.md/json`，最多运行有限轮次，只允许修改本次输出目录的 `build_generated.py`。如果连续修复没有减少 error，或遇到缺图、扫描 PDF、内容缺失等必须由用户补文件的问题，会停止并说明原因。即使自动 QA 已无 error，也不代表 100% 正确，最终仍建议用 Word/WPS 做视觉检查。
 
@@ -99,7 +99,7 @@ Outputs/日期_内容名/
 最常看的文件：
 
 - `最终论文.docx`：生成结果。
-- `agent_summary.md`：面向用户和 Agent 的最终摘要，先看它；如果结构 QA 失败，这里会直接汇总问题码和小白下一步。
+- `agent_summary.md`：面向用户和 Agent 的最终摘要，先看它；如果结构/strict/visual QA 失败，这里会直接汇总问题码和小白下一步。
 - `qa_report.md`：是否有图片、公式、表格、占位符、内容缺失等问题。
 - `qa_repair_plan.md`：下一步该修哪里，适合直接交给 AI 继续处理。
 - `conformance_report.md` / `visual_report.md`：strict/visual QA 的中文报告，缺依赖或渲染失败时会给出下一步。
@@ -176,10 +176,10 @@ build_generated.py ─────────→ 最终论文.docx
 
 截至 2026-05-31：
 
-- 合成回归：`167 passed, 0 failed`
+- 合成回归：`169 passed, 0 failed`
 - 自动修复闭环回归：可修复 QA error、连续无改善停止、needs_user_file 停止、strict/visual QA 依赖缺失、visual 参数保持、报告路径脱敏均已覆盖
 - Agent-first 自动入口：`--agent-auto` 可自动扫描单候选模板/内容，默认普通用户自动修复，并写出 `agent_summary.md/json`
-- 小白中断体验：交互取消、EOF、预检失败、QA/依赖失败都会给出下一步，`agent_summary.md/json` 会聚合结构 QA 的问题码和具体修复动作
+- 小白中断体验：交互取消、EOF、预检失败、QA/依赖失败都会给出下一步，`agent_summary.md/json` 会聚合结构/strict/visual QA 的问题码和具体修复动作
 - 输出边界：独立 `format_extractor.py` / `content_parser.py` / `md_parser.py` 默认写入 `Outputs/_...`，不污染 `Inputs/` 或 `Templates/`
 - PDF 模板端到端 strict QA：合成文字说明 PDF 模板 + DOCX 内容，`passed`
 - PDF 极端压力测试：9 个场景覆盖大写扩展名、精排样张、横向页面、稀疏说明、扫描/损坏/空白/过短 PDF，`9/9` 符合预期

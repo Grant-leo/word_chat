@@ -150,7 +150,7 @@ python run_pipeline.py
 
 Open the newest `Outputs/<run>/` directory and inspect:
 
-- `agent_summary.md` / `agent_summary.json`: user-facing handoff; read this first when present. Structural QA failures are summarized here with issue codes and beginner-facing next actions.
+- `agent_summary.md` / `agent_summary.json`: user-facing handoff; read this first when present. Structural/strict/visual QA failures are summarized here with issue codes and beginner-facing next actions.
 - `格式提取.md`: template format extraction summary.
 - `内容提取.md`: content extraction summary.
 - `template_profile.md`: template capability and risk flags.

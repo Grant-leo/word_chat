@@ -57,7 +57,7 @@ If no mode is known and the user has not said they are the developer, use `user`
 2. Let it scan `Templates/` and `Inputs/`
 3. If there is exactly one valid template/content pair, run it directly
 4. If there are multiple candidates, ask the user to choose only the file name
-5. After the run, read `Outputs/<latest>/agent_summary.md` first, then the detailed QA reports; structural QA failures are summarized there with issue codes and beginner-facing next actions
+5. After the run, read `Outputs/<latest>/agent_summary.md` first, then the detailed QA reports; structural/strict/visual QA failures are summarized there with issue codes and beginner-facing next actions
 6. If anything interrupts before or during the run, do not leave ordinary users waiting: read or write the relevant `agent_preflight_report.md`, `agent_summary.md`, or QA report, and state the next concrete action they should take
 7. If interactive selection is cancelled or stdin closes, tell the user to rerun through `python run_pipeline.py --agent-auto`, or rerun with explicit `--template` / `--content` file names
 
@@ -98,7 +98,7 @@ Or interactive: `python run_pipeline.py`
 - For PDF templates, check `template_profile.md` and `格式提取.md` for PDF type, confidence, warnings, and possible `PDF_TEMPLATE_UNSUPPORTED`
 - Read `Outputs/<latest>/qa_report.md` first; it names the active fix target for the current mode
 - If `--auto-repair` was used, read `Outputs/<latest>/repair_loop_report.md/json`; it records every repair round, stop reason, and remaining manual checks
-- Read `Outputs/<latest>/agent_summary.md/json` first when present; it is the user-facing handoff with final DOCX path, QA status, repair-loop result, structural QA issue-code next actions, and manual checks
+- Read `Outputs/<latest>/agent_summary.md/json` first when present; it is the user-facing handoff with final DOCX path, QA status, repair-loop result, structural/strict/visual QA issue-code next actions, and manual checks
 - If `--qa-level visual` was used, read `Outputs/<latest>/visual_report.md` and inspect sample PNGs under `visual_qa/samples/`
 - Confirm `Outputs/<latest>/最终论文.docx` exists
 - Render/check with Word/WPS when layout matters; Office Viewer alone is not enough
