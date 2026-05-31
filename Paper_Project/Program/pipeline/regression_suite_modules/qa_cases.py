@@ -323,6 +323,40 @@ def qa_repair_plan_surfaces_next_action_and_resume_route() -> None:
 
 
 @case
+def qa_repair_plan_warning_only_is_not_plain_pass() -> None:
+    work = new_workdir("qa_repair_warning_only")
+    write_json(
+        work / "workflow_mode.json",
+        {
+            "mode": "user",
+            "template": "demo_template.docx",
+            "content": "paper.docx",
+            "qa_level": "basic",
+        },
+    )
+    report = {
+        "mode": "user",
+        "passed": True,
+        "issues": [{"code": "REFERENCES_MISSING", "severity": "warning", "message": "references missing"}],
+        "counts": {},
+    }
+    plan = build_repair_plan(report, str(work))
+    markdown = repair_plan_to_markdown(plan)
+    assert_true(plan["passed"] is True, f"warning-only QA should remain non-blocking: {plan}")
+    assert_true(plan["warnings"] == 1, f"warning count should be visible: {plan}")
+    assert_true("REFERENCES_MISSING" in plan["next_action"], f"repair plan lost warning code: {plan['next_action']}")
+    assert_true("参考文献" in plan["next_action"], f"repair plan lost warning action: {plan['next_action']}")
+    assert_true("警告" in plan["summary"], f"warning-only summary should not sound like a plain pass: {plan['summary']}")
+    assert_true(plan["resume_scope"] == "warning_review", f"warning-only plan should route to warning review: {plan}")
+    assert_true(
+        plan["resume_command"] == plan["commands"]["rerun_current_pipeline"],
+        f"warning-only plan should preserve a rerun command for fixes: {plan}",
+    )
+    assert_true("QA 已通过，仍建议" not in markdown, f"repair markdown should not hide warning-only issues: {markdown}")
+    assert_true("REFERENCES_MISSING" in markdown and "警告" in markdown, f"repair markdown should surface warning details: {markdown}")
+
+
+@case
 def qa_report_next_action_names_first_repair_step() -> None:
     work = new_workdir("qa_next_action_first_step")
     write_json(work / "workflow_mode.json", {"mode": "user"})

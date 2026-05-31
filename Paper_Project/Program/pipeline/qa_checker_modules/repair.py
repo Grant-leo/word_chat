@@ -150,6 +150,12 @@ def _resume_route(
     all_errors_need_user: bool,
     commands: Dict[str, str],
 ) -> Dict[str, str]:
+    if passed and steps:
+        return {
+            "resume_scope": "warning_review",
+            "resume_command": commands.get("rerun_current_pipeline") or commands.get("rebuild_current_docx") or "",
+            "route": "QA 没有阻断错误，但有 warning 需要人工确认；如果确认不影响交付，可进入 Word/WPS 最终核对；如果补充输入或调整生成结果，修复后重新运行对应 QA。",
+        }
     if passed or not steps:
         return {
             "resume_scope": "final_review",
@@ -211,11 +217,14 @@ def build_repair_plan(report: Dict[str, Any], out_dir: str) -> Dict[str, Any]:
     if all_errors_need_user:
         commands["rebuild_current_docx"] = ""
     next_action = _next_action(bool(report.get("passed")), mode, steps, all_errors_need_user, commands)
-    summary = (
-        "QA 已通过，仍建议用 WPS/Word 做最终视觉核对。"
-        if not errors else
-        f"QA 发现 {len(errors)} 个阻断错误和 {len(warnings)} 个警告。最终 DOCX 已保留，但交付前需要按修复计划处理。"
-    )
+    if errors:
+        summary = f"QA 发现 {len(errors)} 个阻断错误和 {len(warnings)} 个警告。最终 DOCX 已保留，但交付前需要按修复计划处理。"
+    elif warnings:
+        summary = f"QA 没有阻断错误，但发现 {len(warnings)} 个警告。交付前请按修复计划确认是否需要补输入、重跑或人工放行。"
+    elif steps:
+        summary = f"QA 没有阻断错误，但发现 {len(steps)} 个需确认项。交付前请按修复计划确认是否需要处理。"
+    else:
+        summary = "QA 已通过，仍建议用 WPS/Word 做最终视觉核对。"
     user_prompt_lines = [
         "请继续修复本次 Word 论文流水线输出。",
         f"输出目录：{_safe_rel(out_dir)}",
