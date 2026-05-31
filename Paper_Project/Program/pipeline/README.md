@@ -119,7 +119,7 @@ stays a thin entrypoint.
 `qa_visual_modules/` owns optional render QA helpers behind
 `qa_visual.check_visual`: Word/WPS PDF export, Poppler text/page rendering,
 sample page selection, rendered image statistics, golden-baseline comparison,
-and visual QA report writers. `checks.py` owns render QA orchestration while
+WPS PDF metadata/page-count validation, and visual QA report writers. `checks.py` owns render QA orchestration while
 the entrypoint preserves legacy monkeypatch hooks used by regression tests.
 
 ## Public Template Suite Modules

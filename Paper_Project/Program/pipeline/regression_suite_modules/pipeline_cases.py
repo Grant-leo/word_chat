@@ -1586,6 +1586,12 @@ def pipeline_strict_and_visual_reports_surface_specific_next_actions() -> None:
     wps_mismatch = visual_next_action([{"code": "WPS_PAGE_COUNT_MISMATCH", "severity": "error", "message": "wps pages differ"}])
     assert_true("WPS" in wps_mismatch and "分页差异" in wps_mismatch and "重跑 visual QA" in wps_mismatch, f"WPS mismatch action should tell users how to resume: {wps_mismatch}")
 
+    wps_pdfinfo = visual_next_action([{"code": "WPS_PDFINFO_FAILED", "severity": "error", "message": "wps pdfinfo failed"}])
+    assert_true("WPS" in wps_pdfinfo and "PDF" in wps_pdfinfo and "重跑 visual QA" in wps_pdfinfo, f"WPS PDF metadata action should tell users how to resume: {wps_pdfinfo}")
+
+    wps_invalid_pages = visual_next_action([{"code": "WPS_PAGE_COUNT_INVALID", "severity": "error", "message": "wps pages missing"}])
+    assert_true("WPS" in wps_invalid_pages and "有效页面" in wps_invalid_pages and "重跑 visual QA" in wps_invalid_pages, f"WPS invalid page-count action should tell users how to resume: {wps_invalid_pages}")
+
     missing_golden = visual_next_action([{"code": "GOLDEN_BASELINE_MISSING", "severity": "warning", "message": "no baseline"}])
     assert_true("黄金基线" in missing_golden and "--update-golden" in missing_golden, f"warning-only visual action should still guide users: {missing_golden}")
     assert_true("机器检查已通过" not in missing_golden, f"warning-only visual action should not sound fully done: {missing_golden}")
@@ -2043,6 +2049,52 @@ def pipeline_agent_summary_surfaces_wps_mismatch_rerun_step() -> None:
     assert_true("WPS_PAGE_COUNT_MISMATCH" in action_text, f"summary lost the WPS mismatch issue code: {summary}")
     assert_true("重跑 visual QA" in action_text, f"summary should tell users to rerun visual QA after WPS mismatch repair: {summary}")
     assert_true("WPS_PAGE_COUNT_MISMATCH" in text and "重跑 visual QA" in text, "agent summary markdown should show the WPS rerun step")
+
+
+@case
+def pipeline_agent_summary_surfaces_wps_pdfinfo_rerun_step() -> None:
+    work = new_workdir("pipeline_agent_summary_wps_pdfinfo")
+    write_workflow_mode(
+        str(work),
+        mode="developer",
+        template_path="template.docx",
+        content_path="content.docx",
+        run_qa=True,
+        qa_level="visual",
+        golden_dir=None,
+        update_golden=False,
+        require_wps=True,
+        auto_repair=False,
+        agent_auto=True,
+    )
+    (work / "最终论文.docx").write_bytes(b"synthetic")
+    write_json(work / "qa_report.json", {"passed": True, "issues": [], "counts": {}, "next_action": "ok"})
+    write_json(work / "conformance_report.json", {"passed": True, "issues": [], "counts": {}, "next_action": "ok"})
+    write_json(
+        work / "visual_report.json",
+        {
+            "passed": False,
+            "issues": [
+                {
+                    "code": "WPS_PDFINFO_FAILED",
+                    "severity": "error",
+                    "message": "WPS PDF metadata failed",
+                    "detail": "xref table broken",
+                }
+            ],
+            "counts": {},
+            "next_action": "",
+        },
+    )
+
+    json_path, md_path = write_agent_summary(str(work), "2026-06-01_wps_pdfinfo", "最终论文.docx", "developer")
+    summary = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    text = Path(md_path).read_text(encoding="utf-8")
+    action_text = "\n".join(summary.get("next_actions") or [])
+
+    assert_true("WPS_PDFINFO_FAILED" in action_text, f"summary lost the WPS PDF metadata issue code: {summary}")
+    assert_true("WPS" in action_text and "重跑 visual QA" in action_text, f"summary should tell users to rerun visual QA after WPS PDF metadata repair: {summary}")
+    assert_true("WPS_PDFINFO_FAILED" in text and "重跑 visual QA" in text, "agent summary markdown should show the WPS PDF metadata rerun step")
 
 
 @case
