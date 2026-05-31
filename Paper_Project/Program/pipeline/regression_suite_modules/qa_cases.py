@@ -345,6 +345,28 @@ def qa_report_next_action_names_first_repair_step() -> None:
 
 
 @case
+def qa_report_next_action_names_warning_step() -> None:
+    work = new_workdir("qa_next_action_warning_step")
+    write_json(work / "workflow_mode.json", {"mode": "user"})
+    report = build_report(
+        str(work),
+        "user",
+        {},
+        [
+            {
+                "code": "REFERENCES_MISSING",
+                "severity": "warning",
+                "message": "references missing",
+            }
+        ],
+    )
+    assert_true(report["passed"] is True, f"warning-only QA should remain non-blocking: {report}")
+    assert_true("REFERENCES_MISSING" in report["next_action"], f"warning next_action lost the issue code: {report['next_action']}")
+    assert_true("参考文献" in report["next_action"], f"warning next_action lost the beginner action: {report['next_action']}")
+    assert_true("警告" in report["next_action"] or "warning" in report["next_action"], f"warning next_action should not sound like plain pass: {report['next_action']}")
+
+
+@case
 def qa_routes_user_file_errors_to_input_fix() -> None:
     work = new_workdir("qa_user_file_routing")
     write_json(

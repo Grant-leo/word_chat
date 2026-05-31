@@ -1388,6 +1388,45 @@ def pipeline_agent_summary_surfaces_structural_repair_steps() -> None:
 
 
 @case
+def pipeline_agent_summary_surfaces_structural_warning_steps() -> None:
+    from qa_checker_modules.report_phase import build_report as build_structural_report
+    from qa_checker_modules.reports import write_reports as write_structural_reports
+
+    work = new_workdir("pipeline_agent_summary_structural_warning_steps")
+    write_workflow_mode(
+        str(work),
+        mode="user",
+        template_path="template.docx",
+        content_path="content.docx",
+        run_qa=True,
+        qa_level="basic",
+        golden_dir=None,
+        update_golden=False,
+        require_wps=False,
+        auto_repair=False,
+        agent_auto=True,
+    )
+    (work / "最终论文.docx").write_bytes(b"synthetic")
+    report = build_structural_report(
+        str(work),
+        "user",
+        {},
+        [{"code": "REFERENCES_MISSING", "severity": "warning", "message": "references missing"}],
+    )
+    write_structural_reports(report, str(work))
+
+    json_path, md_path = write_agent_summary(str(work), "2026-05-31_structural_warning", "最终论文.docx", "user")
+    summary = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    text = Path(md_path).read_text(encoding="utf-8")
+    action_text = "\n".join(summary.get("next_actions") or summary.get("manual_check_required") or [])
+
+    assert_true("警告" in summary["status_label"], f"summary should label warning-only structural QA: {summary}")
+    assert_true("REFERENCES_MISSING" in action_text, f"summary lost the structural warning code: {summary}")
+    assert_true("参考文献" in action_text, f"summary lost the structural warning action: {summary}")
+    assert_true("REFERENCES_MISSING" in text, "agent summary markdown should show the structural warning code")
+
+
+@case
 def pipeline_agent_summary_surfaces_conformance_issue_steps() -> None:
     work = new_workdir("pipeline_agent_summary_conformance_steps")
     write_workflow_mode(

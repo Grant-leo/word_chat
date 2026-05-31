@@ -29,9 +29,15 @@ def _leading_step_action(steps: List[Dict[str, Any]]) -> str:
 
 
 def _next_action(passed: bool, mode: str, issues: List[Dict[str, Any]], repair_plan: Dict[str, Any]) -> str:
-    if passed:
-        return "通过 QA。仍建议用 WPS/Word 做最终视觉核对。"
     steps = repair_plan.get("steps") or []
+    if passed:
+        leading_action = _leading_step_action(steps)
+        if leading_action:
+            return (
+                f"QA 已通过但有警告需要人工确认。{leading_action} "
+                "如果确认该 warning 不影响交付，可继续用 WPS/Word 做最终视觉核对；如果处理了 warning，请重新运行 QA。"
+            )
+        return "通过 QA。仍建议用 WPS/Word 做最终视觉核对。"
     error_steps = [step for step in steps if step.get("severity") == "error"]
     leading_action = _leading_step_action(steps)
     if error_steps and all(str(step.get("auto_level") or "") in NEEDS_USER_AUTO_LEVELS for step in error_steps):

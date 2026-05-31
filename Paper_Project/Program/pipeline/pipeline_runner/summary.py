@@ -144,7 +144,7 @@ def _report_summary(out_dir, folder_name):
             total_warnings += warnings
             next_action = str(report.get("next_action") or "").strip()
             if not report.get("passed") or warnings:
-                step_actions = _repair_step_actions(label, report) if not report.get("passed") else []
+                step_actions = _repair_step_actions(label, report)
                 issue_actions = [] if step_actions else _issue_actions(label, report, report_path)
                 report_actions = step_actions or issue_actions
                 if report_actions:
