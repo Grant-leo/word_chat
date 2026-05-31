@@ -1192,6 +1192,19 @@ def pipeline_strict_and_visual_reports_surface_specific_next_actions() -> None:
     )
     assert_true("Word 域" in word_field_report["next_action"] and "重跑 strict QA" in word_field_report["next_action"], f"Word field strict report used a generic action: {word_field_report}")
 
+    strict_warning_report = build_conformance_report(
+        str(work),
+        "user",
+        {},
+        [{"code": "STYLE_MISMATCH", "severity": "warning", "message": "style needs review", "detail": "body font differs"}],
+        project_root=str(work),
+    )
+    assert_true(strict_warning_report["passed"] is True, f"warning-only strict report should remain non-blocking: {strict_warning_report}")
+    assert_true("STYLE_MISMATCH" in strict_warning_report["next_action"], f"strict warning action lost the issue code: {strict_warning_report}")
+    assert_true("警告" in strict_warning_report["next_action"], f"strict warning action should not sound like a plain pass: {strict_warning_report}")
+    assert_true("样式" in strict_warning_report["next_action"] and "strict QA" in strict_warning_report["next_action"], f"strict warning action should tell users what to check and how to rerun: {strict_warning_report}")
+    assert_true("机器检查已通过" not in strict_warning_report["next_action"], f"warning-only strict action should not hide the warning: {strict_warning_report}")
+
     invalid_pages = visual_next_action([{"code": "PDF_PAGE_COUNT_INVALID", "severity": "error", "message": "no pages"}])
     assert_true("没有有效页面" in invalid_pages and "重跑 visual QA" in invalid_pages, f"invalid-page visual action is too generic: {invalid_pages}")
 

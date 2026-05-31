@@ -18,27 +18,51 @@ def _write_json(path: str, value: Dict[str, Any]) -> None:
         json.dump(value, f, ensure_ascii=False, indent=2)
 
 
-def _next_action(mode: str, issues: List[Dict[str, Any]]) -> str:
-    error_codes = {str(item.get("code") or "") for item in issues if item.get("severity") == "error"}
-    if not error_codes:
-        return "strict 合规 QA 的机器检查已通过；仍建议用 Word/WPS 打开最终 DOCX 做人工核对。"
-    if error_codes & {"CONFORMANCE_INPUT_MISSING"}:
+def _ordered_codes(issues: List[Dict[str, Any]], severity: str) -> List[str]:
+    codes: List[str] = []
+    seen = set()
+    for item in issues:
+        if item.get("severity") != severity:
+            continue
+        code = str(item.get("code") or "").strip()
+        if code and code not in seen:
+            seen.add(code)
+            codes.append(code)
+    return codes
+
+
+def _action_for_codes(codes: List[str], mode: str) -> str:
+    code_set = set(codes)
+    if code_set & {"CONFORMANCE_INPUT_MISSING"}:
         return "重新运行完整流水线，确保 format.json、content.json、build_manifest.json 和最终 DOCX 都已生成。"
-    if error_codes & {"DOCX_XML_UNREADABLE"}:
+    if code_set & {"DOCX_XML_UNREADABLE"}:
         return "先确认最终 DOCX 能被 Word/WPS 正常打开；若文件损坏，重新生成最终论文。"
-    if error_codes & {"CONTENT_PARAGRAPH_MISSING"}:
+    if code_set & {"CONTENT_PARAGRAPH_MISSING"}:
         return "对照 content.json/内容提取.md 与最终 DOCX，修复遗漏段落；普通用户优先检查 build_generated.py 的正文遍历。"
-    if error_codes & {"RENDER_COUNT_MISMATCH", "TABLE_NOT_FOUND", "FORMULA_COUNT_MISMATCH", "IMAGE_COUNT_MISMATCH"}:
+    if code_set & {"RENDER_COUNT_MISMATCH", "TABLE_NOT_FOUND", "FORMULA_COUNT_MISMATCH", "IMAGE_COUNT_MISMATCH"}:
         return "查看 build_manifest.json 的渲染数量，定位图片、表格或公式在哪个生成分支被跳过。"
-    if error_codes & {"STYLE_MISMATCH", "PAGE_GEOMETRY_MISMATCH", "TABLE_BORDER_MISMATCH", "IMAGE_LAYOUT_MISMATCH"}:
+    if code_set & {"STYLE_MISMATCH", "PAGE_GEOMETRY_MISMATCH", "TABLE_BORDER_MISMATCH", "IMAGE_LAYOUT_MISMATCH"}:
         return "按 conformance_report.md 的 detail 修复样式/页边距/表格线/图片尺寸，修复后重跑 strict QA。"
-    if error_codes & {"OMML_WPS_COMPAT", "FORMULA_ERROR_TEXT"}:
+    if code_set & {"OMML_WPS_COMPAT", "FORMULA_ERROR_TEXT"}:
         return "检查公式渲染链路和 latex_omath.py，确保公式输出为 WPS 兼容的原生 OOXML Math。"
-    if error_codes & {"PLACEHOLDER_TEXT_LEFT"}:
+    if code_set & {"PLACEHOLDER_TEXT_LEFT"}:
         return "最终 DOCX 里还残留模板占位符；补齐输入信息或过滤占位符后重跑 strict QA。"
-    if error_codes & {"WORD_FIELD_ERROR"}:
+    if code_set & {"WORD_FIELD_ERROR"}:
         return "最终 DOCX 里还残留 Word 域错误；更新或修复目录、交叉引用、页码字段后重跑 strict QA。"
     return "普通用户模式：让 Agent 修复 Outputs/<本轮>/build_generated.py 后重跑。" if mode == "user" else "开发者模式：修复核心流水线脚本后重跑完整流水线。"
+
+
+def _next_action(mode: str, issues: List[Dict[str, Any]]) -> str:
+    error_codes = _ordered_codes(issues, "error")
+    warning_codes = _ordered_codes(issues, "warning")
+    if not error_codes and warning_codes:
+        leading = "、".join(f"`{code}`" for code in warning_codes[:3])
+        suffix = f" 另有 {len(warning_codes) - 3} 类警告。" if len(warning_codes) > 3 else ""
+        action = _action_for_codes(warning_codes, mode)
+        return f"strict 合规 QA 没有阻断错误，但有警告 {leading} 需要人工确认；{action} 若确认不影响交付，可继续用 Word/WPS 做最终核对。{suffix}"
+    if not error_codes:
+        return "strict 合规 QA 的机器检查已通过；仍建议用 Word/WPS 打开最终 DOCX 做人工核对。"
+    return _action_for_codes(error_codes, mode)
 
 
 def build_report(
