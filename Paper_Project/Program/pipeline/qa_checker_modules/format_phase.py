@@ -10,6 +10,35 @@ except ImportError:  # pragma: no cover - package-style imports
     from .metrics import _load_json
 
 AddIssue = Callable[..., None]
+
+PDF_INSTRUCTION_ROLE_LABELS = {
+    "page": "页面/页边距",
+    "body": "正文",
+    "heading": "标题",
+    "caption": "图表题注",
+    "reference": "参考文献",
+}
+
+
+def _instruction_incomplete_detail(warnings: list[Any]) -> str:
+    missing_roles: list[str] = []
+    raw_warnings: list[str] = []
+    for item in warnings:
+        text = str(item)
+        if not text.startswith("PDF_TEMPLATE_INSTRUCTION_INCOMPLETE"):
+            continue
+        raw_warnings.append(text)
+        _, _, role_text = text.partition(":")
+        for role in role_text.split(","):
+            role = role.strip()
+            if role and role not in missing_roles:
+                missing_roles.append(role)
+    labels = [PDF_INSTRUCTION_ROLE_LABELS.get(role, role) for role in missing_roles]
+    if labels:
+        return "缺少：" + "、".join(labels) + "。原始警告：" + "; ".join(raw_warnings)
+    return "; ".join(raw_warnings)
+
+
 def run_format_checks(paths: Dict[str, str], counts: Dict[str, Any], add: AddIssue) -> Dict[str, Any]:
     fmt: Dict[str, Any] = {}
     if os.path.exists(paths["format"]):
@@ -41,6 +70,11 @@ def run_format_checks(paths: Dict[str, str], counts: Dict[str, Any], add: AddIss
                     for item in pdf_warnings
                     if str(item).startswith(("PDFINFO_FAILED", "PDFTOTEXT_FAILED"))
                 ]
+                instruction_incomplete = [
+                    str(item)
+                    for item in pdf_warnings
+                    if str(item).startswith("PDF_TEMPLATE_INSTRUCTION_INCOMPLETE")
+                ]
                 if missing_pdf_tools:
                     add(
                         "PDF_TEMPLATE_DEPENDENCY_MISSING",
@@ -68,6 +102,13 @@ def run_format_checks(paths: Dict[str, str], counts: Dict[str, Any], add: AddIss
                         "error",
                         "PDF 模板无法可靠提取格式。",
                         detail,
+                    )
+                if instruction_incomplete:
+                    add(
+                        "PDF_TEMPLATE_INSTRUCTION_INCOMPLETE",
+                        "warning",
+                        "PDF 文字说明模板缺少关键格式规则。",
+                        _instruction_incomplete_detail(instruction_incomplete),
                     )
                 if pdf_meta.get("type") == "visual_sample_pdf" or pdf_warnings:
                     add(

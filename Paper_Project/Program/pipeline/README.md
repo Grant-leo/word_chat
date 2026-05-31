@@ -48,6 +48,7 @@ Current baseline as of 2026-06-01:
 - Output-boundary coverage: standalone/default `format_extractor`, `content_parser`, and `md_parser` outputs stay under `Outputs/_...` instead of beside private source files.
 - Controlled auto-repair loop regression: repairable build-script error, no-improvement stop, rebuild-failure stop, needs-user-file stop, strict/visual dependency failure, WPS page-count/page-size/text-page/sample-image visual blockers, visual option preservation, summary next-action promotion, and sanitized report paths passed.
 - PDF template end-to-end strict QA: synthetic instruction PDF template + DOCX content passed.
+- Sparse PDF instruction handoff: incomplete text-rule PDFs now surface `PDF_TEMPLATE_INSTRUCTION_INCOMPLETE` warning guidance naming missing heading/caption/reference-style rule families, while still producing the DOCX for manual warning review.
 - PDF template dependency handoff: missing `pdfinfo` / `pdftotext` stops after template profiling and before `build_generated.py`, while writing `PDF_TEMPLATE_DEPENDENCY_MISSING` QA/agent reports with `resume_scope=environment` and Poppler repair/rerun next steps.
 - PDF template read-failure handoff: corrupt/unreadable PDFs stop after template profiling and before `build_generated.py`, while writing `PDF_TEMPLATE_READ_FAILED` QA/agent reports with re-export/openable-PDF or DOCX next steps.
 - Scanned/textless PDF template handoff: unsupported PDF templates stop after template profiling and before `build_generated.py`, while writing `PDF_TEMPLATE_UNSUPPORTED` QA/agent reports with DOCX/text-PDF/OCR next steps.
@@ -67,8 +68,11 @@ assets, and cover table layout extraction. `extractor.py` owns the extraction
 orchestration, keeping `format_extractor.py` as a thin stable entrypoint.
 
 PDF templates are handled as best-effort format sources. Instruction-style PDFs
-are parsed as text rules, visual sample PDFs estimate page geometry and styles
-from Poppler text bounding boxes. Missing Poppler tools surface
+are parsed as text rules; sparse instruction PDFs surface
+`PDF_TEMPLATE_INSTRUCTION_INCOMPLETE` warnings that name missing rule families
+such as headings, captions, and references for beginner-facing warning review.
+Visual sample PDFs estimate page geometry and styles from Poppler text bounding
+boxes. Missing Poppler tools surface
 `PDF_TEMPLATE_DEPENDENCY_MISSING` after template profiling with
 `resume_scope=environment`, so users are told to repair `pdfinfo`/`pdftotext`
 and rerun. Corrupt/unreadable PDFs surface `PDF_TEMPLATE_READ_FAILED` with a

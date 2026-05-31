@@ -29,6 +29,13 @@ REPAIR_GUIDES = {
         "developer_action": "检查 `template_profile.md` 和 `格式提取.md` 中的 PDF 置信度、bbox 词元数、页边距估计是否合理。",
         "auto_level": "manual_review",
     },
+    "PDF_TEMPLATE_INSTRUCTION_INCOMPLETE": {
+        "title": "PDF 文字说明模板缺少关键规则",
+        "why": "该 PDF 是文字说明型模板，但说明只覆盖了部分格式；缺少项会写在 detail 中，例如标题、图表题注或参考文献规则。",
+        "user_action": "先按 detail 补充缺失的标题、图表题注、参考文献等格式说明，或改用规则更完整的 DOCX 模板；如果继续使用当前 PDF，生成后必须重点核对这些缺失规则对应的页面。",
+        "developer_action": "检查 `format_extractor_modules/pdf_template.py` 的文字说明角色识别和 `_instruction_missing_roles()` 规则是否过严或漏判。",
+        "auto_level": "optional_user_input",
+    },
     "IMAGE_COUNT_MISMATCH": {
         "title": "图片没有全部进入最终论文",
         "why": "内容中识别到的图片数量大于最终 DOCX 里实际渲染的正文图片数量。",

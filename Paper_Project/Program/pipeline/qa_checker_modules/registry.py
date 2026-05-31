@@ -17,6 +17,7 @@ OWNER_BY_CODE = {
     "PDF_TEMPLATE_READ_FAILED": "format_extractor.py / format_extractor_modules/pdf_template.py",
     "PDF_TEMPLATE_DEPENDENCY_MISSING": "local environment / Poppler / format_extractor_modules/pdf_template.py",
     "PDF_TEMPLATE_LIMITED_CONFIDENCE": "format_extractor.py / format_extractor_modules/pdf_template.py / template_profiler.py",
+    "PDF_TEMPLATE_INSTRUCTION_INCOMPLETE": "format_extractor.py / format_extractor_modules/pdf_template.py / template_profiler.py",
     "TITLE_MISSING": "content_parser.py / md_parser.py",
     "REFERENCES_MISSING": "content_parser.py / md_parser.py",
     "DOCX_XML_UNREADABLE": "script_generator.py",
