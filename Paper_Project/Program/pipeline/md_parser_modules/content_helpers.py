@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 from typing import Any, Dict, List, Tuple
+from urllib.parse import unquote
 
 
 _RE_REF_HEADING = re.compile(r'(?i)^references?\b|^参考文献|^引用文献')
@@ -171,6 +172,9 @@ def _split_image_tokens_from_text(text: str, fig_dir: str, prefix: str, base_dir
             tokens.append({'type': 'text', 'text': text[pos:m.start()]})
         alt = m.group(1).strip()
         src = m.group(2).strip().strip('"').strip("'")
+        if src.startswith("<") and src.endswith(">"):
+            src = src[1:-1].strip()
+        src = unquote(src)
         if re.match(r'^[a-z]+://', src, re.I):
             missing.append({'source': src, 'alt': alt, 'reason': 'remote'})
             tokens.append({'type': 'missing_image', 'source': src, 'alt': alt, 'reason': 'remote'})
