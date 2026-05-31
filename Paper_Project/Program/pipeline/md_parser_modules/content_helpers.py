@@ -12,6 +12,10 @@ _RE_REF_HEADING = re.compile(r'(?i)^references?\b|^参考文献|^引用文献')
 _RE_BACKMATTER_HEADING = re.compile(r'(?i)^append(?:ix|ices)\b|^acknowledg(?:e)?ments?\b|^acknowledgment\b|^附\s*录|^致\s*谢')
 
 
+def _strip_bom_prefix(line: str) -> str:
+    return str(line or "").lstrip("\ufeff")
+
+
 def _classify_markdown_heading_role(heading: str) -> str:
     text = str(heading or "").strip()
     compact = re.sub(r"\s+", "", text).lower()
@@ -31,7 +35,7 @@ def _classify_markdown_heading_role(heading: str) -> str:
 
 
 def _markdown_heading_text(line: str) -> str:
-    match = re.match(r'^#{1,3}\s+(.+?)\s*#*\s*$', str(line or '').strip())
+    match = re.match(r'^#{1,3}\s+(.+?)\s*#*\s*$', _strip_bom_prefix(line).strip())
     return match.group(1).strip() if match else ''
 
 
@@ -120,10 +124,19 @@ def _skip_format_section(lines: List[str]) -> List[str]:
 def _detect_title(lines: List[str]) -> Tuple[str, int]:
     """Find first # heading as document title."""
     for i, line in enumerate(lines):
-        m = re.match(r'^#\s+(.+)', line)
+        m = re.match(r'^#\s+(.+?)\s*#*\s*$', _strip_bom_prefix(line).strip())
         if m:
             return m.group(1).strip(), i
     return '', 0
+
+
+def _title_info_from_title(title: str) -> Dict[str, str]:
+    title = str(title or "").strip()
+    if not title:
+        return {}
+    if re.search(r"[\u3400-\u9fff]", title):
+        return {"title_cn": title}
+    return {"title_en": title}
 
 
 def _process_inline_math(text: str) -> List[Tuple[str, bool]]:

@@ -232,6 +232,7 @@ Example: template has no cross-references → generated script has no `B_ref()`.
 - Plain-text formulas extracted from content docx must become formula items (`role="formula"`, `source="text"`) and render as native `m:oMathPara`; verify by checking the docx XML for `<m:oMathPara>` and by rendering in Word/WPS.
 - Markdown `$...$` / `$$...$$` formulas in abstracts and body sections must also render as native OOXML Math; cleanup code must preserve math-only paragraphs.
 - Markdown image paths must resolve relative to the `.md` file first, including common local forms such as `%20` percent-encoded spaces and `<path with spaces>` wrappers, then copy into the current output `figures/` folder.
+- Markdown H1 document titles may start with a UTF-8 BOM on Windows; strip the BOM before heading detection, store CJK titles as `title_cn` and non-CJK titles as `title_en`, and avoid false `TITLE_MISSING` warnings for valid H1 titles.
 - Markdown front format-instruction sections are format-only. They must be stripped from content parsing, including noisy or encoding-damaged headings followed by obvious format rules and a `---` delimiter.
 - `内容提取.md` should display structured images, tables, and formulas by role, avoid duplicate image listings, and never label non-formula structured content as `[公式]`.
 - Caption detection must not treat prose references such as `图 1 展示了...` or `表 1 显示...` as captions.

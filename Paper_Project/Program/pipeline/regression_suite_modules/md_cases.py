@@ -102,11 +102,30 @@ def md_parser_skips_front_format_rules_until_delimiter() -> None:
         encoding="utf-8",
     )
     content = extract_md_content(str(md), output_dir=str(work))
-    assert_true(content.get("title_info", {}).get("title_cn") == "Paper Title", f"format heading leaked into title: {content.get('title_info')}")
+    assert_true(content.get("title_info", {}).get("title_en") == "Paper Title", f"format heading leaked into title: {content.get('title_info')}")
     paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
     joined = "\n".join(str(p) for p in paragraphs)
     assert_true("Times New Roman" not in joined and "1.5" not in joined, f"format rule leaked into content paragraphs: {paragraphs}")
     assert_true("---" not in joined, f"format delimiter leaked into content paragraphs: {paragraphs}")
+
+
+@case
+def md_utf8_bom_h1_title_populates_english_title_info() -> None:
+    work = new_workdir("md_bom_h1_title")
+    md = work / "bom_title.md"
+    md.write_text(
+        "\ufeff# Markdown Path Variant Demo\n\n"
+        "## Abstract\n"
+        "This paper checks beginner-friendly Markdown title extraction.\n\n"
+        "## 1 Introduction\n"
+        "Body text.\n\n"
+        "## References\n"
+        "[1] Synthetic reference.",
+        encoding="utf-8",
+    )
+    content = extract_md_content(str(md), output_dir=str(work))
+    title_info = content.get("title_info") or {}
+    assert_true(title_info.get("title_en") == "Markdown Path Variant Demo", f"UTF-8 BOM H1 English title was not extracted as title_en: {title_info}")
 
 
 @case

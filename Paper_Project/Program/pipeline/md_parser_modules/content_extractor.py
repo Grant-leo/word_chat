@@ -16,6 +16,7 @@ try:
         _parse_paragraph_items,
         _skip_format_section,
         _strip_md_formatting,
+        _title_info_from_title,
     )
 except ImportError:  # pragma: no cover - package-style imports
     from ..path_safety import ensure_safe_output_dir, safe_rmtree_generated_child
@@ -28,6 +29,7 @@ except ImportError:  # pragma: no cover - package-style imports
         _parse_paragraph_items,
         _skip_format_section,
         _strip_md_formatting,
+        _title_info_from_title,
     )
 
 def _default_output_dir():
@@ -62,7 +64,7 @@ def extract_content(md_path, output_dir=None):
             'paragraphs': 0,
             'tables_count': 0,
         },
-        'title_info': {'title_cn': title} if title else {},
+        'title_info': _title_info_from_title(title),
         'sections': [],
         'references': [],
     }
