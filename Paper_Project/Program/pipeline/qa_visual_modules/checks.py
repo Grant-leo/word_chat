@@ -45,6 +45,38 @@ def _page_size_differs(a_width: Any, a_height: Any, b_width: Any, b_height: Any,
     return abs(aw - bw) > tolerance_pt or abs(ah - bh) > tolerance_pt
 
 
+def _nonblank_page_count(pages: List[str]) -> int:
+    return len([page for page in pages or [] if str(page or "").strip()])
+
+
+def _text_page_count_differs(word_text_pages: Any, wps_text_pages: Any) -> bool:
+    try:
+        word_count = int(word_text_pages or 0)
+        wps_count = int(wps_text_pages or 0)
+    except (TypeError, ValueError):
+        return False
+    if word_count <= 0:
+        return False
+    if wps_count <= 0:
+        return True
+    return (word_count - wps_count) > max(2, word_count // 8)
+
+
+def _preserve_rendered_text_artifact(visual_dir: str, label: str) -> str | None:
+    src = os.path.join(visual_dir, "rendered.txt")
+    if not os.path.exists(src):
+        return None
+    dst = os.path.join(visual_dir, f"rendered_{label}.txt")
+    shutil.copyfile(src, dst)
+    return dst
+
+
+def _restore_rendered_text_artifact(visual_dir: str, label: str) -> None:
+    src = os.path.join(visual_dir, f"rendered_{label}.txt")
+    if os.path.exists(src):
+        shutil.copyfile(src, os.path.join(visual_dir, "rendered.txt"))
+
+
 def _next_action(issues: List[Dict[str, Any]]) -> str:
     error_codes = {str(item.get("code") or "") for item in issues if item.get("severity") == "error"}
     warning_codes = {str(item.get("code") or "") for item in issues if item.get("severity") == "warning"}
@@ -72,6 +104,8 @@ def _next_action(issues: List[Dict[str, Any]]) -> str:
         return "分别打开 Word 与 WPS 导出的 PDF 比对分页差异；确认是兼容性差异还是排版脚本问题。修复后重跑 visual QA。"
     if error_codes & {"WPS_PAGE_SIZE_MISMATCH"}:
         return "分别打开 Word 与 WPS 导出的 PDF 比对纸张大小、页面尺寸和横竖方向；修复模板页面设置或 WPS 兼容性问题后重跑 visual QA。"
+    if error_codes & {"WPS_TEXT_PAGE_MISMATCH"}:
+        return "分别打开 Word 与 WPS 导出的 PDF 比对正文、目录、公式和图片内容；WPS 文本页明显缺失时先修复 WPS 导出、字体兼容或排版生成问题，再重跑 visual QA。"
     if error_codes & {"GOLDEN_BASELINE_MISMATCH"}:
         return "打开 visual_report.md 和 visual_qa/samples/ 对比页面；确认变化正确则用 --update-golden 更新基线，否则继续修复排版。"
     if error_codes & {"MISSING_DOCX"}:
@@ -92,6 +126,8 @@ def _next_action(issues: List[Dict[str, Any]]) -> str:
         return "visual QA 通过但 WPS 导出的 PDF 没有有效页面；需要 WPS 校验时先用 WPS 打开 DOCX/PDF 检查是否为空白，修复后重跑 visual QA。"
     if warning_codes & {"WPS_PAGE_SIZE_MISMATCH"}:
         return "visual QA 通过但 WPS 与 Word 的页面尺寸不同；需要 WPS 校验时比对纸张大小和横竖方向，修复后重跑 visual QA。"
+    if warning_codes & {"WPS_TEXT_PAGE_MISMATCH"}:
+        return "visual QA 通过但 WPS 与 Word 的可提取文本页数不同；需要 WPS 校验时打开两份 PDF 比对内容，修复后重跑 visual QA。"
     if warning_codes:
         return "visual QA 通过但仍有 warning；打开 visual_report.md 按问题码确认是否影响交付，必要时修复后重跑 visual QA。"
     return "打开 visual_report.md 和 visual_qa/samples/，按页面样张定位排版问题后重跑流水线。"
@@ -132,7 +168,11 @@ def check_visual(
 
             text_tool_available = shutil.which("pdftotext") is not None
             pages_text = _pdf_pages_text(pdf_path, visual_dir)
-            counts["text_pages"] = len([p for p in pages_text if p.strip()])
+            word_text_artifact = _preserve_rendered_text_artifact(visual_dir, "word")
+            if word_text_artifact:
+                artifacts["rendered_text"] = os.path.join(visual_dir, "rendered.txt")
+                artifacts["word_text"] = word_text_artifact
+            counts["text_pages"] = _nonblank_page_count(pages_text)
             if not text_tool_available:
                 issues.append(_issue("PDFTOTEXT_UNAVAILABLE", "error", "pdftotext is not available; visual QA cannot verify rendered text."))
             elif not pages_text:
@@ -204,6 +244,22 @@ def check_visual(
                             ),
                         )
                     )
+                else:
+                    wps_pages_text = _pdf_pages_text(wps_pdf, visual_dir)
+                    wps_text_artifact = _preserve_rendered_text_artifact(visual_dir, "wps")
+                    if wps_text_artifact:
+                        artifacts["wps_text"] = wps_text_artifact
+                    _restore_rendered_text_artifact(visual_dir, "word")
+                    counts["wps_text_pages"] = _nonblank_page_count(wps_pages_text)
+                    if _text_page_count_differs(counts.get("text_pages"), counts.get("wps_text_pages")):
+                        issues.append(
+                            _issue(
+                                "WPS_TEXT_PAGE_MISMATCH",
+                                "error",
+                                "WPS-rendered PDF has substantially fewer extractable text pages than Word-rendered PDF.",
+                                f"word_text_pages={counts.get('text_pages')} wps_text_pages={counts.get('wps_text_pages')}",
+                            )
+                        )
             except Exception as exc:
                 severity = "error" if require_wps else "warning"
                 issues.append(_issue("WPS_EXPORT_UNAVAILABLE", severity, "WPS PDF export could not be completed.", str(exc)))

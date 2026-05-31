@@ -56,6 +56,7 @@ REPORT_ISSUE_ACTIONS = {
     "WPS_PAGE_COUNT_INVALID": "WPS 导出的 PDF 没有有效页面；先用 WPS 打开最终 DOCX 和导出的 PDF 检查是否为空白，修复后重跑 visual QA。",
     "WPS_PAGE_COUNT_MISMATCH": "分别打开 Word 与 WPS 导出的 PDF 比对分页差异，确认是兼容性差异还是排版脚本问题。修复后重跑 visual QA。",
     "WPS_PAGE_SIZE_MISMATCH": "分别打开 Word 与 WPS 导出的 PDF 比对纸张大小、页面尺寸和横竖方向，确认是模板页面设置、WPS 兼容性差异还是排版脚本问题。修复后重跑 visual QA。",
+    "WPS_TEXT_PAGE_MISMATCH": "分别打开 Word 与 WPS 导出的 PDF 比对正文、目录、公式和图片内容；若 WPS 文本页明显缺失，修复 WPS 导出、字体兼容或排版生成问题后重跑 visual QA。",
     "WPS_EXPORT_UNAVAILABLE": "若启用了 --require-wps，安装/配置 WPS COM；否则可取消 --require-wps 后重跑 visual QA。",
 }
 
