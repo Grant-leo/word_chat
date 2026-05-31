@@ -13,6 +13,7 @@ from qa_checker_modules.registry import OWNER_BY_CODE
 from qa_checker_modules.report_phase import build_report
 from qa_checker_modules.repair import build_repair_plan
 from qa_checker_modules.repair_guides import REPAIR_GUIDES
+from qa_checker_modules.reports import repair_plan_to_markdown
 from qa_conformance_modules.content_checks import _expected_paragraphs, _find_para_by_text
 
 from regression_suite_modules.generated_docx import run_generated_case
@@ -271,6 +272,54 @@ def qa_repair_plan_preserves_md_visual_workflow_command() -> None:
     assert_true("--auto-repair" in command and "--repair-max-rounds 4" in command, f"auto repair options were not preserved: {command}")
     assert_true("--require-wps" in command and "--update-golden" in command, f"visual options were not preserved: {command}")
     assert_true("--golden-dir TestData/GoldenBaselines" in command, f"golden dir was not preserved: {command}")
+
+
+@case
+def qa_repair_plan_surfaces_next_action_and_resume_route() -> None:
+    work = new_workdir("qa_repair_next_action_user_file")
+    write_json(
+        work / "workflow_mode.json",
+        {
+            "mode": "user",
+            "template": "demo_template.docx",
+            "content": "paper.md",
+            "qa_level": "strict",
+        },
+    )
+    user_file_report = {
+        "mode": "user",
+        "passed": False,
+        "issues": [{"code": "CONTENT_IMAGE_MISSING", "severity": "error", "message": "missing image"}],
+        "counts": {},
+    }
+    user_file_plan = build_repair_plan(user_file_report, str(work))
+    assert_true("CONTENT_IMAGE_MISSING" in user_file_plan.get("next_action", ""), f"repair plan lost leading code: {user_file_plan}")
+    assert_true("把缺失图片放回" in user_file_plan.get("next_action", ""), f"repair plan lost concrete user action: {user_file_plan}")
+    assert_true(user_file_plan.get("resume_scope") == "input_files", f"user-file blocker should route to input files: {user_file_plan}")
+    assert_true(
+        user_file_plan.get("resume_command") == user_file_plan["commands"]["rerun_current_pipeline"],
+        f"user-file blocker should resume with full pipeline rerun: {user_file_plan}",
+    )
+    assert_true(not user_file_plan["commands"].get("rebuild_current_docx"), f"user-file blocker should not suggest rebuild-only: {user_file_plan}")
+    user_file_markdown = repair_plan_to_markdown(user_file_plan)
+    assert_true("下一步" in user_file_markdown and "修复后运行" in user_file_markdown, f"repair markdown should show next action and resume command: {user_file_markdown}")
+
+    work2 = new_workdir("qa_repair_next_action_generated_script")
+    write_json(work2 / "workflow_mode.json", {"mode": "user"})
+    generated_report = {
+        "mode": "user",
+        "passed": False,
+        "issues": [{"code": "MISSING_DOCX", "severity": "error", "message": "missing docx"}],
+        "counts": {},
+    }
+    generated_plan = build_repair_plan(generated_report, str(work2))
+    assert_true("MISSING_DOCX" in generated_plan.get("next_action", ""), f"generated-script repair lost leading code: {generated_plan}")
+    assert_true(generated_plan.get("resume_scope") == "current_docx", f"generated-script repair should route to current DOCX rebuild: {generated_plan}")
+    assert_true(
+        generated_plan.get("resume_command") == generated_plan["commands"]["rebuild_current_docx"],
+        f"generated-script repair should resume with build_generated.py rebuild: {generated_plan}",
+    )
+    assert_true("修复后运行" in generated_plan.get("copy_to_ai_prompt", ""), f"AI prompt should include the resume command: {generated_plan}")
 
 
 @case

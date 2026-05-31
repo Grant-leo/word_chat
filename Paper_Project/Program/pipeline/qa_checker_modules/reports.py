@@ -68,9 +68,19 @@ def repair_plan_to_markdown(plan: Dict[str, Any]) -> str:
         f"- 摘要：{plan.get('summary') or ''}",
         f"- 输出目录：`{plan.get('output_dir') or ''}`",
         "",
+        "## 下一步",
+        "",
+        f"- 优先动作：{plan.get('next_action') or '按下方修复步骤处理。'}",
+    ]
+    if plan.get("resume_scope"):
+        lines.append(f"- 修复范围：`{plan.get('resume_scope')}`")
+    if plan.get("resume_command"):
+        lines.append(f"- 修复后运行：`{plan.get('resume_command')}`")
+    lines.extend([
+        "",
         "## 先打开这些文件",
         "",
-    ]
+    ])
     for item in plan.get("open_first") or []:
         lines.append(f"- `{item}`")
     commands = plan.get("commands") or {}
@@ -124,4 +134,3 @@ def write_reports(report: Dict[str, Any], out_dir: str) -> None:
         f.write(repair_plan_to_markdown(repair_plan))
     with open(prompt_path, "w", encoding="utf-8") as f:
         f.write(str(repair_plan.get("copy_to_ai_prompt") or ""))
-

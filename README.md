@@ -101,7 +101,7 @@ Outputs/日期_内容名/
 - `最终论文.docx`：生成结果。
 - `agent_summary.md`：面向用户和 Agent 的最终摘要，先看它；如果结构/strict/visual QA 失败，这里会直接汇总问题码和小白下一步。
 - `qa_report.md`：是否有图片、公式、表格、占位符、内容缺失等问题；顶部“下一步”会点名优先处理的问题码和具体动作。
-- `qa_repair_plan.md`：下一步该修哪里，适合直接交给 AI 继续处理。
+- `qa_repair_plan.md/json`：下一步该修哪里，顶部会写明 `next_action`、`resume_scope` 和 `resume_command`，适合直接交给 AI 继续处理。
 - `conformance_report.md` / `visual_report.md`：strict/visual QA 的中文报告，缺依赖或渲染失败时会给出下一步。
 - `build_generated.py`：本次文档的用户级微调脚本。
 - `template_profile.md`：模板能力和风险画像。
@@ -176,7 +176,7 @@ build_generated.py ─────────→ 最终论文.docx
 
 截至 2026-05-31：
 
-- 合成回归：`171 passed, 0 failed`
+- 合成回归：`172 passed, 0 failed`
 - 自动修复闭环回归：可修复 QA error、连续无改善停止、needs_user_file 停止、strict/visual QA 依赖缺失、visual 参数保持、报告路径脱敏均已覆盖
 - Agent-first 自动入口：`--agent-auto` 可自动扫描单候选模板/内容；多候选时预检报告会把每个候选转成可直接回复给 Agent 的句子；默认普通用户自动修复，并写出 `agent_summary.md/json`
 - 小白中断体验：交互取消、EOF、预检失败、QA/依赖失败都会给出下一步，`agent_summary.md/json` 会聚合结构/strict/visual QA 的问题码和具体修复动作，`qa_report.md/json` 顶部也会点名首个结构 QA 问题码和动作；strict/visual 报告会针对占位符、Word 域、PDF 页数无效、页面图片不可读等问题给出更具体的下一步
