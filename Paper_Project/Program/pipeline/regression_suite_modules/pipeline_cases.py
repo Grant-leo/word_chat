@@ -1273,6 +1273,7 @@ def pipeline_artifacts_write_format_and_content_handoffs() -> None:
         [
             {"text": "A paragraph with math", "math": [{"text": "E=mc^2"}]},
             {"role": "figure", "image": "fig2.png", "caption": "Figure 2 Demo"},
+            {"role": "image", "image": "cell.png", "location": "table_cell"},
             {"role": "table_caption", "text": "表 1 指标对比"},
             {"role": "table", "table_rows": [["Metric", "Value"], ["Accuracy", "98%"]]},
             "Plain paragraph",
@@ -1285,6 +1286,8 @@ def pipeline_artifacts_write_format_and_content_handoffs() -> None:
     assert_true("# 内容提取" in summary, "content report title missing")
     assert_true("- [图片] fig1.png" in summary, "content report image line missing")
     assert_true("[图片] fig2.png" in summary, "structured figure was not summarized as an image")
+    assert_true("[图片] cell.png" in summary, "structured image item was not summarized as an image")
+    assert_true("[结构化内容]" not in summary, "image/table/formula summary leaked an opaque structured-content label")
     assert_true(summary.count("[图片] fig2.png") == 1, "structured figure image was duplicated in content report")
     assert_true("[表格] 2行 x 2列" in summary, "structured table was not summarized as a table")
     assert_true("表 1 指标对比" in summary, "table caption was not preserved in content markdown")

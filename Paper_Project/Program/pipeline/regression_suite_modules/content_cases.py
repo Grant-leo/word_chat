@@ -642,6 +642,7 @@ def content_parser_extracts_table_cell_images_and_flags_header_images() -> None:
     docx = work / "table_header_images.docx"
     doc = Document()
     doc.sections[0].header.paragraphs[0].add_run().add_picture(str(img))
+    doc.sections[0].footer.paragraphs[0].add_run().add_picture(str(img))
     doc.add_paragraph("1 Images")
     table = doc.add_table(rows=1, cols=2)
     table.cell(0, 0).paragraphs[0].add_run().add_picture(str(img))
@@ -653,7 +654,14 @@ def content_parser_extracts_table_cell_images_and_flags_header_images() -> None:
     table_images = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "image" and p.get("location") == "table_cell"]
     assert_true(table_images, "table-cell image was not promoted into the content image stream")
     assert_true(content["_meta"]["images_extracted"] == 1, "header image should not be counted as a body image")
-    assert_true(content["_meta"].get("non_body_images"), "header image was not recorded as a non-body image")
+    non_body_locations = {item.get("location") for item in content["_meta"].get("non_body_images") or []}
+    assert_true(any("header" in str(x) for x in non_body_locations), f"header image was not recorded as a non-body image: {non_body_locations}")
+    assert_true(any("footer" in str(x) for x in non_body_locations), f"footer image was not recorded as a non-body image: {non_body_locations}")
+
+    result = run_generated_case("table_cell_footer_image_render", content, base_format())
+    codes = [item["code"] for item in result["report"]["issues"]]
+    assert_true(result["manifest"]["counts"]["content_images_rendered"] == 1, f"table-cell body image was not rendered once: {result['manifest']}")
+    assert_true("NON_BODY_IMAGE_UNSUPPORTED" in codes, f"non-body header/footer image did not block with a clear code: {codes}")
 
 
 @case

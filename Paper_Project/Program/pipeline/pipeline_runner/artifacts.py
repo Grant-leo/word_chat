@@ -139,8 +139,10 @@ def _paragraph_summary(paragraph):
         return str(paragraph)
 
     role = str(paragraph.get("role") or paragraph.get("type") or "")
-    if role == "figure":
+    if role in {"figure", "image"} or paragraph.get("image") or paragraph.get("filename") or paragraph.get("asset"):
         image = paragraph.get("image") or paragraph.get("path") or ""
+        if not image:
+            image = paragraph.get("filename") or paragraph.get("asset") or ""
         caption = paragraph.get("caption") or ""
         text = f"[图片] {image}".strip()
         return f"{text} — {caption}" if caption else text

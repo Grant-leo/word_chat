@@ -105,7 +105,7 @@ Outputs/日期_内容名/
 - `conformance_report.md` / `visual_report.md`：strict/visual QA 的中文报告，缺依赖或渲染失败时会给出下一步。
 - `build_generated.py`：本次文档的用户级微调脚本。
 - `template_profile.md`：模板能力和风险画像。
-- `内容提取.md`：按上下文展示正文、图片、表格和公式；不会把表格/图片误写成公式，也会避免重复列出同一张正文图片。
+- `内容提取.md`：按上下文展示正文、图片、表格和公式；表格单元格图这类 `role="image"` 项也会显示为 `[图片]`，不会变成 `[结构化内容]`，也不会把表格/图片误写成公式或重复列出同一张正文图片。
 
 ## 两种工作模式
 
@@ -150,6 +150,7 @@ build_generated.py ─────────→ 最终论文.docx
 - Markdown 的 `$...$` / `$$...$$` 会转成 Word 原生 OOXML Math。
 - DOCX 中的文本公式会尽量识别并重建为可编辑公式。
 - 图片会复制到本次输出目录的 `figures/`，不会污染 `Inputs/`；Markdown 本地图片路径支持 `%20` 空格编码和 `<带空格路径>` 包裹写法。
+- DOCX 表格单元格里的正文图片会进入内容图片流并渲染；源文件页眉/页脚图片属于 non-body 内容，会以 `NON_BODY_IMAGE_UNSUPPORTED` 提示用户移到正文或确认忽略。
 - Markdown 开头的 YAML/front matter、第一行 H1 题名支持 UTF-8 BOM，题名也支持 Setext `Title` + `===`；中文题名写入 `title_cn`，英文/非 CJK 题名写入 `title_en`，避免有效标题触发 `TITLE_MISSING`。
 - “图 1 展示了……”这类正文引用句会保持正文样式；“图 1 xxx 示意图”这类真实图注才按图注排版。
 - 缺图、图片抽取失败、公式丢失、表格数量不匹配、占位符残留会进入 QA 报告。
@@ -180,7 +181,7 @@ build_generated.py ─────────→ 最终论文.docx
 - 合成回归：`208 passed, 0 failed`
 - 自动修复闭环回归：可修复 QA error、连续无改善停止、重建失败停止、needs_user_file 停止、strict/visual QA 依赖缺失、visual 参数保持、报告路径脱敏、停止后 `agent_summary` 汇总下一步均已覆盖
 - Agent-first 自动入口：`--agent-auto` 可自动扫描单候选模板/内容；多候选时预检报告会把每个候选转成可直接回复给 Agent 的句子；默认普通用户自动修复，并写出 `agent_summary.md/json`
-- 小白中断体验：交互取消、EOF、预检失败、生成脚本构建失败、QA/依赖失败都会给出下一步，`agent_summary.md/json` 会聚合结构/strict/visual QA 的问题码和具体修复动作，构建失败也会生成 `qa_report.md/json`、`qa_repair_plan.md/json` 和 `qa_fix_prompt.txt`；`qa_report.md/json` 顶部会点名首个结构 QA 问题码和动作；strict/visual 报告会针对占位符、Word 域、PDF 页数无效、页面图片不可读等问题给出更具体的下一步；Markdown 图片路径已覆盖 `%20` 空格编码与 `<带空格路径>` 本地写法，UTF-8 BOM 开头的 YAML/front matter、Markdown H1、Setext 一级英文题名，以及“格式块 + 公式 + 缺图”的组合边界已覆盖，visual/WPS 样张对比会优先抽封面、目录/正文锚点和图表公式风险页
+- 小白中断体验：交互取消、EOF、预检失败、生成脚本构建失败、QA/依赖失败都会给出下一步，`agent_summary.md/json` 会聚合结构/strict/visual QA 的问题码和具体修复动作，构建失败也会生成 `qa_report.md/json`、`qa_repair_plan.md/json` 和 `qa_fix_prompt.txt`；`qa_report.md/json` 顶部会点名首个结构 QA 问题码和动作；strict/visual 报告会针对占位符、Word 域、PDF 页数无效、页面图片不可读等问题给出更具体的下一步；Markdown 图片路径已覆盖 `%20` 空格编码与 `<带空格路径>` 本地写法，UTF-8 BOM 开头的 YAML/front matter、Markdown H1、Setext 一级英文题名，以及“格式块 + 公式 + 缺图”的组合边界已覆盖；DOCX 表格单元格图、页眉/页脚 non-body 图和 `内容提取.md` 图片摘要也有回归覆盖，visual/WPS 样张对比会优先抽封面、目录/正文锚点和图表公式风险页
 - 输出边界：独立 `format_extractor.py` / `content_parser.py` / `md_parser.py` 默认写入 `Outputs/_...`，不污染 `Inputs/` 或 `Templates/`
 - PDF 模板端到端 strict QA：合成文字说明 PDF 模板 + DOCX 内容，`passed`
 - PDF 极端压力测试：9 个场景覆盖大写扩展名、精排样张、横向页面、稀疏说明、扫描/损坏/空白/过短 PDF，`9/9` 符合预期
