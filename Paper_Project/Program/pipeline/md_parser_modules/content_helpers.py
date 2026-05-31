@@ -77,14 +77,14 @@ def _looks_like_format_rule_line(line: str) -> bool:
 
 
 def _format_section_end(lines: List[str]) -> int | None:
-    if not lines or not re.match(r'^#{1,3}\s+', str(lines[0] or '').strip()):
+    if not lines or not re.match(r'^#{1,3}\s+', _strip_bom_prefix(lines[0]).strip()):
         return None
 
     explicit_heading = _is_format_section_heading(lines[0])
     seen_rule = False
     seen_nonblank = False
     for i in range(1, len(lines)):
-        stripped = lines[i].strip()
+        stripped = _strip_bom_prefix(lines[i]).strip()
         if not stripped:
             continue
         if stripped == '---':
@@ -108,12 +108,12 @@ def _format_section_end(lines: List[str]) -> int | None:
 
 def _skip_format_section(lines: List[str]) -> List[str]:
     """Skip YAML frontmatter and # 格式 section. Returns remaining lines."""
-    if lines and lines[0].strip() == '---':
+    if lines and _strip_bom_prefix(lines[0]).strip() == '---':
         for i in range(1, len(lines)):
-            if lines[i].strip() == '---':
+            if _strip_bom_prefix(lines[i]).strip() == '---':
                 lines = lines[i + 1:]
                 break
-    while lines and not lines[0].strip():
+    while lines and not _strip_bom_prefix(lines[0]).strip():
         lines = lines[1:]
     end = _format_section_end(lines)
     if end is not None:

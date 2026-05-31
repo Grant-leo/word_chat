@@ -4,6 +4,7 @@ from __future__ import annotations
 from md_parser import extract_content as extract_md_content
 from qa_checker import check_output
 
+from regression_suite_modules.generated_docx import run_generated_case
 from regression_suite_modules.harness import (
     PNG_1X1,
     assert_true,
@@ -107,6 +108,55 @@ def md_parser_skips_front_format_rules_until_delimiter() -> None:
     joined = "\n".join(str(p) for p in paragraphs)
     assert_true("Times New Roman" not in joined and "1.5" not in joined, f"format rule leaked into content paragraphs: {paragraphs}")
     assert_true("---" not in joined, f"format delimiter leaked into content paragraphs: {paragraphs}")
+
+
+@case
+def md_bom_yaml_format_formula_missing_image_boundary() -> None:
+    work = new_workdir("md_bom_yaml_combo")
+    figures = work / "figures"
+    figures.mkdir()
+    (figures / "ok.png").write_bytes(PNG_1X1)
+    md = work / "combo.md"
+    md.write_text(
+        "\ufeff---\n"
+        "title: Demo\n"
+        "---\n"
+        "# ????\n"
+        "正文：Times New Roman，小四号，1.5倍行距。\n"
+        "---\n"
+        "Mixed Markdown Boundary Demo\n"
+        "============================\n\n"
+        "## Abstract\n"
+        "This abstract keeps inline math $E=mc^2$ and reports a missing image ![missing](missing.png).\n\n"
+        "## 1 Introduction\n"
+        "Before formula.\n\n"
+        "$$a=b+c$$\n\n"
+        "Existing image ![ok](figures/ok.png).\n\n"
+        "## References\n"
+        "[1] Synthetic reference.",
+        encoding="utf-8",
+    )
+    content = extract_md_content(str(md), output_dir=str(work))
+    title_info = content.get("title_info") or {}
+    paragraphs = [p for sec in content.get("sections") or [] for p in sec.get("paragraphs", [])]
+    joined = "\n".join(str(p) for p in paragraphs)
+    missing = content["_meta"].get("missing_images") or []
+
+    assert_true(title_info.get("title_en") == "Mixed Markdown Boundary Demo", f"BOM YAML/front-format block polluted title detection: {title_info}")
+    assert_true("Times New Roman" not in joined and "1.5" not in joined and "---" not in joined, f"front format block leaked into content: {paragraphs}")
+    assert_true(any(isinstance(p, dict) and p.get("role") == "rich_text" for p in paragraphs), f"inline math was not preserved as rich_text: {paragraphs}")
+    assert_true(any(isinstance(p, dict) and p.get("role") == "formula" for p in paragraphs), f"display math was not preserved as a formula: {paragraphs}")
+    assert_true(content["_meta"].get("images_extracted") == 1, f"existing Markdown image was not copied: {content['_meta']}")
+    assert_true(len(missing) == 1 and missing[0].get("reason") == "not_found", f"missing Markdown image was not recorded clearly: {missing}")
+
+    result = run_generated_case("md_bom_yaml_combo_generated", content, base_format())
+    report = result["report"]
+    plan = report.get("repair_plan") or {}
+    codes = [item["code"] for item in report["issues"]]
+    assert_true("CONTENT_IMAGE_MISSING" in codes, f"QA did not report missing Markdown image in combo boundary: {codes}")
+    assert_true(report["passed"] is False, "missing image combo boundary should fail structural QA")
+    assert_true(plan.get("resume_scope") == "input_files", f"missing image combo should route users to input files: {plan}")
+    assert_true("CONTENT_IMAGE_MISSING" in str(report.get("next_action") or ""), f"qa_report next_action did not name CONTENT_IMAGE_MISSING: {report.get('next_action')}")
 
 
 @case
