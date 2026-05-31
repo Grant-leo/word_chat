@@ -35,6 +35,14 @@ def _next_action(issues: List[Dict[str, Any]]) -> str:
         return "修复 Microsoft Word COM/PDF 导出环境后重跑 visual QA；若 DOCX 本身无法打开，先重新生成最终论文。"
     if error_codes & {"PDFINFO_UNAVAILABLE", "PDFTOTEXT_UNAVAILABLE", "SAMPLE_RENDER_FAILED", "ALL_PAGE_RENDER_FAILED"}:
         return "安装或修复 Poppler 命令行工具（pdfinfo、pdftotext、pdftoppm）后重跑 visual QA。"
+    if error_codes & {"PDFINFO_FAILED"}:
+        return "打开 visual_report.md 查看 pdfinfo 错误；修复 PDF 导出文件或 Poppler 环境后重跑 visual QA。"
+    if error_codes & {"PDF_PAGE_COUNT_INVALID"}:
+        return "PDF 导出后没有有效页面；先用 Word 打开最终 DOCX 检查文件，再重新导出并重跑 visual QA。"
+    if error_codes & {"PDFTOTEXT_FAILED"}:
+        return "打开 visual_report.md 查看 pdftotext 错误；修复 PDF 导出或 Poppler 环境后重跑 visual QA。"
+    if error_codes & {"PAGE_IMAGE_UNREADABLE"}:
+        return "打开 visual_report.md 查看不可读页面；修复 PDF 渲染或页面 PNG 生成后重跑 visual QA。"
     if error_codes & {"WPS_EXPORT_UNAVAILABLE"}:
         return "安装/配置 WPS COM，或取消 --require-wps 后重跑 visual QA。"
     if error_codes & {"WPS_PAGE_COUNT_MISMATCH"}:

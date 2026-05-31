@@ -96,26 +96,41 @@ def _write_agent_preflight(preflight_dir, *, status, message, next_steps, candid
     print(f"  [NEXT] 已写入预检报告: {_rel_for_terminal(md_path)}")
 
 
-def _agent_selection_next_steps(label, folder_label):
+def _agent_selection_role(label):
     if label == "模板":
-        return [
+        return "模板"
+    if label == "内容":
+        return "内容"
+    if label == "纯 Markdown 文件":
+        return "纯 Markdown 输入"
+    return label
+
+
+def _agent_selection_next_steps(label, folder_label, files=None):
+    role = _agent_selection_role(label)
+    if label == "模板":
+        steps = [
             "请告诉 Agent 要使用哪一个模板文件名。",
             f"然后让 Agent 重跑自动入口，并明确说“使用 {folder_label}/文件名 作为模板”。",
         ]
-    if label == "内容":
-        return [
+    elif label == "内容":
+        steps = [
             "请告诉 Agent 要使用哪一个内容文件名。",
             f"然后让 Agent 重跑自动入口，并明确说“使用 {folder_label}/文件名 作为内容”。",
         ]
-    if label == "纯 Markdown 文件":
-        return [
+    elif label == "纯 Markdown 文件":
+        steps = [
             "请告诉 Agent 要使用哪一个 Markdown 文件名。",
             f"然后让 Agent 重跑自动入口，并明确说“使用 {folder_label}/文件名 作为纯 Markdown 输入”。",
         ]
-    return [
-        f"请告诉 Agent 要使用哪一个 {label} 文件名。",
-        "然后让 Agent 重跑自动入口。",
-    ]
+    else:
+        steps = [
+            f"请告诉 Agent 要使用哪一个 {label} 文件名。",
+            "然后让 Agent 重跑自动入口。",
+        ]
+    for filename in files or []:
+        steps.append(f"可以直接回复：使用 {folder_label}/{filename} 作为{role}。")
+    return steps
 
 
 def _print_agent_candidates(label, folder_label, files):
@@ -135,7 +150,7 @@ def _agent_select_single(files, *, label, folder_label, preflight_dir=None):
             preflight_dir,
             status="blocked_ambiguous_input",
             message=f"{label}存在多个候选，Agent 不能替用户盲选。",
-            next_steps=_agent_selection_next_steps(label, folder_label),
+            next_steps=_agent_selection_next_steps(label, folder_label, files),
             candidates={folder_label: files},
         )
         raise SystemExit(2)

@@ -292,6 +292,11 @@ def pipeline_cli_dispatches_md_parameter_and_single_file_modes() -> None:
         dispatch_cli(parser.parse_args(["--agent-auto"]), run_pipeline=fake_run, template_dir=str(md_templates), inputs_dir=str(md_inputs))
     except SystemExit as exc:
         assert_true(exc.code == 2, f"agent-auto multiple MD candidates should ask for selection, got exit {exc.code}")
+        report_path = md_only / "Outputs" / "_agent_preflight_latest" / "agent_preflight_report.json"
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        md_steps = "\n".join(report.get("next_steps") or [])
+        assert_true("使用 Inputs/paper.md 作为纯 Markdown 输入" in md_steps, f"pure MD preflight should offer direct agent replies: {report}")
+        assert_true("使用 Inputs/second.md 作为纯 Markdown 输入" in md_steps, f"pure MD preflight should include every candidate: {report}")
     else:
         fail("agent-auto should not blind-pick among multiple pure MD candidates")
 
@@ -344,7 +349,10 @@ def pipeline_agent_auto_guides_missing_and_ambiguous_inputs() -> None:
     (templates / "b.pdf").write_bytes(b"")
     (inputs / "paper.docx").write_bytes(b"")
     template_report = expect_exit(parser.parse_args(["--agent-auto"]), templates, inputs, 2, "模板存在多个候选")
-    assert_true("作为模板" in "\n".join(template_report["next_steps"]), f"template ambiguity next step is unclear: {template_report}")
+    template_steps = "\n".join(template_report["next_steps"])
+    assert_true("作为模板" in template_steps, f"template ambiguity next step is unclear: {template_report}")
+    assert_true("使用 Templates/a.docx 作为模板" in template_steps, f"template ambiguity should offer a copyable Agent reply: {template_report}")
+    assert_true("使用 Templates/b.pdf 作为模板" in template_steps, f"template ambiguity should include every candidate: {template_report}")
 
     ambiguous_content = new_workdir("pipeline_agent_auto_multi_content")
     templates = ambiguous_content / "Templates"
@@ -358,6 +366,8 @@ def pipeline_agent_auto_guides_missing_and_ambiguous_inputs() -> None:
     content_steps = "\n".join(content_report["next_steps"])
     assert_true("作为内容" in content_steps, f"content ambiguity next step is unclear: {content_report}")
     assert_true("作为模板" not in content_steps, f"content ambiguity should not mention template selection: {content_report}")
+    assert_true("使用 Inputs/a.docx 作为内容" in content_steps, f"content ambiguity should offer a copyable Agent reply: {content_report}")
+    assert_true("使用 Inputs/b.md 作为内容" in content_steps, f"content ambiguity should include every candidate: {content_report}")
     assert_true(not calls, "missing/ambiguous agent-auto inputs should not call the pipeline")
 
 
@@ -1108,6 +1118,38 @@ def pipeline_qa_writes_report_when_visual_dependency_missing() -> None:
     assert_true((work / "visual_report.md").exists(), "missing visual dependency should write markdown report")
     assert_true(report["issues"][0]["code"] == "VISUAL_QA_UNAVAILABLE", f"wrong dependency issue: {report}")
     assert_true("visual_report.md" in output, f"terminal output did not route to visual report: {output}")
+
+
+@case
+def pipeline_strict_and_visual_reports_surface_specific_next_actions() -> None:
+    from qa_conformance_modules.reports import build_report as build_conformance_report
+    from qa_visual_modules.checks import _next_action as visual_next_action
+
+    work = new_workdir("pipeline_report_specific_next_actions")
+    placeholder_report = build_conformance_report(
+        str(work),
+        "user",
+        {},
+        [{"code": "PLACEHOLDER_TEXT_LEFT", "severity": "error", "message": "placeholder remains", "detail": ""}],
+        project_root=str(work),
+    )
+    assert_true("占位符" in placeholder_report["next_action"], f"placeholder strict report used a generic action: {placeholder_report}")
+    assert_true("strict QA" in placeholder_report["next_action"], f"strict report should tell users how to verify after fixing: {placeholder_report}")
+
+    word_field_report = build_conformance_report(
+        str(work),
+        "user",
+        {},
+        [{"code": "WORD_FIELD_ERROR", "severity": "error", "message": "field error remains", "detail": ""}],
+        project_root=str(work),
+    )
+    assert_true("Word 域" in word_field_report["next_action"] and "重跑 strict QA" in word_field_report["next_action"], f"Word field strict report used a generic action: {word_field_report}")
+
+    invalid_pages = visual_next_action([{"code": "PDF_PAGE_COUNT_INVALID", "severity": "error", "message": "no pages"}])
+    assert_true("没有有效页面" in invalid_pages and "重跑 visual QA" in invalid_pages, f"invalid-page visual action is too generic: {invalid_pages}")
+
+    unreadable_pages = visual_next_action([{"code": "PAGE_IMAGE_UNREADABLE", "severity": "error", "message": "bad png"}])
+    assert_true("不可读页面" in unreadable_pages and "重跑 visual QA" in unreadable_pages, f"unreadable-page visual action is too generic: {unreadable_pages}")
 
 
 @case

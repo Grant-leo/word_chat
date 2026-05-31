@@ -102,6 +102,10 @@ This non-interactive path scans `Templates/` and `Inputs/`, auto-selects only
 when there is a single valid choice, defaults to `user` mode, enables the
 bounded auto-repair loop, and writes `agent_summary.md/json`. If there are
 multiple candidates, ask the user for the file name only.
+The preflight report should also list direct reply sentences for each
+candidate, such as `使用 Templates/<文件名> 作为模板` or
+`使用 Inputs/<文件名> 作为内容`, so a beginner can simply choose one and
+send it back to the Agent.
 
 If interactive selection is cancelled or stdin closes, do not leave the user
 waiting. Tell them to rerun with `python run_pipeline.py --agent-auto`, or with
@@ -162,6 +166,9 @@ Open the newest `Outputs/<run>/` directory and inspect:
 - `repair_loop_report.md` / `repair_loop_report.json`: bounded auto-repair audit when `--auto-repair` was used.
 - `conformance_report.md`: strict DOCX/XML/template-content conformance report.
 - `visual_report.md` and `visual_qa/samples/`: PDF/render QA outputs when `--qa-level visual` was used.
+  Their top-level next action should be issue-code-specific for common blockers
+  such as placeholders, Word field errors, invalid PDF page count, unreadable
+  page PNGs, and missing render dependencies.
 - `build_manifest.json`: rendered images/tables/formulas counts.
 - `最终论文.docx`: final generated Word document.
 
@@ -335,7 +342,7 @@ When a user wants a document-specific feature:
 - Always honor workflow mode: user mode changes only `build_generated.py`; developer mode changes reusable core scripts and reruns the whole pipeline.
 - `template_profile.json/md` is the reusable template decision layer. Use profile capabilities/risk flags instead of school-name logic.
 - QA reports are routing-focused and block on `error`; they do not replace Word/WPS visual verification for final delivery.
-- QA also writes `qa_repair_plan.md/json` and `qa_fix_prompt.txt`; `qa_report.md/json` and the repair plan should name the leading issue code and concrete next action first when repairing.
+- QA also writes `qa_repair_plan.md/json` and `qa_fix_prompt.txt`; `qa_report.md/json` and the repair plan should name the leading issue code and concrete next action first when repairing. Strict/visual reports should also avoid generic "inspect the report" guidance when the issue code can provide a concrete next action.
 - QA/user-facing reports should prefer run-relative paths and avoid leaking absolute local paths.
 - PDF templates are best-effort format sources: instruction-style PDFs provide text rules, visual sample PDFs provide estimated geometry/styles, and scanned/textless PDFs must surface `PDF_TEMPLATE_UNSUPPORTED`.
 - `--qa-level visual` is the preferred delivery gate for developer/product checks. It requires Word COM for PDF export and Poppler tools (`pdfinfo`, `pdftotext`, `pdftoppm`) for page/text/sample checks. Missing required render tools fail visual QA.

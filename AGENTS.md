@@ -56,7 +56,7 @@ If no mode is known and the user has not said they are the developer, use `user`
 1. Use the project Agent entry: `python run_pipeline.py --agent-auto`
 2. Let it scan `Templates/` and `Inputs/`
 3. If there is exactly one valid template/content pair, run it directly
-4. If there are multiple candidates, ask the user to choose only the file name
+4. If there are multiple candidates, ask the user to choose only the file name; `agent_preflight_report.md/json` should also list direct reply sentences such as `使用 Templates/<文件名> 作为模板` or `使用 Inputs/<文件名> 作为内容`
 5. After the run, read `Outputs/<latest>/agent_summary.md` first, then the detailed QA reports; structural/strict/visual QA failures are summarized there with issue codes and beginner-facing next actions
 6. If anything interrupts before or during the run, do not leave ordinary users waiting: read or write the relevant `agent_preflight_report.md`, `agent_summary.md`, or QA report, and state the next concrete action they should take
 7. If interactive selection is cancelled or stdin closes, tell the user to rerun through `python run_pipeline.py --agent-auto`, or rerun with explicit `--template` / `--content` file names
@@ -99,6 +99,7 @@ Or interactive: `python run_pipeline.py`
 - Read `Outputs/<latest>/qa_report.md` first; it names the active fix target and the first issue-code-specific next action for the current mode
 - If `--auto-repair` was used, read `Outputs/<latest>/repair_loop_report.md/json`; it records every repair round, stop reason, and remaining manual checks
 - Read `Outputs/<latest>/agent_summary.md/json` first when present; it is the user-facing handoff with final DOCX path, QA status, repair-loop result, structural/strict/visual QA issue-code next actions, and manual checks
+- Read `conformance_report.md` and `visual_report.md` when strict/visual fails; their top-level next action should be issue-code-specific for common blockers such as placeholders, Word field errors, invalid PDF page count, unreadable page PNGs, and missing render dependencies
 - If `--qa-level visual` was used, read `Outputs/<latest>/visual_report.md` and inspect sample PNGs under `visual_qa/samples/`
 - Confirm `Outputs/<latest>/最终论文.docx` exists
 - Render/check with Word/WPS when layout matters; Office Viewer alone is not enough
@@ -213,7 +214,7 @@ Example: template has no cross-references → generated script has no `B_ref()`.
 - Do not commit or upload private test data: real files under `Inputs/`, `Outputs/`, `Templates/`, generated DOCX/PDF/PNG, QA renders, and template assets are local-only.
 - Always honor the workflow mode: user mode changes only `build_generated.py`; developer mode changes only reusable core scripts and reruns the whole pipeline.
 - Generated QA reports are routing-focused and block the pipeline on `error`; they still do not replace WPS/Word visual verification for final delivery.
-- QA also writes `qa_repair_plan.md/json` and `qa_fix_prompt.txt`; `qa_report.md/json` and the repair plan should name the leading issue code and concrete next action before editing user-level or developer-level code.
+- QA also writes `qa_repair_plan.md/json` and `qa_fix_prompt.txt`; `qa_report.md/json` and the repair plan should name the leading issue code and concrete next action before editing user-level or developer-level code. Strict/visual reports should also avoid generic "go inspect the report" guidance when an issue code can name the next concrete action.
 - QA/user-facing reports should avoid leaking absolute local paths; use run-relative paths whenever possible.
 - `template_profile.json/md` is the reusable template decision layer. Do not add school-name logic when a profile capability/risk flag can describe the same need.
 - PDF templates are best-effort format sources: instruction-style PDFs provide text rules, visual sample PDFs provide estimated geometry/styles, and scanned/textless PDFs must surface `PDF_TEMPLATE_UNSUPPORTED`.

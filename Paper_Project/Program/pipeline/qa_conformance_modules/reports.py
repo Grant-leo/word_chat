@@ -34,6 +34,10 @@ def _next_action(mode: str, issues: List[Dict[str, Any]]) -> str:
         return "按 conformance_report.md 的 detail 修复样式/页边距/表格线/图片尺寸，修复后重跑 strict QA。"
     if error_codes & {"OMML_WPS_COMPAT", "FORMULA_ERROR_TEXT"}:
         return "检查公式渲染链路和 latex_omath.py，确保公式输出为 WPS 兼容的原生 OOXML Math。"
+    if error_codes & {"PLACEHOLDER_TEXT_LEFT"}:
+        return "最终 DOCX 里还残留模板占位符；补齐输入信息或过滤占位符后重跑 strict QA。"
+    if error_codes & {"WORD_FIELD_ERROR"}:
+        return "最终 DOCX 里还残留 Word 域错误；更新或修复目录、交叉引用、页码字段后重跑 strict QA。"
     return "普通用户模式：让 Agent 修复 Outputs/<本轮>/build_generated.py 后重跑。" if mode == "user" else "开发者模式：修复核心流水线脚本后重跑完整流水线。"
 
 
