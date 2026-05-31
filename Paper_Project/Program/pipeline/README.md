@@ -41,7 +41,7 @@ CLI, output, verification, and QA details in a focused package:
 
 Current baseline as of 2026-06-01:
 
-- Synthetic regression after the latest Markdown BOM/H1 title fix: `206 passed, 0 failed`.
+- Synthetic regression after the latest Markdown Setext title fix: `207 passed, 0 failed`.
 - Agent-first flow: `--agent-auto` scans local inputs, auto-selects only single candidates, defaults to user auto-repair, and writes `agent_summary.md/json`.
 - Novice interruption coverage: interactive cancellation/EOF, missing preflight inputs, generated-script build failures, QA dependency failures, and auto-repair blockers all route to a next action.
 - Output-boundary coverage: standalone/default `format_extractor`, `content_parser`, and `md_parser` outputs stay under `Outputs/_...` instead of beside private source files.
@@ -83,7 +83,7 @@ while captions keep caption style.
 `md_parser_modules/` owns Markdown-specific helper rules behind `md_parser`:
 YAML/natural-language format extraction, inline/display math tokenization,
 front format-instruction stripping, Markdown image copying/missing-image
-metadata, UTF-8 BOM/H1 title detection, table parsing, and Markdown text cleanup.
+metadata, UTF-8 BOM/H1 and Setext `===` title detection, table parsing, and Markdown text cleanup.
 `content_extractor.py` owns Markdown content orchestration. The public
 Markdown entrypoints stay `extract_format` and `extract_content`.
 

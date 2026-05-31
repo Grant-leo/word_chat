@@ -122,11 +122,16 @@ def _skip_format_section(lines: List[str]) -> List[str]:
 
 
 def _detect_title(lines: List[str]) -> Tuple[str, int]:
-    """Find first # heading as document title."""
+    """Find the document title and return the index where title syntax ends."""
     for i, line in enumerate(lines):
-        m = re.match(r'^#\s+(.+?)\s*#*\s*$', _strip_bom_prefix(line).strip())
+        stripped = _strip_bom_prefix(line).strip()
+        m = re.match(r'^#\s+(.+?)\s*#*\s*$', stripped)
         if m:
             return m.group(1).strip(), i
+        if stripped and i + 1 < len(lines):
+            underline = str(lines[i + 1] or "").strip()
+            if re.fullmatch(r'=+\s*', underline):
+                return stripped, i + 1
     return '', 0
 
 

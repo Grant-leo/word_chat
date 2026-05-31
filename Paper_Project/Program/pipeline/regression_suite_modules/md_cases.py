@@ -129,6 +129,36 @@ def md_utf8_bom_h1_title_populates_english_title_info() -> None:
 
 
 @case
+def md_setext_h1_title_populates_english_title_info() -> None:
+    work = new_workdir("md_setext_h1_title")
+    md = work / "setext_title.md"
+    md.write_text(
+        "\n".join(
+            [
+                "Markdown Setext Title Demo",
+                "===========================",
+                "",
+                "## Abstract",
+                "This abstract should remain content, not title text.",
+                "",
+                "## 1 Introduction",
+                "Body text.",
+                "",
+                "## References",
+                "[1] Synthetic reference.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    content = extract_md_content(str(md), output_dir=str(work))
+    title_info = content.get("title_info") or {}
+    paragraphs = [p for sec in content.get("sections") or [] for p in sec.get("paragraphs", [])]
+    joined = "\n".join(str(p) for p in paragraphs)
+    assert_true(title_info.get("title_en") == "Markdown Setext Title Demo", f"Setext H1 title was not extracted as title_en: {title_info}")
+    assert_true("===" not in joined, f"Setext underline leaked into content paragraphs: {paragraphs}")
+
+
+@case
 def md_title_only_document_keeps_body_section() -> None:
     work = new_workdir("md_title_only")
     md = work / "title_only.md"
