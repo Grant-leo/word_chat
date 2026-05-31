@@ -154,7 +154,7 @@ build_generated.py ─────────→ 最终论文.docx
 - Markdown 开头的 YAML/front matter、第一行 H1 题名支持 UTF-8 BOM，题名也支持 Setext `Title` + `===`；中文题名写入 `title_cn`，英文/非 CJK 题名写入 `title_en`，避免有效标题触发 `TITLE_MISSING`。
 - “图 1 展示了……”这类正文引用句会保持正文样式；“图 1 xxx 示意图”这类真实图注才按图注排版。
 - 缺图、图片抽取失败、公式丢失、表格数量不匹配、占位符残留会进入 QA 报告。
-- PDF 模板需要 Poppler 的 `pdfinfo`、`pdftotext`；如果工具缺失，会在生成脚本前进入 `PDF_TEMPLATE_DEPENDENCY_MISSING` 并提示修复 Poppler 后重跑；如果 Poppler 已运行但 PDF 损坏/不可读取，会进入 `PDF_TEMPLATE_READ_FAILED`，提示重新导出可正常打开、可复制文字的 PDF 或改用 DOCX；扫描件或不可复制文字会进入 `PDF_TEMPLATE_UNSUPPORTED`，提示用户提供 DOCX、文字说明 PDF 或 OCR 后重跑；文字说明 PDF 如果缺少标题、图表题注、参考文献等关键规则，会以 `PDF_TEMPLATE_INSTRUCTION_INCOMPLETE` warning 告诉用户补哪些规则或做重点人工核对；视觉样张 PDF 会以 `PDF_TEMPLATE_VISUAL_APPROXIMATION` warning 提醒用户用 Word/WPS 核对估算版式；横向 PDF 模板会以 `PDF_TEMPLATE_LANDSCAPE_PAGE` warning 提醒用户核对最终 DOCX 的页面方向、页边距和正文/表格压缩情况。
+- PDF 模板需要 Poppler 的 `pdfinfo`、`pdftotext`；如果工具缺失，会在生成脚本前进入 `PDF_TEMPLATE_DEPENDENCY_MISSING` 并提示修复 Poppler 后重跑；如果 PDF 需要打开密码或禁止复制/提取文字，会进入 `PDF_TEMPLATE_PROTECTED`，提示解除密码/权限或重新导出无密码、可复制文字的 PDF；如果 Poppler 已运行但 PDF 损坏/不可读取，会进入 `PDF_TEMPLATE_READ_FAILED`，提示重新导出可正常打开、可复制文字的 PDF 或改用 DOCX；扫描件或不可复制文字会进入 `PDF_TEMPLATE_UNSUPPORTED`，提示用户提供 DOCX、文字说明 PDF 或 OCR 后重跑；文字说明 PDF 如果缺少标题、图表题注、参考文献等关键规则，会以 `PDF_TEMPLATE_INSTRUCTION_INCOMPLETE` warning 告诉用户补哪些规则或做重点人工核对；视觉样张 PDF 会以 `PDF_TEMPLATE_VISUAL_APPROXIMATION` warning 提醒用户用 Word/WPS 核对估算版式；横向 PDF 模板会以 `PDF_TEMPLATE_LANDSCAPE_PAGE` warning 提醒用户核对最终 DOCX 的页面方向、页边距和正文/表格压缩情况。
 - `--qa-level visual` 会尝试用 Word/WPS 导出 PDF，并做页数、纸张、文本和抽样 PNG 检查；抽样页会优先覆盖封面、目录/正文起点，以及能识别到的图片、表格、公式风险页。
 
 基础依赖：Python 3.10+、`python-docx`、`Pillow`、`lxml`。PDF 模板解析需要 Poppler 的 `pdfinfo`、`pdftotext`；自动目录页码可选依赖 `pywin32`；视觉 QA 还需要 Word/WPS COM 和 Poppler 工具 `pdfinfo`、`pdftotext`、`pdftoppm`。
@@ -189,11 +189,12 @@ build_generated.py ─────────→ 最终论文.docx
 - 横向 PDF 模板：结构 QA 以 `PDF_TEMPLATE_LANDSCAPE_PAGE` warning 暴露页面方向风险，`template_profile` 标记 `pdf_template_landscape_page`，并提示用 Word/WPS 核对横向页面、页边距和正文/表格是否被压缩
 - PDF 模板依赖缺失：在模板画像后、内容解析和 `build_generated.py` 创建前 fail closed，生成 `PDF_TEMPLATE_DEPENDENCY_MISSING` 的 QA/agent 交接，`resume_scope=environment`，提示修复 Poppler 后重跑
 - PDF 模板读取失败：损坏/不可读取 PDF 在模板画像后、内容解析和 `build_generated.py` 创建前 fail closed，生成 `PDF_TEMPLATE_READ_FAILED` 的 QA/agent 交接，提示重新导出可正常打开、可复制文字的 PDF 或改用 DOCX
+- PDF 模板受保护：需要密码或复制/提取权限受限的 PDF 在模板画像后、内容解析和 `build_generated.py` 创建前 fail closed，生成 `PDF_TEMPLATE_PROTECTED` 的 QA/agent 交接，提示解除密码/权限或导出无密码、可复制文字的 PDF 后重跑
 - 扫描/不可复制 PDF 模板：在模板画像后、内容解析和 `build_generated.py` 创建前 fail closed，生成 `PDF_TEMPLATE_UNSUPPORTED` 的 QA/agent 交接
 - PDF 极端压力测试：9 个场景覆盖大写扩展名、精排样张、横向页面、稀疏说明、扫描/损坏/空白/过短 PDF，`9/9` 符合预期
 - 端到端 strict QA：5 个 DOCX 模板 × 5 个 DOCX 内容，`25/25 passed`
 - 公共模板兼容套件：5 个公开模板 × 5 个合成场景，`25/25 passed`
-- PDF 边界测试：可解析 PDF 模板继续通过 strict QA；缺 Poppler、损坏/不可读取、不可用/扫描类模板按预期在生成前失败并给出下一步
+- PDF 边界测试：可解析 PDF 模板继续通过 strict QA；缺 Poppler、受密码/权限保护、损坏/不可读取、不可用/扫描类模板按预期在生成前失败并给出下一步
 - 高风险引擎流水线：纯 Markdown strict、缺图 Markdown、页眉图片边界、user auto-repair、DOCX/PDF visual smoke、密集媒体公式 strict 共 `7/7` 符合预期
 - 矩阵结果：通过项均为 `0` QA error，`0` conformance error；visual smoke 为 `0` visual error
 - fresh-folder 小白用户 visual 冒烟：DOCX 模板 + 无格式机器学习内容 + `--auto-repair --qa-level visual`，结构 QA / strict conformance / visual QA 均为 `0` error，自动修复闭环 `converged`

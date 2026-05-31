@@ -1416,6 +1416,86 @@ def pipeline_blocks_corrupt_pdf_template_with_read_failure_guidance() -> None:
 
 
 @case
+def pipeline_blocks_protected_pdf_template_with_unlock_guidance() -> None:
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    import run_pipeline as root_runner
+    import format_extractor_modules.pdf_template as pdf_template
+
+    work = new_workdir("pipeline_protected_pdf_template_blocker")
+    template_dir = work / "Templates"
+    inputs_dir = work / "Inputs"
+    outputs_dir = work / "Outputs"
+    template_dir.mkdir()
+    inputs_dir.mkdir()
+    outputs_dir.mkdir()
+
+    (template_dir / "protected_template.pdf").write_bytes(b"%PDF-1.4\n% synthetic protected pdf placeholder\n")
+
+    content_doc = Document()
+    content_doc.add_heading("Protected PDF Template Demo", level=0)
+    content_doc.add_paragraph("This body should not be processed while the PDF template is password protected.")
+    content_doc.save(inputs_dir / "paper.docx")
+
+    old_dirs = (root_runner.TEMPLATE_DIR, root_runner.INPUTS_DIR, root_runner.OUTPUTS_DIR)
+    old_which = pdf_template.shutil.which
+    old_run = pdf_template.subprocess.run
+
+    def fake_which(name: str) -> str:
+        if name in {"pdfinfo", "pdftotext"}:
+            return f"C:/fake-poppler/{name}.exe"
+        return old_which(name)
+
+    def fake_run(*_args, **_kwargs):
+        return SimpleNamespace(
+            returncode=1,
+            stdout=b"",
+            stderr=b"Command Line Error: Incorrect password\nThis file is encrypted and requires a password.\n",
+        )
+
+    try:
+        root_runner.TEMPLATE_DIR = str(template_dir)
+        root_runner.INPUTS_DIR = str(inputs_dir)
+        root_runner.OUTPUTS_DIR = str(outputs_dir)
+        pdf_template.shutil.which = fake_which
+        pdf_template.subprocess.run = fake_run
+        result = root_runner.run("protected_template.pdf", "paper.docx", mode="developer", qa_level="strict")
+    finally:
+        root_runner.TEMPLATE_DIR, root_runner.INPUTS_DIR, root_runner.OUTPUTS_DIR = old_dirs
+        pdf_template.shutil.which = old_which
+        pdf_template.subprocess.run = old_run
+
+    assert_true(result is None, "protected PDF template should stop the pipeline before generation")
+    out_dirs = sorted(outputs_dir.iterdir())
+    assert_true(out_dirs, "protected PDF template should still create a report handoff directory")
+    out_dir = out_dirs[-1]
+    assert_true(not (out_dir / "build_generated.py").exists(), "protected PDF template should not generate build_generated.py")
+    assert_true(not (out_dir / "最终论文.docx").exists(), "protected PDF template should not build a misleading final DOCX")
+
+    report = json.loads((out_dir / "qa_report.json").read_text(encoding="utf-8"))
+    codes = {item.get("code") for item in report.get("issues") or []}
+    assert_true("PDF_TEMPLATE_PROTECTED" in codes, f"protected PDF should have a password/permission-specific code: {report}")
+    assert_true("PDF_TEMPLATE_READ_FAILED" not in codes, f"protected PDF should not be mislabeled as corrupt/unreadable: {report}")
+    assert_true("PDF_TEMPLATE_UNSUPPORTED" not in codes, f"protected PDF should not be mislabeled as scanned/textless: {report}")
+    next_action = report.get("next_action", "")
+    assert_true(
+        "PDF_TEMPLATE_PROTECTED" in next_action and "密码" in next_action and ("权限" in next_action or "无保护" in next_action),
+        f"qa_report should tell users to unlock/export an unprotected PDF: {report}",
+    )
+    profile = json.loads((out_dir / "template_profile.json").read_text(encoding="utf-8"))
+    risks = profile.get("risk_flags") or {}
+    assert_true(risks.get("pdf_template_protected") is True, f"protected PDF should have a protected risk flag: {profile}")
+    assert_true(not risks.get("pdf_template_read_failed"), f"protected PDF should not be mislabeled as read failed: {profile}")
+    assert_true(not risks.get("pdf_template_unsupported"), f"protected PDF should not be mislabeled as unsupported: {profile}")
+    plan = json.loads((out_dir / "qa_repair_plan.json").read_text(encoding="utf-8"))
+    assert_true(plan.get("resume_scope") == "input_files", f"protected PDF should route users to replace/unlock the template: {plan}")
+    assert_true("密码" in plan.get("next_action", "") and ("权限" in plan.get("next_action", "") or "无保护" in plan.get("next_action", "")), f"protected PDF next action should name password/permission repair: {plan}")
+    summary = json.loads((out_dir / "agent_summary.json").read_text(encoding="utf-8"))
+    action_text = "\n".join(summary.get("next_actions") or summary.get("manual_check_required") or [])
+    assert_true("PDF_TEMPLATE_PROTECTED" in action_text and "密码" in action_text, f"agent summary lost protected-PDF next step: {summary}")
+
+
+@case
 def pipeline_sparse_pdf_instruction_warning_names_missing_rules() -> None:
     if not poppler_available():
         return

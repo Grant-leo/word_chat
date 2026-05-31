@@ -126,11 +126,12 @@ def _risk_flags(fmt: Dict[str, Any], text_blob: str) -> Dict[str, Any]:
     pdf_meta = (fmt.get("_meta") or {}).get("pdf_template") or {}
     pdf_warnings = [str(item) for item in (pdf_meta.get("warnings") or [])]
     pdf_dependency_missing = any(item.startswith(("PDFINFO_MISSING", "PDFTOTEXT_MISSING")) for item in pdf_warnings)
+    pdf_protected = any(item.startswith("PDF_TEMPLATE_PROTECTED") for item in pdf_warnings)
     pdf_read_failed = any(item.startswith(("PDFINFO_FAILED", "PDFTOTEXT_FAILED")) for item in pdf_warnings)
     pdf_instruction_incomplete = any(item.startswith("PDF_TEMPLATE_INSTRUCTION_INCOMPLETE") for item in pdf_warnings)
     pdf_visual_approximation = any(item.startswith("PDF_TEMPLATE_VISUAL_APPROXIMATION") for item in pdf_warnings)
     pdf_unsupported = bool(pdf_meta.get("errors")) or pdf_meta.get("type") == "scanned_or_unsupported_pdf"
-    pdf_unsupported = bool(pdf_unsupported and not pdf_dependency_missing and not pdf_read_failed)
+    pdf_unsupported = bool(pdf_unsupported and not pdf_dependency_missing and not pdf_read_failed and not pdf_protected)
     page = _first_section_page(fmt)
     return {
         "complex_cover": len(cover) > 20,
@@ -144,7 +145,12 @@ def _risk_flags(fmt: Dict[str, Any], text_blob: str) -> Dict[str, Any]:
         "pdf_template_visual_approximation": bool(pdf_visual_approximation),
         "pdf_template_landscape_page": bool(pdf_meta and _is_landscape_page(page)),
         "pdf_template_dependency_missing": bool(pdf_dependency_missing),
-        "pdf_template_read_failed": bool(pdf_read_failed and (pdf_meta.get("errors") or int(pdf_meta.get("text_chars") or 0) == 0)),
+        "pdf_template_protected": bool(pdf_protected),
+        "pdf_template_read_failed": bool(
+            pdf_read_failed
+            and not pdf_protected
+            and (pdf_meta.get("errors") or int(pdf_meta.get("text_chars") or 0) == 0)
+        ),
         "pdf_template_unsupported": pdf_unsupported,
         "mentions_formula_rules": bool(re.search(r"(公式|formula)", text_blob, re.I)),
         "mentions_reference_rules": bool(re.search(r"(参考文献|references?)", text_blob, re.I)),

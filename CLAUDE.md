@@ -39,7 +39,7 @@ Dependency notes:
 
 - Normal pipeline and strict QA require Python 3.10+, `python-docx`, `Pillow`, and `lxml`.
 - Generated DOCX builds copy and use local engine modules; the public-template downloader uses stdlib `urllib`, so no `requests` package is required.
-- PDF template parsing requires Poppler command-line tools on `PATH`: `pdfinfo` and `pdftotext`. Scanned/textless PDFs should become QA errors, not silent defaults.
+- PDF template parsing requires Poppler command-line tools on `PATH`: `pdfinfo` and `pdftotext`. Missing tools should surface `PDF_TEMPLATE_DEPENDENCY_MISSING`; password-protected or copy-restricted PDFs should surface `PDF_TEMPLATE_PROTECTED`; corrupt/unreadable PDFs should surface `PDF_TEMPLATE_READ_FAILED`; scanned/textless PDFs should become QA errors, not silent defaults.
 - Automatic Word TOC/page-number updating is optional and uses Microsoft Word COM through `pywin32` (`python -m pip install pywin32`) when available; without it, static visible TOC lines remain.
 - `--qa-level visual` requires Windows PowerShell plus Microsoft Word COM for PDF export, and Poppler command-line tools on `PATH`: `pdfinfo`, `pdftotext`, `pdftoppm`.
 - Optional WPS cross-render QA requires WPS COM (`KWPS.Application` or `WPS.Application`); missing WPS is a warning unless `--require-wps` is used.
@@ -158,7 +158,7 @@ Open the newest `Outputs/<run>/` directory and inspect:
 - `格式提取.md`: template format extraction summary.
 - `内容提取.md`: content extraction summary.
 - `template_profile.md`: template capability and risk flags.
-- For PDF templates, check PDF type, confidence, warnings, and any `PDF_TEMPLATE_UNSUPPORTED` issue in `template_profile.md`, `格式提取.md`, and `qa_report.md`.
+- For PDF templates, check PDF type, confidence, warnings, and any `PDF_TEMPLATE_DEPENDENCY_MISSING`, `PDF_TEMPLATE_PROTECTED`, `PDF_TEMPLATE_READ_FAILED`, `PDF_TEMPLATE_UNSUPPORTED`, `PDF_TEMPLATE_INSTRUCTION_INCOMPLETE`, `PDF_TEMPLATE_VISUAL_APPROXIMATION`, or `PDF_TEMPLATE_LANDSCAPE_PAGE` issue in `template_profile.md`, `格式提取.md`, and `qa_report.md`.
 - `template_requirements.md`: machine-checkable template/content requirements, when strict/visual QA is available.
 - `qa_report.md`: first repair entry point; its top next action names the leading issue code and concrete beginner-facing fix. If `build_generated.py` fails before normal QA, the pipeline still writes this report with `MISSING_DOCX` guidance.
 - `qa_repair_plan.md` / `qa_repair_plan.json`: step-by-step repair plan with top-level `next_action`, `resume_scope`, and `resume_command`, including generated-script build failures that should resume from the current DOCX build script.
@@ -344,7 +344,7 @@ When a user wants a document-specific feature:
 - QA reports are routing-focused and block on `error`; they do not replace Word/WPS visual verification for final delivery.
 - QA also writes `qa_repair_plan.md/json` and `qa_fix_prompt.txt`; generated-script build failures should get the same QA-shaped handoff before asking the user to repair `build_generated.py`. `qa_report.md/json` and the repair plan should name the leading issue code and concrete next action first when repairing. The repair plan JSON should also expose `next_action`, `resume_scope`, and `resume_command` so the handoff says whether to fix input files, rebuild the current DOCX, rerun the full pipeline, or do final Word/WPS review. Strict/visual reports should also avoid generic "inspect the report" guidance when the issue code can provide a concrete next action.
 - QA/user-facing reports should prefer run-relative paths and avoid leaking absolute local paths.
-- PDF templates are best-effort format sources: instruction-style PDFs provide text rules, sparse instruction PDFs must surface missing-rule warnings, visual sample PDFs provide estimated geometry/styles and must surface `PDF_TEMPLATE_VISUAL_APPROXIMATION` for Word/WPS layout review, and scanned/textless PDFs must surface `PDF_TEMPLATE_UNSUPPORTED`.
+- PDF templates are best-effort format sources: instruction-style PDFs provide text rules, sparse instruction PDFs must surface missing-rule warnings, visual sample PDFs provide estimated geometry/styles and must surface `PDF_TEMPLATE_VISUAL_APPROXIMATION` for Word/WPS layout review, landscape PDFs must surface `PDF_TEMPLATE_LANDSCAPE_PAGE`, missing Poppler tools must surface `PDF_TEMPLATE_DEPENDENCY_MISSING`, protected/password or copy-restricted PDFs must surface `PDF_TEMPLATE_PROTECTED`, corrupt/unreadable PDFs must surface `PDF_TEMPLATE_READ_FAILED`, and scanned/textless PDFs must surface `PDF_TEMPLATE_UNSUPPORTED`.
 - `--qa-level visual` is the preferred delivery gate for developer/product checks. It requires Word COM for PDF export and Poppler tools (`pdfinfo`, `pdftotext`, `pdftoppm`) for page/text/sample checks. Missing required render tools fail visual QA.
 - Missing or remote Markdown images, and DOCX image extraction failures, must surface as QA errors rather than disappearing from `content.json`.
 - DOCX table-cell images must surface in the content image stream.

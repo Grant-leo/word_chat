@@ -83,6 +83,11 @@ def run_format_checks(paths: Dict[str, str], counts: Dict[str, Any], add: AddIss
                     for item in pdf_warnings
                     if str(item).startswith(("PDFINFO_FAILED", "PDFTOTEXT_FAILED"))
                 ]
+                protected_pdf = [
+                    str(item)
+                    for item in list(pdf_warnings) + list(pdf_errors)
+                    if str(item).startswith("PDF_TEMPLATE_PROTECTED")
+                ]
                 instruction_incomplete = [
                     str(item)
                     for item in pdf_warnings
@@ -99,6 +104,13 @@ def run_format_checks(paths: Dict[str, str], counts: Dict[str, Any], add: AddIss
                         "error",
                         "PDF 模板解析缺少 Poppler 命令行工具。",
                         "; ".join(missing_pdf_tools),
+                    )
+                elif protected_pdf:
+                    add(
+                        "PDF_TEMPLATE_PROTECTED",
+                        "error",
+                        "PDF 模板受密码或复制权限保护。",
+                        "; ".join(protected_pdf),
                     )
                 elif failed_pdf_reads and (
                     pdf_meta.get("type") == "scanned_or_unsupported_pdf"

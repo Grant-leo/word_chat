@@ -146,6 +146,9 @@ def _read_pdf_info(path: Path) -> dict[str, Any]:
         return {"ok": False, "error": f"PDFINFO_FAILED: {exc}", "raw": ""}
     raw = _decode_bytes(proc.stdout) + _decode_bytes(proc.stderr)
     if proc.returncode != 0:
+        protected_error = _pdf_protection_error("pdfinfo", raw)
+        if protected_error:
+            return {"ok": False, "error": protected_error, "raw": raw}
         return {"ok": False, "error": "PDFINFO_FAILED", "raw": raw}
     page_count = 0
     match = re.search(r"^Pages:\s*(\d+)", raw, re.MULTILINE)
@@ -191,7 +194,11 @@ def _pdftotext_layout(path: Path) -> dict[str, Any]:
     except Exception as exc:  # pragma: no cover - platform dependent
         return {"ok": False, "error": f"PDFTOTEXT_FAILED: {exc}", "text": ""}
     text = _decode_bytes(proc.stdout)
+    raw_error = text + _decode_bytes(proc.stderr)
     if proc.returncode != 0:
+        protected_error = _pdf_protection_error("pdftotext", raw_error)
+        if protected_error:
+            return {"ok": False, "error": protected_error, "text": text}
         return {"ok": False, "error": "PDFTOTEXT_FAILED", "text": text}
     return {"ok": True, "error": "", "text": text}
 
@@ -212,6 +219,15 @@ def _pdftotext_bbox(path: Path) -> dict[str, Any]:
         except Exception as exc:  # pragma: no cover - platform dependent
             return {"ok": False, "error": f"PDFTOTEXT_BBOX_FAILED: {exc}", "words": [], "page": None}
         if proc.returncode != 0 or not out_path.exists():
+            raw_error = _decode_bytes(proc.stdout) + _decode_bytes(proc.stderr)
+            protected_error = _pdf_protection_error("pdftotext-bbox", raw_error)
+            if protected_error:
+                return {
+                    "ok": False,
+                    "error": protected_error,
+                    "words": [],
+                    "page": None,
+                }
             return {
                 "ok": False,
                 "error": "PDFTOTEXT_BBOX_FAILED",
@@ -653,6 +669,34 @@ def _decode_bytes(data: bytes) -> str:
         except UnicodeDecodeError:
             continue
     return data.decode("utf-8", errors="ignore")
+
+
+def _pdf_protection_error(tool: str, raw: str) -> str:
+    text = re.sub(r"\s+", " ", str(raw or "")).strip().lower()
+    if not text:
+        return ""
+    password_markers = (
+        "incorrect password",
+        "requires a password",
+        "password required",
+        "user password",
+        "owner password",
+    )
+    permission_markers = (
+        "copying of text from this document is not allowed",
+        "text extraction is not allowed",
+        "copying is not allowed",
+        "extract text is not allowed",
+    )
+    if any(marker in text for marker in password_markers):
+        return f"PDF_TEMPLATE_PROTECTED:{tool}:password"
+    if "encrypted" in text and "password" in text:
+        return f"PDF_TEMPLATE_PROTECTED:{tool}:password"
+    if any(marker in text for marker in permission_markers):
+        return f"PDF_TEMPLATE_PROTECTED:{tool}:permissions"
+    if "not allowed" in text and ("copy" in text or "extract" in text or "permission" in text):
+        return f"PDF_TEMPLATE_PROTECTED:{tool}:permissions"
+    return ""
 
 
 def _sha16(path: Path) -> str:

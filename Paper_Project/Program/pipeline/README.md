@@ -53,11 +53,12 @@ Current baseline as of 2026-06-01:
 - Landscape PDF template handoff: landscape PDFs now surface `PDF_TEMPLATE_LANDSCAPE_PAGE` warning guidance and `pdf_template_landscape_page` profile risk so users know to review final DOCX orientation, margins, and compressed tables/body in Word/WPS.
 - PDF template dependency handoff: missing `pdfinfo` / `pdftotext` stops after template profiling and before `build_generated.py`, while writing `PDF_TEMPLATE_DEPENDENCY_MISSING` QA/agent reports with `resume_scope=environment` and Poppler repair/rerun next steps.
 - PDF template read-failure handoff: corrupt/unreadable PDFs stop after template profiling and before `build_generated.py`, while writing `PDF_TEMPLATE_READ_FAILED` QA/agent reports with re-export/openable-PDF or DOCX next steps.
+- PDF template protection handoff: password-protected or copy-restricted PDFs stop after template profiling and before `build_generated.py`, while writing `PDF_TEMPLATE_PROTECTED` QA/agent reports with unlock/export-unprotected-PDF or DOCX next steps.
 - Scanned/textless PDF template handoff: unsupported PDF templates stop after template profiling and before `build_generated.py`, while writing `PDF_TEMPLATE_UNSUPPORTED` QA/agent reports with DOCX/text-PDF/OCR next steps.
 - PDF extreme stress gate: 9 cases covering uppercase extensions, visual samples, landscape pages, sparse instructions, scanned/corrupt/blank/too-short PDFs met expected outcomes.
 - Public-template compatibility suite: 5 public templates × 5 synthetic scenarios = `25/25` passed.
 - Local DOCX strict QA matrix: 5 DOCX templates × 5 DOCX contents = `25/25` passed.
-- PDF boundary probe: parseable PDF templates passed strict QA; missing Poppler tools fail closed with `PDF_TEMPLATE_DEPENDENCY_MISSING`; corrupt/unreadable PDFs fail closed with `PDF_TEMPLATE_READ_FAILED`; unsupported/scanned-style PDFs fail closed with `PDF_TEMPLATE_UNSUPPORTED` guidance.
+- PDF boundary probe: parseable PDF templates passed strict QA; missing Poppler tools fail closed with `PDF_TEMPLATE_DEPENDENCY_MISSING`; protected/password or copy-restricted PDFs fail closed with `PDF_TEMPLATE_PROTECTED`; corrupt/unreadable PDFs fail closed with `PDF_TEMPLATE_READ_FAILED`; unsupported/scanned-style PDFs fail closed with `PDF_TEMPLATE_UNSUPPORTED` guidance.
 - High-risk pipeline matrix: pure Markdown strict, missing Markdown image, header/footer image boundary, user auto-repair, DOCX/PDF visual smoke, and dense media/math strict checks all matched expectations (`7/7`).
 - Fresh-folder novice smoke test: DOCX template + plain DOCX content + `--auto-repair --qa-level visual` converged with structural, strict, and visual QA all at zero errors.
 
@@ -81,11 +82,14 @@ compressed tables/body in Word/WPS. Visual sample PDFs estimate page geometry
 and styles from Poppler text bounding boxes. Missing Poppler tools surface
 `PDF_TEMPLATE_DEPENDENCY_MISSING` after template profiling with
 `resume_scope=environment`, so users are told to repair `pdfinfo`/`pdftotext`
-and rerun. Corrupt/unreadable PDFs surface `PDF_TEMPLATE_READ_FAILED` with a
-next step to re-export an openable text PDF or use DOCX. Scanned/textless PDFs
-surface `PDF_TEMPLATE_UNSUPPORTED` before content extraction or script
-generation, so users are routed to DOCX/text-PDF/OCR input repair instead of
-receiving a misleading default-formatted DOCX.
+and rerun. Protected/password or copy-restricted PDFs surface
+`PDF_TEMPLATE_PROTECTED` with a next step to remove the password/permission
+restriction, export an unprotected copyable-text PDF, or use DOCX.
+Corrupt/unreadable PDFs surface `PDF_TEMPLATE_READ_FAILED` with a next step to
+re-export an openable text PDF or use DOCX. Scanned/textless PDFs surface
+`PDF_TEMPLATE_UNSUPPORTED` before content extraction or script generation, so
+users are routed to DOCX/text-PDF/OCR input repair instead of receiving a
+misleading default-formatted DOCX.
 
 `content_parser_modules/` owns reusable content extraction rules behind
 `content_parser.extract`: placeholders, style helpers, text cleanup, front

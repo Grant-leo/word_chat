@@ -15,6 +15,13 @@ REPAIR_GUIDES = {
         "developer_action": "检查 `format_extractor_modules/pdf_template.py` 捕获的 PDFINFO_FAILED / PDFTOTEXT_FAILED 细节，确认不是 Poppler 版本或命令参数问题。",
         "auto_level": "needs_user_file",
     },
+    "PDF_TEMPLATE_PROTECTED": {
+        "title": "PDF 模板受密码或权限保护",
+        "why": "Poppler 能找到 PDF 工具，但模板需要打开密码，或禁止复制/提取文字。流水线无法在这种状态下读取页数、纸张尺寸和格式文字。",
+        "user_action": "先解除 PDF 的打开密码或复制权限限制；也可以从原始文档重新导出一个无密码、允许复制文字的 PDF，或改用 DOCX 模板。修复后重新运行完整流水线。",
+        "developer_action": "检查 `format_extractor_modules/pdf_template.py` 捕获的 `PDF_TEMPLATE_PROTECTED` 细节，确认 Poppler stderr 中的 password/encrypted/permission 信号没有被折叠成普通读取失败。",
+        "auto_level": "needs_user_file",
+    },
     "PDF_TEMPLATE_DEPENDENCY_MISSING": {
         "title": "PDF 模板解析缺少 Poppler 工具",
         "why": "PDF 模板需要本机 Poppler 命令行工具 `pdfinfo` 和 `pdftotext` 才能读取页数、纸张尺寸和可复制文字；工具缺失时不能判断模板是不是可用。",
