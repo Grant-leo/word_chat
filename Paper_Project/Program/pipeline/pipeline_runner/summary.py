@@ -143,8 +143,8 @@ def _report_summary(out_dir, folder_name):
             total_errors += errors
             total_warnings += warnings
             next_action = str(report.get("next_action") or "").strip()
-            if not report.get("passed"):
-                step_actions = _repair_step_actions(label, report)
+            if not report.get("passed") or warnings:
+                step_actions = _repair_step_actions(label, report) if not report.get("passed") else []
                 issue_actions = [] if step_actions else _issue_actions(label, report, report_path)
                 report_actions = step_actions or issue_actions
                 if report_actions:
@@ -285,6 +285,8 @@ def build_agent_summary(
     next_actions.extend(_missing_report_actions(reports, missing_required_reports))
     if pipeline_status != "completed":
         status_label = "需要继续处理"
+    elif automatic_qa_passed and final_docx_exists and final_warnings > 0:
+        status_label = "自动 QA 已通过，但有警告需要人工确认"
     elif automatic_qa_passed and final_docx_exists:
         status_label = "自动 QA 已通过"
     elif final_docx_exists and missing_required_reports:

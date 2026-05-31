@@ -1198,6 +1198,10 @@ def pipeline_strict_and_visual_reports_surface_specific_next_actions() -> None:
     unreadable_pages = visual_next_action([{"code": "PAGE_IMAGE_UNREADABLE", "severity": "error", "message": "bad png"}])
     assert_true("不可读页面" in unreadable_pages and "重跑 visual QA" in unreadable_pages, f"unreadable-page visual action is too generic: {unreadable_pages}")
 
+    missing_golden = visual_next_action([{"code": "GOLDEN_BASELINE_MISSING", "severity": "warning", "message": "no baseline"}])
+    assert_true("黄金基线" in missing_golden and "--update-golden" in missing_golden, f"warning-only visual action should still guide users: {missing_golden}")
+    assert_true("机器检查已通过" not in missing_golden, f"warning-only visual action should not sound fully done: {missing_golden}")
+
 
 @case
 def pipeline_summary_mentions_outputs_and_mode() -> None:
@@ -1472,6 +1476,53 @@ def pipeline_agent_summary_surfaces_visual_issue_steps() -> None:
     assert_true("PDFINFO_UNAVAILABLE" in action_text, f"summary lost the visual issue code: {summary}")
     assert_true("Poppler" in action_text and "visual QA" in action_text, f"summary did not surface a visual-QA next action: {summary}")
     assert_true("PDFINFO_UNAVAILABLE" in text, "agent summary markdown should show the visual issue code")
+
+
+@case
+def pipeline_agent_summary_surfaces_visual_warning_steps() -> None:
+    work = new_workdir("pipeline_agent_summary_visual_warning_steps")
+    write_workflow_mode(
+        str(work),
+        mode="developer",
+        template_path="template.docx",
+        content_path="content.docx",
+        run_qa=True,
+        qa_level="visual",
+        golden_dir="TestData/GoldenBaselines",
+        update_golden=False,
+        require_wps=False,
+        auto_repair=False,
+        agent_auto=True,
+    )
+    (work / "最终论文.docx").write_bytes(b"synthetic")
+    write_json(work / "qa_report.json", {"passed": True, "issues": [], "counts": {}, "next_action": "ok"})
+    write_json(work / "conformance_report.json", {"passed": True, "issues": [], "counts": {}, "next_action": "ok"})
+    write_json(
+        work / "visual_report.json",
+        {
+            "passed": True,
+            "issues": [
+                {
+                    "code": "GOLDEN_BASELINE_MISSING",
+                    "severity": "warning",
+                    "message": "Golden baseline was requested but no baseline exists.",
+                    "detail": "",
+                }
+            ],
+            "counts": {},
+            "next_action": "黄金基线缺失；首次建立视觉基线时可用 --update-golden 生成。",
+        },
+    )
+
+    json_path, md_path = write_agent_summary(str(work), "2026-05-31_visual_warning", "最终论文.docx", "developer")
+    summary = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    text = Path(md_path).read_text(encoding="utf-8")
+    action_text = "\n".join(summary.get("next_actions") or summary.get("manual_check_required") or [])
+
+    assert_true("警告" in summary["status_label"], f"summary should not hide warning-only QA status: {summary}")
+    assert_true("GOLDEN_BASELINE_MISSING" in action_text, f"summary lost the visual warning code: {summary}")
+    assert_true("--update-golden" in action_text and "visual QA" in action_text, f"summary did not surface a visual warning next action: {summary}")
+    assert_true("GOLDEN_BASELINE_MISSING" in text, "agent summary markdown should show the visual warning code")
 
 
 @case

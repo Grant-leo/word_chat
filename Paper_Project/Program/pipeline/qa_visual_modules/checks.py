@@ -29,7 +29,8 @@ def _issue(code: str, severity: str, message: str, detail: str = "") -> Dict[str
 
 def _next_action(issues: List[Dict[str, Any]]) -> str:
     error_codes = {str(item.get("code") or "") for item in issues if item.get("severity") == "error"}
-    if not error_codes:
+    warning_codes = {str(item.get("code") or "") for item in issues if item.get("severity") == "warning"}
+    if not error_codes and not warning_codes:
         return "视觉 QA 的机器检查已通过；仍建议用 Word/WPS 打开最终 DOCX 做人工视觉核对。"
     if error_codes & {"PDF_EXPORT_FAILED"}:
         return "修复 Microsoft Word COM/PDF 导出环境后重跑 visual QA；若 DOCX 本身无法打开，先重新生成最终论文。"
@@ -51,6 +52,18 @@ def _next_action(issues: List[Dict[str, Any]]) -> str:
         return "打开 visual_report.md 和 visual_qa/samples/ 对比页面；确认变化正确则用 --update-golden 更新基线，否则继续修复排版。"
     if error_codes & {"MISSING_DOCX"}:
         return "先修复构建阶段，确保最终论文 DOCX 生成后再运行 visual QA。"
+    if warning_codes & {"MANY_BLANK_PAGES"}:
+        return "visual QA 通过但发现较多文本空白页；打开导出的 PDF 核对空白页，异常时修复分页/分节逻辑后重跑 visual QA。"
+    if warning_codes & {"TOC_TEXT_NOT_FOUND"}:
+        return "visual QA 通过但未在 PDF 文本中找到目录；打开导出的 PDF 核对目录页，缺失时检查 TOC 生成或 Word 字段更新后重跑 visual QA。"
+    if warning_codes & {"MANY_BLANK_PAGE_IMAGES"}:
+        return "visual QA 通过但全页 PNG 样张中有较多疑似空白页；打开 visual_qa/samples/ 和 all_pages 核对，异常时修复分页或 PDF 渲染后重跑 visual QA。"
+    if warning_codes & {"GOLDEN_BASELINE_MISSING"}:
+        return "visual QA 通过但缺少黄金基线；首次建立视觉基线时可用 --update-golden 生成，若不需要基线则取消 golden 参数后重跑 visual QA。"
+    if warning_codes & {"WPS_EXPORT_UNAVAILABLE"}:
+        return "visual QA 通过但 WPS 交叉渲染不可用；需要 WPS 校验时安装/配置 WPS COM，否则可忽略该 warning 或取消 --require-wps 后重跑 visual QA。"
+    if warning_codes:
+        return "visual QA 通过但仍有 warning；打开 visual_report.md 按问题码确认是否影响交付，必要时修复后重跑 visual QA。"
     return "打开 visual_report.md 和 visual_qa/samples/，按页面样张定位排版问题后重跑流水线。"
 
 
