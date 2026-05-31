@@ -1194,6 +1194,49 @@ def pipeline_qa_writes_report_when_structural_dependency_missing() -> None:
 
 
 @case
+def pipeline_qa_writes_report_when_structural_checker_crashes() -> None:
+    work = new_workdir("pipeline_qa_structural_crash_report")
+    private_path = work / "private" / "qa_checker.py"
+    write_workflow_mode(
+        str(work),
+        mode="developer",
+        template_path=str(work / "Templates" / "template.docx"),
+        content_path=str(work / "Inputs" / "content.docx"),
+        run_qa=True,
+        qa_level="basic",
+        golden_dir=None,
+        update_golden=False,
+        require_wps=False,
+    )
+
+    def crashing_qa(out_dir, mode, output_docx_name):
+        raise RuntimeError(f"synthetic QA crash at {private_path}")
+
+    deps = QADependencies(
+        qa_check_and_write=crashing_qa,
+        conformance_check_and_write=None,
+        visual_check_and_write=None,
+        optional_import_detail=lambda name: "",
+    )
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        ok = run_qa_phases(str(work), mode="developer", output_docx_name="最终论文.docx", qa_level="basic", project_root=str(work), deps=deps)
+    output = buf.getvalue()
+    report = json.loads((work / "qa_report.json").read_text(encoding="utf-8"))
+    plan = json.loads((work / "qa_repair_plan.json").read_text(encoding="utf-8"))
+    report_text = json.dumps(report, ensure_ascii=False)
+    plan_text = json.dumps(plan, ensure_ascii=False)
+    assert_true(not ok, "structural QA crash should fail closed")
+    assert_true(report["issues"][0]["code"] == "STRUCTURAL_QA_FAILED", f"wrong structural crash issue: {report}")
+    assert_true(plan.get("resume_scope") == "full_pipeline", f"structural crash should route to full pipeline: {plan}")
+    assert_true("run_pipeline.py" in plan.get("resume_command", ""), f"structural crash should preserve a rerun command: {plan}")
+    assert_true("qa_checker.py" in plan.get("next_action", ""), f"structural crash plan lost concrete next action: {plan}")
+    assert_true(str(work) not in report_text and str(work) not in plan_text, "structural crash handoff leaked an absolute path")
+    assert_true("<PROJECT>" in report_text and "<PROJECT>" in plan_text, f"structural crash detail was not sanitized: {report} {plan}")
+    assert_true("qa_report.md" in output and "qa_repair_plan.md" in output, f"terminal output did not route to structural crash reports: {output}")
+
+
+@case
 def pipeline_qa_writes_report_when_conformance_dependency_missing() -> None:
     work = new_workdir("pipeline_qa_missing_conformance_report")
     raw_detail = f"missing module at {work / 'private' / 'qa_conformance.py'}"
@@ -1222,6 +1265,37 @@ def pipeline_qa_writes_report_when_conformance_dependency_missing() -> None:
 
 
 @case
+def pipeline_qa_writes_report_when_conformance_checker_crashes() -> None:
+    work = new_workdir("pipeline_qa_conformance_crash_report")
+    private_path = work / "private" / "qa_conformance.py"
+
+    def passing_qa(out_dir, mode, output_docx_name):
+        return {"passed": True, "issues": [], "counts": {}, "mode": mode, "repair_plan": {"steps": [], "passed": True}}
+
+    def crashing_conformance(out_dir, mode, output_docx_name, project_root):
+        raise RuntimeError(f"synthetic conformance crash at {private_path}")
+
+    deps = QADependencies(
+        qa_check_and_write=passing_qa,
+        conformance_check_and_write=crashing_conformance,
+        visual_check_and_write=None,
+        optional_import_detail=lambda name: "",
+    )
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        ok = run_qa_phases(str(work), mode="developer", output_docx_name="最终论文.docx", qa_level="strict", project_root=str(work), deps=deps)
+    output = buf.getvalue()
+    report = json.loads((work / "conformance_report.json").read_text(encoding="utf-8"))
+    report_text = json.dumps(report, ensure_ascii=False)
+    assert_true(not ok, "strict QA should fail closed when conformance checker crashes")
+    assert_true((work / "conformance_report.md").exists(), "conformance crash should write markdown report")
+    assert_true(report["issues"][0]["code"] == "CONFORMANCE_QA_FAILED", f"wrong conformance crash issue: {report}")
+    assert_true(str(work) not in report_text, "conformance crash report leaked an absolute path")
+    assert_true("<PROJECT>" in report_text, f"conformance crash report did not sanitize detail: {report}")
+    assert_true("conformance_report.md" in output, f"terminal output did not route to conformance crash report: {output}")
+
+
+@case
 def pipeline_qa_writes_report_when_visual_dependency_missing() -> None:
     work = new_workdir("pipeline_qa_missing_visual_report")
 
@@ -1246,6 +1320,40 @@ def pipeline_qa_writes_report_when_visual_dependency_missing() -> None:
     assert_true((work / "visual_report.md").exists(), "missing visual dependency should write markdown report")
     assert_true(report["issues"][0]["code"] == "VISUAL_QA_UNAVAILABLE", f"wrong dependency issue: {report}")
     assert_true("visual_report.md" in output, f"terminal output did not route to visual report: {output}")
+
+
+@case
+def pipeline_qa_writes_report_when_visual_checker_crashes() -> None:
+    work = new_workdir("pipeline_qa_visual_crash_report")
+    private_path = work / "private" / "qa_visual.py"
+
+    def passing_qa(out_dir, mode, output_docx_name):
+        return {"passed": True, "issues": [], "counts": {}, "mode": mode, "repair_plan": {"steps": [], "passed": True}}
+
+    def passing_conformance(out_dir, mode, output_docx_name, project_root):
+        return {"passed": True, "issues": [], "counts": {}, "next_action": "ok"}
+
+    def crashing_visual(out_dir, output_docx_name, project_root, render_all_pages, require_wps, golden_dir, update_golden):
+        raise RuntimeError(f"synthetic visual crash at {private_path}")
+
+    deps = QADependencies(
+        qa_check_and_write=passing_qa,
+        conformance_check_and_write=passing_conformance,
+        visual_check_and_write=crashing_visual,
+        optional_import_detail=lambda name: "",
+    )
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        ok = run_qa_phases(str(work), mode="developer", output_docx_name="最终论文.docx", qa_level="visual", project_root=str(work), deps=deps)
+    output = buf.getvalue()
+    report = json.loads((work / "visual_report.json").read_text(encoding="utf-8"))
+    report_text = json.dumps(report, ensure_ascii=False)
+    assert_true(not ok, "visual QA should fail closed when visual checker crashes")
+    assert_true((work / "visual_report.md").exists(), "visual crash should write markdown report")
+    assert_true(report["issues"][0]["code"] == "VISUAL_QA_FAILED", f"wrong visual crash issue: {report}")
+    assert_true(str(work) not in report_text, "visual crash report leaked an absolute path")
+    assert_true("<PROJECT>" in report_text, f"visual crash report did not sanitize detail: {report}")
+    assert_true("visual_report.md" in output, f"terminal output did not route to visual crash report: {output}")
 
 
 @case

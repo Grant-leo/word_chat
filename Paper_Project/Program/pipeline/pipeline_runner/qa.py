@@ -37,6 +37,10 @@ def _optional_detail(deps: QADependencies, name: str, project_root=None) -> str:
     return str(_safe_report_value(deps.optional_import_detail(name), project_root) or "")
 
 
+def _exception_detail(exc: Exception, project_root=None) -> str:
+    return str(_safe_report_value(f"{exc.__class__.__name__}: {exc}", project_root) or "")
+
+
 def _issue_counts(report):
     issues = report.get("issues") or []
     error_count = sum(1 for item in issues if item.get("severity") == "error")
@@ -166,34 +170,48 @@ def _workflow_resume_command(out_dir, fallback_mode):
     return " ".join(_quote_command_arg(arg) for arg in args)
 
 
-def _write_structural_dependency_handoff(out_dir, *, mode, detail, project_root=None):
+def _write_structural_dependency_handoff(
+    out_dir,
+    *,
+    mode,
+    detail,
+    project_root=None,
+    code="STRUCTURAL_QA_UNAVAILABLE",
+    message=None,
+    title=None,
+    why=None,
+    user_action=None,
+    developer_action=None,
+    next_action=None,
+):
     detail = _safe_report_value(detail, project_root)
     output_dir_name = os.path.basename(os.path.abspath(out_dir))
     resume_command = _workflow_resume_command(out_dir, mode)
-    next_action = (
-        "结构 QA 无法运行。先修复 qa_checker.py 或 qa_checker_modules 的导入/依赖，"
-        "然后重新运行完整流水线；先查看 qa_report.md 和 qa_repair_plan.md。"
-    )
+    if next_action is None:
+        next_action = (
+            "结构 QA 无法运行。先修复 qa_checker.py 或 qa_checker_modules 的导入/依赖，"
+            "然后重新运行完整流水线；先查看 qa_report.md 和 qa_repair_plan.md。"
+        )
     if resume_command:
         next_action = f"{next_action} 修复后运行：`{resume_command}`"
     issue = {
-        "code": "STRUCTURAL_QA_UNAVAILABLE",
+        "code": code,
         "severity": "error",
-        "message": "Required structural QA is unavailable, so the pipeline cannot prove this DOCX is safe to deliver.",
+        "message": message or "Required structural QA is unavailable, so the pipeline cannot prove this DOCX is safe to deliver.",
         "detail": detail,
         "active_owner": "Paper_Project/Program/pipeline/qa_checker.py / qa_checker_modules",
     }
     step = {
         "code": issue["code"],
         "severity": "error",
-        "title": "结构 QA 不可用",
-        "why": "qa_checker.py 是必备结构 QA；缺失时不能把本轮输出标记为已通过。",
+        "title": title or "结构 QA 不可用",
+        "why": why or "qa_checker.py 是必备结构 QA；缺失时不能把本轮输出标记为已通过。",
         "detail": detail,
         "counts": {},
         "auto_level": "dependency_repair",
         "target": issue["active_owner"],
-        "user_action": "让 Agent 修复结构 QA 依赖后重跑完整流水线；不要把这次输出当作已通过。",
-        "developer_action": "检查 qa_checker.py、qa_checker_modules 的导入错误和 Python 依赖，修复后重跑完整 regression 与真实流水线。",
+        "user_action": user_action or "让 Agent 修复结构 QA 依赖后重跑完整流水线；不要把这次输出当作已通过。",
+        "developer_action": developer_action or "检查 qa_checker.py、qa_checker_modules 的导入错误和 Python 依赖，修复后重跑完整 regression 与真实流水线。",
     }
     plan = {
         "schema_version": 1,
@@ -323,7 +341,27 @@ def run_qa_phases(
         _print_failed_report_hint(qa_report, failed_reports)
         return False
 
-    qa_report = deps.qa_check_and_write(out_dir, mode=mode, output_docx_name=output_docx_name)
+    try:
+        qa_report = deps.qa_check_and_write(out_dir, mode=mode, output_docx_name=output_docx_name)
+    except Exception as exc:
+        detail = _exception_detail(exc, project_root)
+        print(f"  [ERROR] 结构 QA 执行中断，已写出 qa_report.md / qa_repair_plan.md。{detail}")
+        qa_report = _write_structural_dependency_handoff(
+            out_dir,
+            mode=mode,
+            detail=detail,
+            project_root=project_root,
+            code="STRUCTURAL_QA_FAILED",
+            message="Structural QA crashed before it could finish, so the pipeline cannot prove this DOCX is safe to deliver.",
+            title="结构 QA 执行失败",
+            why="qa_checker.py 运行中抛出异常；不能把本轮输出标记为已通过。",
+            user_action="让 Agent 先查看 qa_report.md 和 qa_repair_plan.md，修复 qa_checker.py / qa_checker_modules 后重跑完整流水线；不要把这次输出当作已通过。",
+            developer_action="检查 qa_checker.py / qa_checker_modules 的异常堆栈、输入报告和依赖状态，修复后重跑 targeted regression、完整 regression 与真实流水线。",
+            next_action="结构 QA 运行中断。先修复 qa_checker.py / qa_checker_modules 的异常，再重新运行完整流水线；先查看 qa_report.md 和 qa_repair_plan.md。",
+        )
+        failed_reports.append(("Structural QA", "qa_report.md / qa_repair_plan.md", qa_report))
+        _print_failed_report_hint(qa_report, failed_reports)
+        return False
     print_contract_issues("qa_report.json", validate_qa_report(qa_report))
     _print_report_summary("QA", qa_report, show_owner=True)
     print("  [OK] QA 报告 -> qa_report.json / qa_report.md")
@@ -348,12 +386,29 @@ def run_qa_phases(
             failed_reports.append(("Conformance QA", "conformance_report.md", conformance))
             _print_failed_report_hint(qa_report, failed_reports)
             return False
-        conformance = deps.conformance_check_and_write(
-            out_dir,
-            mode=mode,
-            output_docx_name=output_docx_name,
-            project_root=project_root,
-        )
+        try:
+            conformance = deps.conformance_check_and_write(
+                out_dir,
+                mode=mode,
+                output_docx_name=output_docx_name,
+                project_root=project_root,
+            )
+        except Exception as exc:
+            detail = _exception_detail(exc, project_root)
+            print(f"  [ERROR] strict conformance QA 执行中断，已写出 conformance_report.md。{detail}")
+            conformance = _write_dependency_report(
+                out_dir,
+                report_name="conformance_report",
+                mode=mode,
+                code="CONFORMANCE_QA_FAILED",
+                message="strict conformance QA crashed before it could finish.",
+                detail=detail,
+                next_action="strict conformance QA 运行中断。先修复 qa_conformance.py / qa_conformance_modules 的异常后重跑；先查看 conformance_report.md。",
+                project_root=project_root,
+            )
+            failed_reports.append(("Conformance QA", "conformance_report.md", conformance))
+            _print_failed_report_hint(qa_report, failed_reports)
+            return False
         _print_report_summary("Conformance QA", conformance, report_file="conformance_report.md")
         print("  [OK] strict conformance QA -> conformance_report.json / conformance_report.md")
         if not conformance.get("passed"):
@@ -378,15 +433,32 @@ def run_qa_phases(
             _print_failed_report_hint(qa_report, failed_reports)
             return False
         resolved_golden_dir = os.path.abspath(golden_dir) if golden_dir else None
-        visual = deps.visual_check_and_write(
-            out_dir,
-            output_docx_name=output_docx_name,
-            project_root=project_root,
-            render_all_pages=True,
-            require_wps=bool(require_wps),
-            golden_dir=resolved_golden_dir,
-            update_golden=bool(update_golden),
-        )
+        try:
+            visual = deps.visual_check_and_write(
+                out_dir,
+                output_docx_name=output_docx_name,
+                project_root=project_root,
+                render_all_pages=True,
+                require_wps=bool(require_wps),
+                golden_dir=resolved_golden_dir,
+                update_golden=bool(update_golden),
+            )
+        except Exception as exc:
+            detail = _exception_detail(exc, project_root)
+            print(f"  [ERROR] visual QA 执行中断，已写出 visual_report.md。{detail}")
+            visual = _write_dependency_report(
+                out_dir,
+                report_name="visual_report",
+                mode=mode,
+                code="VISUAL_QA_FAILED",
+                message="visual QA crashed before it could finish.",
+                detail=detail,
+                next_action="visual QA 运行中断。先修复 qa_visual.py / qa_visual_modules、Word COM 或 Poppler 渲染异常后重跑；先查看 visual_report.md。",
+                project_root=project_root,
+            )
+            failed_reports.append(("Visual QA", "visual_report.md", visual))
+            _print_failed_report_hint(qa_report, failed_reports)
+            return False
         _print_report_summary("Visual QA", visual, report_file="visual_report.md")
         print("  [OK] PDF 渲染 QA -> visual_report.json / visual_report.md")
         if not visual.get("passed"):

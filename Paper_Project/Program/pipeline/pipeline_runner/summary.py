@@ -16,8 +16,10 @@ REPORT_LABELS = {key: label for key, label, _json_name, _md_name in REPORT_SPECS
 
 REPORT_ISSUE_ACTIONS = {
     "STRUCTURAL_QA_UNAVAILABLE": "修复结构 QA 依赖后重跑完整流水线；先查看 {report_path} 和 qa_repair_plan.md，确认 qa_checker.py / qa_checker_modules 的导入错误。",
+    "STRUCTURAL_QA_FAILED": "结构 QA 运行中断；先查看 {report_path} 和 qa_repair_plan.md，修复 qa_checker.py / qa_checker_modules 的异常后重跑完整流水线。",
     "CONFORMANCE_INPUT_MISSING": "重新运行完整流水线，确认 format.json、content.json、build_manifest.json 和最终 DOCX 都已生成；若仍失败，打开 {report_path} 查看缺失项。",
     "CONFORMANCE_QA_UNAVAILABLE": "修复 strict conformance QA 依赖后重跑；先查看 {report_path} 里的缺失模块或导入错误。",
+    "CONFORMANCE_QA_FAILED": "strict conformance QA 运行中断；先查看 {report_path}，修复 qa_conformance.py / qa_conformance_modules 的异常后重跑 strict QA。",
     "DOCX_XML_UNREADABLE": "先确认最终 DOCX 能用 Word/WPS 正常打开；如果文件损坏，让 Agent 重新生成最终论文后再重跑 strict QA。",
     "PAGE_GEOMETRY_MISMATCH": "打开 {report_path} 查看页边距/纸张 detail，确认模板页面设置后重跑 strict QA。",
     "CONTENT_PARAGRAPH_MISSING": "对照 内容提取.md 和最终 DOCX 找缺失段落；普通用户先让 Agent 修本次 build_generated.py，开发者再检查正文遍历引擎并重跑 strict QA。",
@@ -34,6 +36,7 @@ REPORT_ISSUE_ACTIONS = {
     "WORD_FIELD_ERROR": "最终 DOCX 里还残留 Word 域错误；更新/修复目录、交叉引用或页码字段后重跑 strict QA。",
     "MISSING_DOCX": "先修复构建阶段，确保最终论文 DOCX 生成后再运行 visual QA。",
     "VISUAL_QA_UNAVAILABLE": "修复 visual QA 依赖后重跑；先查看 {report_path}，确认 Word COM 和 Poppler 工具是否可用。",
+    "VISUAL_QA_FAILED": "visual QA 运行中断；先查看 {report_path}，修复 qa_visual.py / qa_visual_modules、Word COM 或 Poppler 渲染异常后重跑 visual QA。",
     "PDF_EXPORT_FAILED": "先确认最终 DOCX 能用 Word 打开，再修复 Word COM/PDF 导出环境并重跑 visual QA。",
     "PDFINFO_UNAVAILABLE": "安装或修复 Poppler 命令行工具（pdfinfo、pdftotext、pdftoppm）后重跑 visual QA。",
     "PDFINFO_FAILED": "打开 visual_report.md 查看 pdfinfo 错误；修复 PDF 导出文件或 Poppler 环境后重跑 visual QA。",
