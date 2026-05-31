@@ -156,7 +156,7 @@ def write_format_blocker_report_if_needed(fmt_json_path, out_dir, *, mode):
         )
 
     run_format_checks({"format": fmt_json_path}, counts, add)
-    blocking_codes = {"PDF_TEMPLATE_UNSUPPORTED", "PDF_TEMPLATE_DEPENDENCY_MISSING"}
+    blocking_codes = {"PDF_TEMPLATE_UNSUPPORTED", "PDF_TEMPLATE_READ_FAILED", "PDF_TEMPLATE_DEPENDENCY_MISSING"}
     if not any(item.get("severity") == "error" and item.get("code") in blocking_codes for item in issues):
         return None
 

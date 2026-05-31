@@ -3,9 +3,16 @@ from __future__ import annotations
 REPAIR_GUIDES = {
     "PDF_TEMPLATE_UNSUPPORTED": {
         "title": "PDF 模板无法可靠提取",
-        "why": "该 PDF 没有可复制文字，或本机缺少 Poppler 的 pdfinfo/pdftotext，流水线无法从中提取可用格式信息。",
+        "why": "该 PDF 没有可复制文字，流水线无法从中提取可用格式信息。",
         "user_action": "优先提供 DOCX 模板；如果只有 PDF，请提供文字说明版 PDF，或先用 OCR 把扫描件转成可复制文字后重新运行。",
         "developer_action": "检查 `format_extractor_modules/pdf_template.py` 的 Poppler 探测、文本抽取和扫描件错误上报。",
+        "auto_level": "needs_user_file",
+    },
+    "PDF_TEMPLATE_READ_FAILED": {
+        "title": "PDF 模板文件无法读取",
+        "why": "Poppler 工具已经被找到，但 `pdfinfo` 或 `pdftotext` 无法读取该 PDF。常见原因是 PDF 文件损坏、导出不完整、受保护，或不是标准 PDF。",
+        "user_action": "先用 PDF 阅读器打开模板确认文件不是损坏件；如果打不开或内容异常，请从原始文档重新导出一个可正常打开、可复制文字的 PDF，或改用 DOCX 模板后重新运行。",
+        "developer_action": "检查 `format_extractor_modules/pdf_template.py` 捕获的 PDFINFO_FAILED / PDFTOTEXT_FAILED 细节，确认不是 Poppler 版本或命令参数问题。",
         "auto_level": "needs_user_file",
     },
     "PDF_TEMPLATE_DEPENDENCY_MISSING": {

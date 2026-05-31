@@ -115,6 +115,11 @@ def _risk_flags(fmt: Dict[str, Any], text_blob: str) -> Dict[str, Any]:
     floating = any("anchor" in str(node).lower() for node in all_nodes)
     textbox = any("textbox" in str(node).lower() or "txbx" in str(node).lower() for node in all_nodes)
     pdf_meta = (fmt.get("_meta") or {}).get("pdf_template") or {}
+    pdf_warnings = [str(item) for item in (pdf_meta.get("warnings") or [])]
+    pdf_dependency_missing = any(item.startswith(("PDFINFO_MISSING", "PDFTOTEXT_MISSING")) for item in pdf_warnings)
+    pdf_read_failed = any(item.startswith(("PDFINFO_FAILED", "PDFTOTEXT_FAILED")) for item in pdf_warnings)
+    pdf_unsupported = bool(pdf_meta.get("errors")) or pdf_meta.get("type") == "scanned_or_unsupported_pdf"
+    pdf_unsupported = bool(pdf_unsupported and not pdf_dependency_missing and not pdf_read_failed)
     return {
         "complex_cover": len(cover) > 20,
         "uses_textbox": textbox,
@@ -123,7 +128,9 @@ def _risk_flags(fmt: Dict[str, Any], text_blob: str) -> Dict[str, Any]:
         "many_template_tables": len(fmt.get("tables") or []) > 8,
         "pdf_template": bool(pdf_meta),
         "pdf_template_limited_confidence": bool(pdf_meta.get("warnings")) or pdf_meta.get("type") == "visual_sample_pdf",
-        "pdf_template_unsupported": bool(pdf_meta.get("errors")) or pdf_meta.get("type") == "scanned_or_unsupported_pdf",
+        "pdf_template_dependency_missing": bool(pdf_dependency_missing),
+        "pdf_template_read_failed": bool(pdf_read_failed and (pdf_meta.get("errors") or int(pdf_meta.get("text_chars") or 0) == 0)),
+        "pdf_template_unsupported": pdf_unsupported,
         "mentions_formula_rules": bool(re.search(r"(公式|formula)", text_blob, re.I)),
         "mentions_reference_rules": bool(re.search(r"(参考文献|references?)", text_blob, re.I)),
     }

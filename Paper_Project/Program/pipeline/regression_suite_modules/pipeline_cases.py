@@ -1280,6 +1280,11 @@ def pipeline_blocks_scanned_pdf_template_before_generation() -> None:
     codes = {item.get("code") for item in report.get("issues") or []}
     assert_true("PDF_TEMPLATE_UNSUPPORTED" in codes, f"scanned PDF blocker should report PDF_TEMPLATE_UNSUPPORTED: {report}")
     assert_true("PDF_TEMPLATE_UNSUPPORTED" in report.get("next_action", ""), f"qa_report should name the PDF issue in next_action: {report}")
+    profile = json.loads((out_dir / "template_profile.json").read_text(encoding="utf-8"))
+    risks = profile.get("risk_flags") or {}
+    assert_true(risks.get("pdf_template_unsupported") is True, f"scanned PDF should keep the unsupported risk flag: {profile}")
+    assert_true(not risks.get("pdf_template_read_failed"), f"scanned PDF should not be mislabeled as read failed: {profile}")
+    assert_true(not risks.get("pdf_template_dependency_missing"), f"scanned PDF should not be mislabeled as dependency missing: {profile}")
     plan = json.loads((out_dir / "qa_repair_plan.json").read_text(encoding="utf-8"))
     assert_true(plan.get("resume_scope") == "input_files", f"scanned PDF should route users to replace/OCR the template: {plan}")
     assert_true("DOCX" in plan.get("next_action", "") or "OCR" in plan.get("next_action", ""), f"scanned PDF next action should name DOCX/OCR route: {plan}")
@@ -1341,12 +1346,73 @@ def pipeline_blocks_pdf_template_when_poppler_missing_with_dependency_guidance()
     codes = {item.get("code") for item in report.get("issues") or []}
     assert_true("PDF_TEMPLATE_DEPENDENCY_MISSING" in codes, f"missing Poppler should have a dependency-specific code: {report}")
     assert_true("Poppler" in report.get("next_action", "") and "重跑" in report.get("next_action", ""), f"qa_report should tell users to fix Poppler and rerun: {report}")
+    profile = json.loads((out_dir / "template_profile.json").read_text(encoding="utf-8"))
+    risks = profile.get("risk_flags") or {}
+    assert_true(risks.get("pdf_template_dependency_missing") is True, f"missing Poppler should have a dependency risk flag: {profile}")
+    assert_true(not risks.get("pdf_template_read_failed"), f"missing Poppler should not be mislabeled as read failed: {profile}")
+    assert_true(not risks.get("pdf_template_unsupported"), f"missing Poppler should not be mislabeled as unsupported: {profile}")
     plan = json.loads((out_dir / "qa_repair_plan.json").read_text(encoding="utf-8"))
     assert_true(plan.get("resume_scope") == "environment", f"missing Poppler should route to environment repair: {plan}")
     assert_true("Poppler" in plan.get("next_action", "") and plan.get("resume_command"), f"repair plan should keep a rerun command after Poppler repair: {plan}")
     summary = json.loads((out_dir / "agent_summary.json").read_text(encoding="utf-8"))
     action_text = "\n".join(summary.get("next_actions") or summary.get("manual_check_required") or [])
     assert_true("PDF_TEMPLATE_DEPENDENCY_MISSING" in action_text and "Poppler" in action_text, f"agent summary lost Poppler repair guidance: {summary}")
+
+
+@case
+def pipeline_blocks_corrupt_pdf_template_with_read_failure_guidance() -> None:
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    import run_pipeline as root_runner
+
+    work = new_workdir("pipeline_corrupt_pdf_template_blocker")
+    template_dir = work / "Templates"
+    inputs_dir = work / "Inputs"
+    outputs_dir = work / "Outputs"
+    template_dir.mkdir()
+    inputs_dir.mkdir()
+    outputs_dir.mkdir()
+
+    (template_dir / "damaged_template.pdf").write_bytes(b"%PDF-1.4\nnot a complete pdf\n")
+
+    content_doc = Document()
+    content_doc.add_heading("Corrupt PDF Template Demo", level=0)
+    content_doc.add_paragraph("This body should not be processed while the PDF template is unreadable.")
+    content_doc.save(inputs_dir / "paper.docx")
+
+    old_dirs = (root_runner.TEMPLATE_DIR, root_runner.INPUTS_DIR, root_runner.OUTPUTS_DIR)
+    try:
+        root_runner.TEMPLATE_DIR = str(template_dir)
+        root_runner.INPUTS_DIR = str(inputs_dir)
+        root_runner.OUTPUTS_DIR = str(outputs_dir)
+        result = root_runner.run("damaged_template.pdf", "paper.docx", mode="developer", qa_level="strict")
+    finally:
+        root_runner.TEMPLATE_DIR, root_runner.INPUTS_DIR, root_runner.OUTPUTS_DIR = old_dirs
+
+    assert_true(result is None, "corrupt PDF template should stop the pipeline before generation")
+    out_dirs = sorted(outputs_dir.iterdir())
+    assert_true(out_dirs, "corrupt PDF template should still create a report handoff directory")
+    out_dir = out_dirs[-1]
+    assert_true(not (out_dir / "build_generated.py").exists(), "corrupt PDF template should not generate build_generated.py")
+    assert_true(not (out_dir / "最终论文.docx").exists(), "corrupt PDF template should not build a misleading final DOCX")
+
+    report = json.loads((out_dir / "qa_report.json").read_text(encoding="utf-8"))
+    codes = {item.get("code") for item in report.get("issues") or []}
+    assert_true("PDF_TEMPLATE_READ_FAILED" in codes, f"corrupt PDF should have a read-failure code: {report}")
+    assert_true("PDF_TEMPLATE_UNSUPPORTED" not in codes, f"corrupt PDF should not be mislabeled as scanned/textless: {report}")
+    assert_true("PDF_TEMPLATE_READ_FAILED" in report.get("next_action", ""), f"qa_report should name the PDF read issue: {report}")
+    profile = json.loads((out_dir / "template_profile.json").read_text(encoding="utf-8"))
+    risks = profile.get("risk_flags") or {}
+    assert_true(risks.get("pdf_template_read_failed") is True, f"corrupt PDF should have a read-failure risk flag: {profile}")
+    assert_true(not risks.get("pdf_template_dependency_missing"), f"corrupt PDF should not be mislabeled as dependency missing: {profile}")
+    assert_true(not risks.get("pdf_template_unsupported"), f"corrupt PDF should not be mislabeled as scanned/textless: {profile}")
+    plan = json.loads((out_dir / "qa_repair_plan.json").read_text(encoding="utf-8"))
+    assert_true(plan.get("resume_scope") == "input_files", f"corrupt PDF should route users to replace/re-export the template: {plan}")
+    assert_true("重新导出" in plan.get("next_action", "") or "可正常打开" in plan.get("next_action", ""), f"corrupt PDF next action should name re-export/openable-PDF route: {plan}")
+    assert_true("OCR" not in plan.get("next_action", ""), f"corrupt PDF should not tell users to OCR as the primary route: {plan}")
+    summary = json.loads((out_dir / "agent_summary.json").read_text(encoding="utf-8"))
+    action_text = "\n".join(summary.get("next_actions") or summary.get("manual_check_required") or [])
+    assert_true("PDF_TEMPLATE_READ_FAILED" in action_text and ("重新导出" in action_text or "可正常打开" in action_text), f"agent summary lost corrupt-PDF next step: {summary}")
 
 
 @case
