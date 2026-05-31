@@ -6,12 +6,25 @@ import os
 from typing import Any, Dict
 
 
+def _has_warning_items(items: list[Dict[str, Any]]) -> bool:
+    return any(item.get("severity") == "warning" for item in items or [])
+
+
+def _result_label(passed: bool, has_warnings: bool, *, passed_text: str, failed_text: str) -> str:
+    if not passed:
+        return failed_text
+    if has_warnings:
+        return f"{passed_text}但有警告"
+    return passed_text
+
+
 def report_to_markdown(report: Dict[str, Any]) -> str:
+    issues = report.get("issues") or []
     lines = [
         "# QA 检测报告",
         "",
         f"- 模式：`{report.get('mode')}`",
-        f"- 结果：{'通过' if report.get('passed') else '未通过'}",
+        f"- 结果：{_result_label(bool(report.get('passed')), _has_warning_items(issues), passed_text='通过', failed_text='未通过')}",
         f"- 输出目录：`{report.get('output_dir_name')}`",
         f"- 下一步：{report.get('next_action')}",
         "",
@@ -26,7 +39,6 @@ def report_to_markdown(report: Dict[str, Any]) -> str:
         lines.append("- 无统计信息")
 
     lines.extend(["", "## 问题", ""])
-    issues = report.get("issues") or []
     if not issues:
         lines.append("- 未发现结构性问题。")
     else:
@@ -61,10 +73,12 @@ def report_to_markdown(report: Dict[str, Any]) -> str:
 
 
 def repair_plan_to_markdown(plan: Dict[str, Any]) -> str:
+    steps = plan.get("steps") or []
+    has_warnings = int(plan.get("warnings") or 0) > 0 or _has_warning_items(steps)
     lines = [
         "# QA 修复向导",
         "",
-        f"- 结果：{'已通过' if plan.get('passed') else '需要修复'}",
+        f"- 结果：{_result_label(bool(plan.get('passed')), has_warnings, passed_text='已通过', failed_text='需要修复')}",
         f"- 摘要：{plan.get('summary') or ''}",
         f"- 输出目录：`{plan.get('output_dir') or ''}`",
         "",
@@ -91,7 +105,6 @@ def repair_plan_to_markdown(plan: Dict[str, Any]) -> str:
         lines.append(f"- 修改 `build_generated.py` 后只重建当前 DOCX：`{commands.get('rebuild_current_docx')}`")
     if not commands.get("rerun_current_pipeline") and not commands.get("rebuild_current_docx"):
         lines.append("- 暂无可自动推断的命令。")
-    steps = plan.get("steps") or []
     lines.extend(["", "## 修复步骤", ""])
     if not steps:
         lines.append("- 当前没有 QA 问题。")

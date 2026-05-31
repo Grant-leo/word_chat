@@ -18,6 +18,18 @@ def _write_json(path: str, value: Dict[str, Any]) -> None:
         json.dump(value, f, ensure_ascii=False, indent=2)
 
 
+def _has_warnings(issues: List[Dict[str, Any]]) -> bool:
+    return any(item.get("severity") == "warning" for item in issues or [])
+
+
+def _result_label(passed: bool, issues: List[Dict[str, Any]]) -> str:
+    if not passed:
+        return "未通过"
+    if _has_warnings(issues):
+        return "通过但有警告"
+    return "通过"
+
+
 def _ordered_codes(issues: List[Dict[str, Any]], severity: str) -> List[str]:
     codes: List[str] = []
     seen = set()
@@ -85,10 +97,11 @@ def build_report(
 
 
 def report_to_markdown(report: Dict[str, Any]) -> str:
+    issues = report.get("issues") or []
     lines = [
         "# DOCX/XML 合规 QA 报告",
         "",
-        f"- 结果：{'通过' if report.get('passed') else '未通过'}",
+        f"- 结果：{_result_label(bool(report.get('passed')), issues)}",
         f"- 模式：`{report.get('mode')}`",
         f"- 输出目录：`{report.get('output_dir_name')}`",
         f"- 下一步：{report.get('next_action')}",
@@ -99,10 +112,10 @@ def report_to_markdown(report: Dict[str, Any]) -> str:
     for key, value in sorted((report.get("counts") or {}).items()):
         lines.append(f"- `{key}`: {value}")
     lines.extend(["", "## 问题", ""])
-    if not report.get("issues"):
+    if not issues:
         lines.append("- 自动合规检查未发现问题。")
     else:
-        for item in report.get("issues") or []:
+        for item in issues:
             lines.append(f"- **{item.get('severity')}** `{item.get('code')}`: {item.get('message')}")
             if item.get("detail"):
                 lines.append(f"  细节：`{item.get('detail')}`")

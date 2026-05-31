@@ -6,11 +6,24 @@ import os
 from typing import Any, Dict
 
 
+def _has_warnings(issues: list[Dict[str, Any]]) -> bool:
+    return any(item.get("severity") == "warning" for item in issues or [])
+
+
+def _result_label(passed: bool, issues: list[Dict[str, Any]]) -> str:
+    if not passed:
+        return "未通过"
+    if _has_warnings(issues):
+        return "通过但有警告"
+    return "通过"
+
+
 def report_to_markdown(report: Dict[str, Any]) -> str:
+    issues = report.get("issues") or []
     lines = [
         "# 视觉 QA 报告",
         "",
-        f"- 结果：{'通过' if report.get('passed') else '未通过'}",
+        f"- 结果：{_result_label(bool(report.get('passed')), issues)}",
         f"- 输出目录：`{report.get('output_dir_name')}`",
         f"- 下一步：{report.get('next_action') or '打开最终 DOCX 和 PDF/PNG 渲染样张，检查视觉问题。'}",
         "",
@@ -31,7 +44,6 @@ def report_to_markdown(report: Dict[str, Any]) -> str:
         for issue in golden.get("issues") or []:
             lines.append(f"- `issue`: {issue}")
     lines.extend(["", "## 问题", ""])
-    issues = report.get("issues") or []
     if not issues:
         lines.append("- 自动视觉检查未发现问题。")
     else:

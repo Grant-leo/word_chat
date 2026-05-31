@@ -1217,6 +1217,53 @@ def pipeline_strict_and_visual_reports_surface_specific_next_actions() -> None:
 
 
 @case
+def pipeline_warning_only_markdown_result_labels_are_explicit() -> None:
+    from qa_checker_modules.reports import (
+        repair_plan_to_markdown as structural_repair_markdown,
+        report_to_markdown as structural_report_markdown,
+    )
+    from qa_conformance_modules.reports import report_to_markdown as conformance_report_markdown
+    from qa_visual_modules.reports import report_to_markdown as visual_report_markdown
+
+    structural_report = {
+        "mode": "user",
+        "passed": True,
+        "output_dir_name": "demo",
+        "next_action": "优先处理 `REFERENCES_MISSING`。",
+        "issues": [{"code": "REFERENCES_MISSING", "severity": "warning", "message": "references missing"}],
+        "counts": {},
+    }
+    structural_plan = {
+        "passed": True,
+        "warnings": 1,
+        "summary": "QA 没有阻断错误，但发现 1 个警告。",
+        "output_dir": "Outputs/demo",
+        "next_action": "优先处理 `REFERENCES_MISSING`。",
+        "steps": [{"code": "REFERENCES_MISSING", "severity": "warning", "title": "没有识别到参考文献"}],
+    }
+    conformance_report = {
+        "passed": True,
+        "mode": "user",
+        "output_dir_name": "demo",
+        "next_action": "strict 合规 QA 没有阻断错误，但有警告 `STYLE_MISMATCH` 需要人工确认。",
+        "issues": [{"code": "STYLE_MISMATCH", "severity": "warning", "message": "style needs review"}],
+        "counts": {},
+    }
+    visual_report = {
+        "passed": True,
+        "output_dir_name": "demo",
+        "next_action": "黄金基线缺失；首次建立视觉基线时可用 --update-golden 生成。",
+        "issues": [{"code": "GOLDEN_BASELINE_MISSING", "severity": "warning", "message": "no baseline"}],
+        "counts": {},
+    }
+
+    assert_true("- 结果：通过但有警告" in structural_report_markdown(structural_report), "structural warning-only report should label pass-with-warning")
+    assert_true("- 结果：已通过但有警告" in structural_repair_markdown(structural_plan), "structural warning-only repair plan should label pass-with-warning")
+    assert_true("- 结果：通过但有警告" in conformance_report_markdown(conformance_report), "strict warning-only report should label pass-with-warning")
+    assert_true("- 结果：通过但有警告" in visual_report_markdown(visual_report), "visual warning-only report should label pass-with-warning")
+
+
+@case
 def pipeline_summary_mentions_outputs_and_mode() -> None:
     summary = build_completion_summary("2026-05-27_demo", "最终论文.docx", "developer")
     assert_true("Outputs/2026-05-27_demo/" in summary, "output directory missing from completion summary")
