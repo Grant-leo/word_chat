@@ -1625,6 +1625,63 @@ def pipeline_agent_summary_surfaces_visual_warning_steps() -> None:
 
 
 @case
+def pipeline_agent_summary_markdown_labels_warning_reports_explicitly() -> None:
+    work = new_workdir("pipeline_agent_summary_warning_report_labels")
+    write_workflow_mode(
+        str(work),
+        mode="developer",
+        template_path="template.docx",
+        content_path="content.docx",
+        run_qa=True,
+        qa_level="visual",
+        golden_dir="TestData/GoldenBaselines",
+        update_golden=False,
+        require_wps=False,
+        auto_repair=False,
+        agent_auto=True,
+    )
+    (work / "最终论文.docx").write_bytes(b"synthetic")
+    write_json(
+        work / "qa_report.json",
+        {
+            "passed": True,
+            "issues": [{"code": "REFERENCES_MISSING", "severity": "warning", "message": "references missing"}],
+            "counts": {},
+            "next_action": "结构 QA 没有阻断错误，但有警告 `REFERENCES_MISSING` 需要人工确认。",
+        },
+    )
+    write_json(
+        work / "conformance_report.json",
+        {
+            "passed": True,
+            "issues": [{"code": "STYLE_MISMATCH", "severity": "warning", "message": "style needs review"}],
+            "counts": {},
+            "next_action": "strict 合规 QA 没有阻断错误，但有警告 `STYLE_MISMATCH` 需要人工确认。",
+        },
+    )
+    write_json(
+        work / "visual_report.json",
+        {
+            "passed": True,
+            "issues": [{"code": "GOLDEN_BASELINE_MISSING", "severity": "warning", "message": "no baseline"}],
+            "counts": {},
+            "next_action": "visual QA 通过但缺少黄金基线，需要人工确认。",
+        },
+    )
+
+    json_path, md_path = write_agent_summary(str(work), "2026-05-31_warning_labels", "最终论文.docx", "developer")
+    summary = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    text = Path(md_path).read_text(encoding="utf-8")
+
+    assert_true(summary["reports"]["structural"]["result_label"] == "通过但有警告", f"structural JSON label should flag warnings: {summary}")
+    assert_true(summary["reports"]["conformance"]["result_label"] == "通过但有警告", f"strict JSON label should flag warnings: {summary}")
+    assert_true(summary["reports"]["visual"]["result_label"] == "通过但有警告", f"visual JSON label should flag warnings: {summary}")
+    assert_true("结构 QA：通过但有警告" in text, f"structural summary line should not say plain pass: {text}")
+    assert_true("DOCX/XML 合规 QA：通过但有警告" in text, f"strict summary line should not say plain pass: {text}")
+    assert_true("视觉 QA：通过但有警告" in text, f"visual summary line should not say plain pass: {text}")
+
+
+@case
 def pipeline_agent_summary_localizes_manual_checks_and_skips_empty_warning_prompt() -> None:
     work = new_workdir("pipeline_agent_summary_manual_checks")
     write_workflow_mode(

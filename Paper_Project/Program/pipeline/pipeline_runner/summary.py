@@ -129,6 +129,16 @@ def _rel_output(folder_name, *parts):
     return "/".join(["Outputs", folder_name, *normalized_parts])
 
 
+def _report_result_label(*, exists, passed=None, warnings=0):
+    if not exists:
+        return "未生成"
+    if not passed:
+        return "未通过"
+    if int(warnings or 0) > 0:
+        return "通过但有警告"
+    return "通过"
+
+
 def _report_summary(out_dir, folder_name):
     reports = {}
     total_errors = 0
@@ -158,6 +168,11 @@ def _report_summary(out_dir, folder_name):
             "errors": errors,
             "warnings": warnings,
             "issues": total,
+            "result_label": _report_result_label(
+                exists=exists,
+                passed=bool(report.get("passed")) if exists else None,
+                warnings=warnings,
+            ),
             "report": report_path,
         }
     return reports, total_errors, total_warnings, next_actions
@@ -365,9 +380,13 @@ def _agent_summary_markdown(summary):
     lines.extend(["", "## QA 报告", ""])
     for report in summary["reports"].values():
         if not report["exists"]:
-            lines.append(f"- {report['label']}：未生成")
+            lines.append(f"- {report['label']}：{report.get('result_label') or '未生成'}")
             continue
-        result = "通过" if report["passed"] else "未通过"
+        result = report.get("result_label") or _report_result_label(
+            exists=True,
+            passed=report.get("passed"),
+            warnings=report.get("warnings") or 0,
+        )
         lines.append(
             f"- {report['label']}：{result}，错误 `{report['errors']}`，警告 `{report['warnings']}`，报告 `{report['report']}`"
         )
