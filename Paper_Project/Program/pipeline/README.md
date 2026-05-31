@@ -41,9 +41,10 @@ CLI, output, verification, and QA details in a focused package:
 
 Current baseline as of 2026-06-01:
 
-- Synthetic regression after the PDF-template visual-sample warning handoff fix: `214 passed, 0 failed`.
+- Synthetic regression after the Markdown remote-image handoff fix: `215 passed, 0 failed`.
 - Agent-first flow: `--agent-auto` scans local inputs, auto-selects only single candidates, defaults to user auto-repair, and writes `agent_summary.md/json`.
 - Novice interruption coverage: interactive cancellation/EOF, missing preflight inputs, generated-script build failures, QA dependency failures, and auto-repair blockers all route to a next action.
+- Markdown remote image handoff: remote `http://` / `https://` image URLs surface `CONTENT_IMAGE_REMOTE_UNSUPPORTED`, stop as user-file input blockers, and tell users to download the image locally and update the Markdown relative path before rerunning.
 - Content-summary coverage: `内容提取.md` renders structured `role="image"` items, including table-cell images, as `[图片]` instead of opaque `[结构化内容]`.
 - Output-boundary coverage: standalone/default `format_extractor`, `content_parser`, and `md_parser` outputs stay under `Outputs/_...` instead of beside private source files.
 - Controlled auto-repair loop regression: repairable build-script error, no-improvement stop, rebuild-failure stop, needs-user-file stop, strict/visual dependency failure, WPS page-count/page-size/text-page/sample-image visual blockers, visual option preservation, summary next-action promotion, and sanitized report paths passed.
@@ -106,7 +107,9 @@ while captions keep caption style.
 `md_parser_modules/` owns Markdown-specific helper rules behind `md_parser`:
 YAML/natural-language format extraction, inline/display math tokenization,
 front format-instruction stripping, Markdown image copying/missing-image
-metadata, UTF-8 BOM-safe YAML/front-format stripping, BOM/H1 and Setext `===` title detection, table parsing, and Markdown text cleanup.
+metadata, remote-image blocker metadata, UTF-8 BOM-safe YAML/front-format
+stripping, BOM/H1 and Setext `===` title detection, table parsing, and
+Markdown text cleanup.
 `content_extractor.py` owns Markdown content orchestration. The public
 Markdown entrypoints stay `extract_format` and `extract_content`.
 

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from md_parser import extract_content as extract_md_content
-from qa_checker import check_output
 
 from regression_suite_modules.generated_docx import run_generated_case
 from regression_suite_modules.harness import (
@@ -11,7 +10,6 @@ from regression_suite_modules.harness import (
     base_format,
     case,
     new_workdir,
-    write_json,
 )
 
 @case
@@ -267,13 +265,21 @@ def md_missing_images_are_reported_to_qa() -> None:
     assert_true(len(missing) == 2, f"missing image references were not recorded: {missing}")
     assert_true(any(isinstance(p, dict) and p.get("role") == "missing_image" for p in paragraphs), "missing image marker not preserved in content stream")
 
-    write_json(work / "content.json", content)
-    write_json(work / "format.json", base_format())
-    write_json(work / "workflow_mode.json", {"mode": "developer"})
-    report = check_output(str(work), mode="developer", output_docx_name="out.docx")
+    result = run_generated_case("md_missing_images_generated", content, base_format())
+    report = result["report"]
     codes = [item["code"] for item in report["issues"]]
     assert_true("CONTENT_IMAGE_MISSING" in codes, "QA did not report missing Markdown images")
+    assert_true("CONTENT_IMAGE_REMOTE_UNSUPPORTED" in codes, "QA did not give remote Markdown images their own beginner-facing code")
     assert_true(report["passed"] is False, "missing images should fail QA")
+    assert_true(
+        "CONTENT_IMAGE_REMOTE_UNSUPPORTED" in str(report.get("next_action") or ""),
+        f"remote image next_action did not name the actionable code: {report.get('next_action')}",
+    )
+    remote_step = next(
+        (step for step in (report.get("repair_plan") or {}).get("steps", []) if step.get("code") == "CONTENT_IMAGE_REMOTE_UNSUPPORTED"),
+        {},
+    )
+    assert_true("下载" in str(remote_step.get("user_action") or ""), f"remote image guide should tell users to download/localize the image: {remote_step}")
 
 
 @case

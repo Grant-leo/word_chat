@@ -346,7 +346,7 @@ When a user wants a document-specific feature:
 - QA/user-facing reports should prefer run-relative paths and avoid leaking absolute local paths.
 - PDF templates are best-effort format sources: instruction-style PDFs provide text rules, sparse instruction PDFs must surface missing-rule warnings, visual sample PDFs provide estimated geometry/styles and must surface `PDF_TEMPLATE_VISUAL_APPROXIMATION` for Word/WPS layout review, landscape PDFs must surface `PDF_TEMPLATE_LANDSCAPE_PAGE`, missing Poppler tools must surface `PDF_TEMPLATE_DEPENDENCY_MISSING`, protected/password or copy-restricted PDFs must surface `PDF_TEMPLATE_PROTECTED`, corrupt/unreadable PDFs must surface `PDF_TEMPLATE_READ_FAILED`, and scanned/textless PDFs must surface `PDF_TEMPLATE_UNSUPPORTED`.
 - `--qa-level visual` is the preferred delivery gate for developer/product checks. It requires Word COM for PDF export and Poppler tools (`pdfinfo`, `pdftotext`, `pdftoppm`) for page/text/sample checks. Missing required render tools fail visual QA.
-- Missing or remote Markdown images, and DOCX image extraction failures, must surface as QA errors rather than disappearing from `content.json`.
+- Missing local Markdown images must surface as `CONTENT_IMAGE_MISSING`; remote Markdown image URLs must surface as `CONTENT_IMAGE_REMOTE_UNSUPPORTED` with a next step to download the image locally and change the Markdown link to a local relative path. DOCX image extraction failures must also surface as QA errors rather than disappearing from `content.json`.
 - DOCX table-cell images must surface in the content image stream.
 - Header/footer images from the content source are non-body content and should surface as `NON_BODY_IMAGE_UNSUPPORTED` unless product behavior explicitly changes.
 - Chinese text needs `w:eastAsia` set; the generator handles this automatically.
@@ -354,7 +354,7 @@ When a user wants a document-specific feature:
 - Each pipeline run creates an independent `Outputs/<date>_<content>/` directory; same-day duplicates get `_2`, `_3`, etc.
 - Formulas should render as native OOXML Math. Check the generated docx XML for `<m:oMathPara>` / `<m:oMath>` when formula correctness matters.
 - Markdown `$...$` / `$$...$$` formulas in abstracts and body sections should render as native OOXML Math.
-- Markdown image paths resolve relative to the `.md` file first, then copy into the current output `figures/` folder.
+- Markdown image paths resolve relative to the `.md` file first, then copy into the current output `figures/` folder. Remote `http://` / `https://` image URLs are not downloaded automatically; users should save them locally and update the Markdown path before rerunning.
 - Markdown front format-instruction sections are format-only. They must be stripped from the content stream, including noisy/encoding-damaged headings followed by obvious format rules and a `---` delimiter.
 - `内容提取.md` should summarize images, tables, and formulas by their real roles, avoid duplicate image listings, and never display non-formula structured content as `[公式]`.
 - Caption detection should distinguish true captions from prose references: `图 1 xxx 示意图` can be a caption, while `图 1 展示了...` remains body text.

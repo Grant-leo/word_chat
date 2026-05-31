@@ -32,6 +32,7 @@ OWNER_BY_CODE = {
     "IMAGE_NOT_RENDERED": "content_parser.py / script_generator.py",
     "IMAGE_COUNT_MISMATCH": "content_parser.py / script_generator.py",
     "CONTENT_IMAGE_MISSING": "md_parser.py / content_parser.py",
+    "CONTENT_IMAGE_REMOTE_UNSUPPORTED": "md_parser.py / qa_checker.py",
     "IMAGE_EXTRACT_FAILED": "content_parser.py",
     "NON_BODY_IMAGE_UNSUPPORTED": "content_parser.py / script_generator.py",
     "LOW_RES_IMAGE_FRAGMENT": "content_parser.py / script_generator.py / qa_checker.py",

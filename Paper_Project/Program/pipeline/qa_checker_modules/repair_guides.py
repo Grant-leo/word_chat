@@ -78,6 +78,13 @@ REPAIR_GUIDES = {
         "developer_action": "检查 `md_parser.py` / `content_parser.py` 的图片路径解析。",
         "auto_level": "needs_user_file",
     },
+    "CONTENT_IMAGE_REMOTE_UNSUPPORTED": {
+        "title": "Markdown 远程图片不会自动下载",
+        "why": "Markdown 中使用了 http/https 等远程图片 URL。流水线为了避免联网、隐私和复现风险，不会自动下载远程图片。",
+        "user_action": "先把远程图片下载到 Markdown 文件同目录或 Inputs 相关资源目录，再把 Markdown 图片链接改成本地相对路径后重新运行流水线。",
+        "developer_action": "检查 `md_parser.py` 的远程图片识别和 `qa_checker_modules/content_phase.py` 的 remote missing-image 分流。",
+        "auto_level": "needs_user_file",
+    },
     "IMAGE_EXTRACT_FAILED": {
         "title": "DOCX 图片关系读取失败",
         "why": "源 DOCX 中有图片关系无法读取，通常和损坏图片、特殊嵌入对象或兼容模式有关。",

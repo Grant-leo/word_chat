@@ -57,12 +57,27 @@ def run_content_checks(out_dir: str, paths: Dict[str, str], counts: Dict[str, An
             counts["content_missing_images"] = len(missing_images)
             counts["content_image_extract_failures"] = len(image_failures)
             counts["content_non_body_images"] = len(non_body_images)
-            if missing_images:
+            remote_missing_images = [
+                item for item in missing_images
+                if isinstance(item, dict) and str(item.get("reason") or "").lower() == "remote"
+            ]
+            local_missing_images = [
+                item for item in missing_images
+                if not (isinstance(item, dict) and str(item.get("reason") or "").lower() == "remote")
+            ]
+            if remote_missing_images:
+                add(
+                    "CONTENT_IMAGE_REMOTE_UNSUPPORTED",
+                    "error",
+                    "Markdown 引用了远程图片 URL，流水线不会自动联网下载图片。",
+                    json.dumps(sanitize_value(remote_missing_images[:5], os.getcwd()), ensure_ascii=False),
+                )
+            if local_missing_images:
                 add(
                     "CONTENT_IMAGE_MISSING",
                     "error",
                     "内容中存在未能解析或复制的图片引用，最终文档会丢图。",
-                    json.dumps(sanitize_value(missing_images[:5], os.getcwd()), ensure_ascii=False),
+                    json.dumps(sanitize_value(local_missing_images[:5], os.getcwd()), ensure_ascii=False),
                 )
             if image_failures:
                 add(
