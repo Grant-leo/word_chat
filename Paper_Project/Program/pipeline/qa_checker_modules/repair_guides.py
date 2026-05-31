@@ -36,6 +36,13 @@ REPAIR_GUIDES = {
         "developer_action": "检查 `format_extractor_modules/pdf_template.py` 的文字说明角色识别和 `_instruction_missing_roles()` 规则是否过严或漏判。",
         "auto_level": "optional_user_input",
     },
+    "PDF_TEMPLATE_VISUAL_APPROXIMATION": {
+        "title": "PDF 视觉样张只能近似复刻",
+        "why": "该 PDF 看起来像已排版论文样张，不是文字规则说明，也不包含 Word 样式树。流水线只能按页面尺寸、文字位置、字号和行距估算格式。",
+        "user_action": "生成后请用 Word/WPS 打开最终 DOCX，重点核对视觉样张相关的页边距、标题层级、封面、页眉页脚、图表题注和参考文献版式；如果学校或期刊要求严格，请优先改用 DOCX 模板或补充文字说明模板后重跑。",
+        "developer_action": "检查 `format_extractor_modules/pdf_template.py` 的 visual_sample_pdf 分类、bbox 词元抽取、页面几何和样式画像估算是否合理。",
+        "auto_level": "manual_review",
+    },
     "PDF_TEMPLATE_LANDSCAPE_PAGE": {
         "title": "PDF 模板是横向页面",
         "why": "PDF 模板首页宽度大于高度。流水线会尽量继承页面尺寸，但横向模板最容易在 Word/WPS 中出现页面方向、页边距或目录分页差异。",

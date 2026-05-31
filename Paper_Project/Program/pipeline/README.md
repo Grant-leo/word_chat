@@ -41,7 +41,7 @@ CLI, output, verification, and QA details in a focused package:
 
 Current baseline as of 2026-06-01:
 
-- Synthetic regression after the PDF-template read-failure blocker fix: `211 passed, 0 failed`.
+- Synthetic regression after the PDF-template visual-sample warning handoff fix: `214 passed, 0 failed`.
 - Agent-first flow: `--agent-auto` scans local inputs, auto-selects only single candidates, defaults to user auto-repair, and writes `agent_summary.md/json`.
 - Novice interruption coverage: interactive cancellation/EOF, missing preflight inputs, generated-script build failures, QA dependency failures, and auto-repair blockers all route to a next action.
 - Content-summary coverage: `内容提取.md` renders structured `role="image"` items, including table-cell images, as `[图片]` instead of opaque `[结构化内容]`.
@@ -49,6 +49,7 @@ Current baseline as of 2026-06-01:
 - Controlled auto-repair loop regression: repairable build-script error, no-improvement stop, rebuild-failure stop, needs-user-file stop, strict/visual dependency failure, WPS page-count/page-size/text-page/sample-image visual blockers, visual option preservation, summary next-action promotion, and sanitized report paths passed.
 - PDF template end-to-end strict QA: synthetic instruction PDF template + DOCX content passed.
 - Sparse PDF instruction handoff: incomplete text-rule PDFs now surface `PDF_TEMPLATE_INSTRUCTION_INCOMPLETE` warning guidance naming missing heading/caption/reference-style rule families, while still producing the DOCX for manual warning review.
+- Visual sample PDF template handoff: visual sample PDFs now surface `PDF_TEMPLATE_VISUAL_APPROXIMATION` warning guidance and `pdf_template_visual_approximation` profile risk so users know the DOCX layout is estimated and must be reviewed in Word/WPS.
 - Landscape PDF template handoff: landscape PDFs now surface `PDF_TEMPLATE_LANDSCAPE_PAGE` warning guidance and `pdf_template_landscape_page` profile risk so users know to review final DOCX orientation, margins, and compressed tables/body in Word/WPS.
 - PDF template dependency handoff: missing `pdfinfo` / `pdftotext` stops after template profiling and before `build_generated.py`, while writing `PDF_TEMPLATE_DEPENDENCY_MISSING` QA/agent reports with `resume_scope=environment` and Poppler repair/rerun next steps.
 - PDF template read-failure handoff: corrupt/unreadable PDFs stop after template profiling and before `build_generated.py`, while writing `PDF_TEMPLATE_READ_FAILED` QA/agent reports with re-export/openable-PDF or DOCX next steps.
@@ -72,6 +73,8 @@ PDF templates are handled as best-effort format sources. Instruction-style PDFs
 are parsed as text rules; sparse instruction PDFs surface
 `PDF_TEMPLATE_INSTRUCTION_INCOMPLETE` warnings that name missing rule families
 such as headings, captions, and references for beginner-facing warning review.
+Visual sample PDFs surface `PDF_TEMPLATE_VISUAL_APPROXIMATION` warning guidance
+and a profile risk flag so users review estimated layout details in Word/WPS.
 Landscape PDFs surface `PDF_TEMPLATE_LANDSCAPE_PAGE` warning guidance and a
 profile risk flag so users review final DOCX page orientation, margins, and
 compressed tables/body in Word/WPS. Visual sample PDFs estimate page geometry

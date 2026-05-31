@@ -88,6 +88,11 @@ def run_format_checks(paths: Dict[str, str], counts: Dict[str, Any], add: AddIss
                     for item in pdf_warnings
                     if str(item).startswith("PDF_TEMPLATE_INSTRUCTION_INCOMPLETE")
                 ]
+                visual_approximation = [
+                    str(item)
+                    for item in pdf_warnings
+                    if str(item).startswith("PDF_TEMPLATE_VISUAL_APPROXIMATION")
+                ]
                 if missing_pdf_tools:
                     add(
                         "PDF_TEMPLATE_DEPENDENCY_MISSING",
@@ -122,6 +127,13 @@ def run_format_checks(paths: Dict[str, str], counts: Dict[str, Any], add: AddIss
                         "warning",
                         "PDF 文字说明模板缺少关键格式规则。",
                         _instruction_incomplete_detail(instruction_incomplete),
+                    )
+                if visual_approximation:
+                    add(
+                        "PDF_TEMPLATE_VISUAL_APPROXIMATION",
+                        "warning",
+                        "PDF 模板是视觉样张估算结果。",
+                        "; ".join(visual_approximation),
                     )
                 if _first_page_is_landscape(fmt):
                     add(

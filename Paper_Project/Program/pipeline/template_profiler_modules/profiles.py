@@ -128,6 +128,7 @@ def _risk_flags(fmt: Dict[str, Any], text_blob: str) -> Dict[str, Any]:
     pdf_dependency_missing = any(item.startswith(("PDFINFO_MISSING", "PDFTOTEXT_MISSING")) for item in pdf_warnings)
     pdf_read_failed = any(item.startswith(("PDFINFO_FAILED", "PDFTOTEXT_FAILED")) for item in pdf_warnings)
     pdf_instruction_incomplete = any(item.startswith("PDF_TEMPLATE_INSTRUCTION_INCOMPLETE") for item in pdf_warnings)
+    pdf_visual_approximation = any(item.startswith("PDF_TEMPLATE_VISUAL_APPROXIMATION") for item in pdf_warnings)
     pdf_unsupported = bool(pdf_meta.get("errors")) or pdf_meta.get("type") == "scanned_or_unsupported_pdf"
     pdf_unsupported = bool(pdf_unsupported and not pdf_dependency_missing and not pdf_read_failed)
     page = _first_section_page(fmt)
@@ -140,6 +141,7 @@ def _risk_flags(fmt: Dict[str, Any], text_blob: str) -> Dict[str, Any]:
         "pdf_template": bool(pdf_meta),
         "pdf_template_limited_confidence": bool(pdf_meta.get("warnings")) or pdf_meta.get("type") == "visual_sample_pdf",
         "pdf_template_instruction_incomplete": bool(pdf_instruction_incomplete),
+        "pdf_template_visual_approximation": bool(pdf_visual_approximation),
         "pdf_template_landscape_page": bool(pdf_meta and _is_landscape_page(page)),
         "pdf_template_dependency_missing": bool(pdf_dependency_missing),
         "pdf_template_read_failed": bool(pdf_read_failed and (pdf_meta.get("errors") or int(pdf_meta.get("text_chars") or 0) == 0)),
