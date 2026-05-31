@@ -36,6 +36,13 @@ REPAIR_GUIDES = {
         "developer_action": "检查 `format_extractor_modules/pdf_template.py` 的文字说明角色识别和 `_instruction_missing_roles()` 规则是否过严或漏判。",
         "auto_level": "optional_user_input",
     },
+    "PDF_TEMPLATE_LANDSCAPE_PAGE": {
+        "title": "PDF 模板是横向页面",
+        "why": "PDF 模板首页宽度大于高度。流水线会尽量继承页面尺寸，但横向模板最容易在 Word/WPS 中出现页面方向、页边距或目录分页差异。",
+        "user_action": "生成后请用 Word/WPS 打开最终 DOCX，重点核对页面方向是否为横向、页边距是否正确、正文和表格是否没有被压缩；如果实际不想要横向页面，请换成纵向 DOCX/PDF 模板后重跑。",
+        "developer_action": "检查 `format_extractor_modules/pdf_template.py` 提取的 page_width/page_height 以及生成脚本的页面设置是否正确传递。",
+        "auto_level": "manual_review",
+    },
     "IMAGE_COUNT_MISMATCH": {
         "title": "图片没有全部进入最终论文",
         "why": "内容中识别到的图片数量大于最终 DOCX 里实际渲染的正文图片数量。",

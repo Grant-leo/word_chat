@@ -1482,6 +1482,78 @@ def pipeline_sparse_pdf_instruction_warning_names_missing_rules() -> None:
 
 
 @case
+def pipeline_landscape_pdf_template_warning_names_orientation_review() -> None:
+    if not poppler_available():
+        return
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    import run_pipeline as root_runner
+
+    work = new_workdir("pipeline_landscape_pdf_template_warning")
+    template_dir = work / "Templates"
+    inputs_dir = work / "Inputs"
+    outputs_dir = work / "Outputs"
+    template_dir.mkdir()
+    inputs_dir.mkdir()
+    outputs_dir.mkdir()
+
+    write_text_pdf(
+        template_dir / "landscape_requirements.pdf",
+        [
+            ("Format requirements", 16, 72, 520),
+            ("Page landscape A4 margins top 2.0 cm bottom 2.0 cm left 2.0 cm right 2.0 cm", 11, 72, 492),
+            ("Body font Times New Roman 12 pt justified line spacing 1.5", 11, 72, 468),
+            ("Heading 1 font SimHei 16 pt bold centered", 11, 72, 444),
+            ("Heading 2 font SimHei 14 pt bold left", 11, 72, 420),
+            ("References font Times New Roman 12 pt", 11, 72, 396),
+        ],
+        page_width=842.0,
+        page_height=595.0,
+    )
+
+    content_doc = Document()
+    content_doc.add_heading("Landscape PDF Template Demo", level=0)
+    content_doc.add_heading("Introduction", level=1)
+    content_doc.add_paragraph("This body should build, but users need an explicit orientation review step.")
+    content_doc.add_heading("References", level=1)
+    content_doc.add_paragraph("[1] Doe J. Landscape template warning regression.")
+    content_doc.save(inputs_dir / "paper.docx")
+
+    old_dirs = (root_runner.TEMPLATE_DIR, root_runner.INPUTS_DIR, root_runner.OUTPUTS_DIR)
+    try:
+        root_runner.TEMPLATE_DIR = str(template_dir)
+        root_runner.INPUTS_DIR = str(inputs_dir)
+        root_runner.OUTPUTS_DIR = str(outputs_dir)
+        result = root_runner.run("landscape_requirements.pdf", "paper.docx", mode="developer", qa_level="basic")
+    finally:
+        root_runner.TEMPLATE_DIR, root_runner.INPUTS_DIR, root_runner.OUTPUTS_DIR = old_dirs
+
+    assert_true(result is not None, "landscape PDF template should continue with warning-only QA")
+    out_dirs = sorted(outputs_dir.iterdir())
+    assert_true(out_dirs, "landscape PDF template should create an output directory")
+    out_dir = out_dirs[-1]
+    assert_true((out_dir / "最终论文.docx").exists(), "landscape PDF template should still build the DOCX")
+
+    report = json.loads((out_dir / "qa_report.json").read_text(encoding="utf-8"))
+    codes = [item.get("code") for item in report.get("issues") or []]
+    assert_true("PDF_TEMPLATE_LANDSCAPE_PAGE" in codes, f"landscape PDF should name orientation review: {report}")
+    next_action = report.get("next_action", "")
+    assert_true(
+        "PDF_TEMPLATE_LANDSCAPE_PAGE" in next_action and "横向" in next_action and ("页面方向" in next_action or "纸张方向" in next_action),
+        f"landscape PDF next_action should tell users to review orientation: {report}",
+    )
+    plan = json.loads((out_dir / "qa_repair_plan.json").read_text(encoding="utf-8"))
+    assert_true(plan.get("resume_scope") == "warning_review", f"landscape PDF warning should route to warning review: {plan}")
+    assert_true("横向" in plan.get("next_action", "") and "Word/WPS" in plan.get("next_action", ""), f"repair plan should name Word/WPS orientation review: {plan}")
+    profile = json.loads((out_dir / "template_profile.json").read_text(encoding="utf-8"))
+    risks = profile.get("risk_flags") or {}
+    assert_true(risks.get("pdf_template_landscape_page") is True, f"profile should expose landscape PDF risk: {profile}")
+    summary = json.loads((out_dir / "agent_summary.json").read_text(encoding="utf-8"))
+    action_text = "\n".join(summary.get("next_actions") or summary.get("manual_check_required") or [])
+    assert_true("PDF_TEMPLATE_LANDSCAPE_PAGE" in action_text and "横向" in action_text, f"agent summary lost landscape-PDF next step: {summary}")
+
+
+@case
 def pipeline_dependencies_loads_optional_modules_and_reports_missing() -> None:
     def marker(name):
         return lambda *args, **kwargs: name

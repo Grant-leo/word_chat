@@ -39,6 +39,19 @@ def _instruction_incomplete_detail(warnings: list[Any]) -> str:
     return "; ".join(raw_warnings)
 
 
+def _first_page_is_landscape(fmt: Dict[str, Any]) -> bool:
+    sections = fmt.get("sections") or []
+    if not isinstance(sections, list) or not sections:
+        return False
+    first = sections[0] if isinstance(sections[0], dict) else {}
+    try:
+        width = float(first.get("page_width_cm") or first.get("width_cm") or 0)
+        height = float(first.get("page_height_cm") or first.get("height_cm") or 0)
+    except (TypeError, ValueError):
+        return False
+    return width > 0 and height > 0 and width > height
+
+
 def run_format_checks(paths: Dict[str, str], counts: Dict[str, Any], add: AddIssue) -> Dict[str, Any]:
     fmt: Dict[str, Any] = {}
     if os.path.exists(paths["format"]):
@@ -109,6 +122,13 @@ def run_format_checks(paths: Dict[str, str], counts: Dict[str, Any], add: AddIss
                         "warning",
                         "PDF 文字说明模板缺少关键格式规则。",
                         _instruction_incomplete_detail(instruction_incomplete),
+                    )
+                if _first_page_is_landscape(fmt):
+                    add(
+                        "PDF_TEMPLATE_LANDSCAPE_PAGE",
+                        "warning",
+                        "PDF 模板页面为横向。",
+                        "PDF 模板首页宽度大于高度；页面方向需要在最终 DOCX 中重点核对。",
                     )
                 if pdf_meta.get("type") == "visual_sample_pdf" or pdf_warnings:
                     add(

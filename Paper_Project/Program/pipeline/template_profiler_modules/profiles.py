@@ -54,6 +54,15 @@ def _first_section_page(fmt: Dict[str, Any]) -> Dict[str, Any]:
     return {k: section.get(k) for k in keys if k in section}
 
 
+def _is_landscape_page(page: Dict[str, Any]) -> bool:
+    try:
+        width = float(page.get("page_width_cm") or 0)
+        height = float(page.get("page_height_cm") or 0)
+    except (TypeError, ValueError):
+        return False
+    return width > 0 and height > 0 and width > height
+
+
 def _header_footer_profile(fmt: Dict[str, Any]) -> Dict[str, Any]:
     sections = fmt.get("sections") or []
     header_count = 0
@@ -121,6 +130,7 @@ def _risk_flags(fmt: Dict[str, Any], text_blob: str) -> Dict[str, Any]:
     pdf_instruction_incomplete = any(item.startswith("PDF_TEMPLATE_INSTRUCTION_INCOMPLETE") for item in pdf_warnings)
     pdf_unsupported = bool(pdf_meta.get("errors")) or pdf_meta.get("type") == "scanned_or_unsupported_pdf"
     pdf_unsupported = bool(pdf_unsupported and not pdf_dependency_missing and not pdf_read_failed)
+    page = _first_section_page(fmt)
     return {
         "complex_cover": len(cover) > 20,
         "uses_textbox": textbox,
@@ -130,6 +140,7 @@ def _risk_flags(fmt: Dict[str, Any], text_blob: str) -> Dict[str, Any]:
         "pdf_template": bool(pdf_meta),
         "pdf_template_limited_confidence": bool(pdf_meta.get("warnings")) or pdf_meta.get("type") == "visual_sample_pdf",
         "pdf_template_instruction_incomplete": bool(pdf_instruction_incomplete),
+        "pdf_template_landscape_page": bool(pdf_meta and _is_landscape_page(page)),
         "pdf_template_dependency_missing": bool(pdf_dependency_missing),
         "pdf_template_read_failed": bool(pdf_read_failed and (pdf_meta.get("errors") or int(pdf_meta.get("text_chars") or 0) == 0)),
         "pdf_template_unsupported": pdf_unsupported,
