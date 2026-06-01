@@ -121,6 +121,19 @@ def _find_body_start_index(paragraphs: List[ET.Element], expected: List[Dict[str
     lines against body heading profiles.  Prefer the last occurrence of the
     first expected heading, because the body occurrence follows the TOC.
     """
+    for item in expected:
+        role = str(item.get("role") or "")
+        text = str(item.get("text") or "").strip()
+        if role.startswith("h"):
+            break
+        targets = _compact_targets(text)
+        if not targets:
+            continue
+        for idx, para in enumerate(paragraphs):
+            actual = _compact(_text_of_para(para))
+            if actual in targets or any(target in actual for target in targets):
+                return idx
+
     heading_texts = [
         str(item.get("text") or "").strip()
         for item in expected

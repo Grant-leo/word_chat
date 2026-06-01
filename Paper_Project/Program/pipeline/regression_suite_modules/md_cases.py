@@ -275,6 +275,31 @@ def md_image_resolves_local_uri_suffixes() -> None:
 
 
 @case
+def md_image_resolves_parenthesized_inline_paths() -> None:
+    work = new_workdir("md_image_parenthesized_paths")
+    figures = work / "figures"
+    figures.mkdir()
+    (figures / "plot (1).png").write_bytes(PNG_1X1)
+    md = work / "image_parentheses.md"
+    md.write_text(
+        "# Image Parentheses\n\n"
+        "Existing image ![plot](figures/plot%20(1).png?raw=true#panel-a) should not be truncated.",
+        encoding="utf-8",
+    )
+    content = extract_md_content(str(md), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    images = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "image"]
+    missing = content["_meta"].get("missing_images") or []
+    assert_true(content["_meta"]["images_extracted"] == 1, f"parenthesized inline Markdown image was not copied: {content['_meta']}")
+    assert_true(len(images) == 1, f"parenthesized inline Markdown image was not preserved in content stream: {paragraphs}")
+    assert_true(not missing, f"existing parenthesized image path was reported missing: {missing}")
+    assert_true(
+        all(".png?raw=true#panel-a)" not in str(p) for p in paragraphs),
+        f"trailing parenthesized image path leaked into body text: {paragraphs}",
+    )
+
+
+@case
 def md_reference_style_images_are_extracted_or_reported() -> None:
     work = new_workdir("md_reference_style_images")
     figures = work / "figures"
@@ -376,6 +401,45 @@ def md_missing_images_are_reported_to_qa() -> None:
         {},
     )
     assert_true("下载" in str(remote_step.get("user_action") or ""), f"remote image guide should tell users to download/localize the image: {remote_step}")
+
+
+@case
+def md_unreadable_local_images_are_reported_to_qa() -> None:
+    work = new_workdir("md_unreadable_images")
+    (work / "broken.png").write_bytes(b"not a real png")
+    md = work / "unreadable_image.md"
+    md.write_text(
+        "# Unreadable Image\n\nBroken ![broken](broken.png) should tell users to replace the image file.",
+        encoding="utf-8",
+    )
+    content = extract_md_content(str(md), output_dir=str(work))
+    missing = content["_meta"].get("missing_images") or []
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    assert_true(content["_meta"].get("images_extracted") == 0, f"unreadable image should not be counted as extracted: {content['_meta']}")
+    assert_true(
+        any(isinstance(item, dict) and item.get("reason") == "unreadable" for item in missing),
+        f"unreadable image was not recorded with a specific reason: {missing}",
+    )
+    assert_true(
+        any(isinstance(p, dict) and p.get("role") == "missing_image" and p.get("reason") == "unreadable" for p in paragraphs),
+        f"unreadable image marker not preserved in content stream: {paragraphs}",
+    )
+
+    result = run_generated_case("md_unreadable_images_generated", content, base_format())
+    report = result["report"]
+    codes = [item["code"] for item in report["issues"]]
+    assert_true("CONTENT_IMAGE_UNREADABLE" in codes, f"QA did not report unreadable Markdown images: {codes}")
+    assert_true("CONTENT_IMAGE_MISSING" not in codes, f"unreadable images should not collapse into generic missing-image guidance: {codes}")
+    assert_true(
+        "CONTENT_IMAGE_UNREADABLE" in str(report.get("next_action") or ""),
+        f"unreadable image next_action did not name the actionable code: {report.get('next_action')}",
+    )
+    unreadable_step = next(
+        (step for step in (report.get("repair_plan") or {}).get("steps", []) if step.get("code") == "CONTENT_IMAGE_UNREADABLE"),
+        {},
+    )
+    action = str(unreadable_step.get("user_action") or "")
+    assert_true("重新导出" in action and "PNG" in action, f"unreadable image guide should tell users to re-export a normal image: {unreadable_step}")
 
 
 @case

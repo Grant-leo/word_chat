@@ -7,6 +7,11 @@ import shutil
 from typing import Any, Dict, List, Tuple
 from urllib.parse import unquote
 
+try:
+    from PIL import Image
+except Exception:  # pragma: no cover - dependency check reports Pillow separately
+    Image = None
+
 
 _RE_REF_HEADING = re.compile(r'(?i)^references?\b|^参考文献|^引用文献')
 _RE_BACKMATTER_HEADING = re.compile(r'(?i)^append(?:ix|ices)\b|^acknowledg(?:e)?ments?\b|^acknowledgment\b|^附\s*录|^致\s*谢')
@@ -243,6 +248,95 @@ def _local_image_filesystem_source(src: str) -> str:
     return local
 
 
+def _local_image_read_error(path: str) -> str:
+    if Image is None:
+        return ''
+    try:
+        with Image.open(path) as image:
+            image.verify()
+    except Exception as exc:
+        return f'{type(exc).__name__}: {exc}'
+    return ''
+
+
+def _find_markdown_close(text: str, start: int, close_char: str) -> int:
+    escaped = False
+    for idx in range(start, len(text)):
+        ch = text[idx]
+        if escaped:
+            escaped = False
+            continue
+        if ch == '\\':
+            escaped = True
+            continue
+        if ch == close_char:
+            return idx
+    return -1
+
+
+def _parse_inline_image_destination(text: str, open_pos: int) -> Tuple[str | None, int | None]:
+    depth = 0
+    in_angle = False
+    escaped = False
+    idx = open_pos + 1
+    while idx < len(text):
+        ch = text[idx]
+        if escaped:
+            escaped = False
+            idx += 1
+            continue
+        if ch == '\\':
+            escaped = True
+            idx += 1
+            continue
+        if in_angle:
+            if ch == '>':
+                in_angle = False
+            idx += 1
+            continue
+        if ch == '<':
+            in_angle = True
+        elif ch == '(':
+            depth += 1
+        elif ch == ')':
+            if depth == 0:
+                return text[open_pos + 1:idx], idx + 1
+            depth -= 1
+        idx += 1
+    return None, None
+
+
+def _iter_markdown_image_tokens(text: str) -> List[Tuple[int, int, str, str | None, str | None]]:
+    tokens: List[Tuple[int, int, str, str | None, str | None]] = []
+    pos = 0
+    while True:
+        start = text.find('![', pos)
+        if start == -1:
+            break
+        alt_start = start + 2
+        alt_end = _find_markdown_close(text, alt_start, ']')
+        if alt_end == -1:
+            pos = alt_start
+            continue
+        alt = text[alt_start:alt_end]
+        end = alt_end + 1
+        inline_src: str | None = None
+        ref_label: str | None = None
+        if end < len(text) and text[end] == '(':
+            parsed_src, parsed_end = _parse_inline_image_destination(text, end)
+            if parsed_end is not None:
+                inline_src = parsed_src
+                end = parsed_end
+        elif end < len(text) and text[end] == '[':
+            ref_end = _find_markdown_close(text, end + 1, ']')
+            if ref_end != -1:
+                ref_label = text[end + 1:ref_end]
+                end = ref_end + 1
+        tokens.append((start, end, alt, inline_src, ref_label))
+        pos = end
+    return tokens
+
+
 def _split_image_tokens_from_text(text: str, fig_dir: str, prefix: str, base_dir: str = '', image_refs: Dict[str, str] | None = None) -> Tuple[List[Dict[str, Any]], List[str], List[Dict[str, str]]]:
     """Split Markdown image references into ordered text/image tokens."""
     imgs: List[str] = []
@@ -251,12 +345,10 @@ def _split_image_tokens_from_text(text: str, fig_dir: str, prefix: str, base_dir
     pos = 0
     refs = image_refs or {}
 
-    for m in re.finditer(r'!\[([^\]]*)\](?:\((.+?)\)|\[([^\]]*)\])?', text):
-        if m.start() > pos:
-            tokens.append({'type': 'text', 'text': text[pos:m.start()]})
-        alt = m.group(1).strip()
-        inline_src = m.group(2)
-        ref_label = m.group(3)
+    for start, end, raw_alt, inline_src, ref_label in _iter_markdown_image_tokens(text):
+        if start > pos:
+            tokens.append({'type': 'text', 'text': text[pos:start]})
+        alt = raw_alt.strip()
         if inline_src is None:
             label = _normalize_reference_label(ref_label if ref_label is not None and ref_label.strip() else alt)
             src = refs.get(label, '')
@@ -264,7 +356,7 @@ def _split_image_tokens_from_text(text: str, fig_dir: str, prefix: str, base_dir
                 source = f'[{label}]' if label else ''
                 missing.append({'source': source, 'alt': alt, 'reason': 'reference_not_found'})
                 tokens.append({'type': 'missing_image', 'source': source, 'alt': alt, 'reason': 'reference_not_found'})
-                pos = m.end()
+                pos = end
                 continue
         else:
             src = inline_src
@@ -275,14 +367,14 @@ def _split_image_tokens_from_text(text: str, fig_dir: str, prefix: str, base_dir
         if _is_remote_image_source(src) or _is_remote_image_source(source_for_report):
             missing.append({'source': source_for_report, 'alt': alt, 'reason': 'remote'})
             tokens.append({'type': 'missing_image', 'source': source_for_report, 'alt': alt, 'reason': 'remote'})
-            pos = m.end()
+            pos = end
             continue
         local_src = _local_image_filesystem_source(src)
         fname = os.path.basename(local_src)
         if not fname:
             missing.append({'source': source_for_report, 'alt': alt, 'reason': 'empty_filename'})
             tokens.append({'type': 'missing_image', 'source': source_for_report, 'alt': alt, 'reason': 'empty_filename'})
-            pos = m.end()
+            pos = end
             continue
         name, ext = os.path.splitext(fname)
         if not ext:
@@ -297,6 +389,12 @@ def _split_image_tokens_from_text(text: str, fig_dir: str, prefix: str, base_dir
             candidates.append(os.path.abspath(local_src))
         src_path = next((p for p in candidates if os.path.exists(p)), None)
         if src_path:
+            read_error = _local_image_read_error(src_path)
+            if read_error:
+                missing.append({'source': source_for_report, 'alt': alt, 'reason': 'unreadable', 'detail': read_error})
+                tokens.append({'type': 'missing_image', 'source': source_for_report, 'alt': alt, 'reason': 'unreadable'})
+                pos = end
+                continue
             shutil.copy2(src_path, dest)
             copied = os.path.basename(dest)
             imgs.append(copied)
@@ -304,7 +402,7 @@ def _split_image_tokens_from_text(text: str, fig_dir: str, prefix: str, base_dir
         else:
             missing.append({'source': source_for_report, 'alt': alt, 'reason': 'not_found'})
             tokens.append({'type': 'missing_image', 'source': source_for_report, 'alt': alt, 'reason': 'not_found'})
-        pos = m.end()
+        pos = end
 
     if pos < len(text):
         tokens.append({'type': 'text', 'text': text[pos:]})

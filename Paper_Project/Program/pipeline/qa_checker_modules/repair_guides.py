@@ -85,6 +85,13 @@ REPAIR_GUIDES = {
         "developer_action": "检查 `md_parser.py` 的远程图片识别和 `qa_checker_modules/content_phase.py` 的 remote missing-image 分流。",
         "auto_level": "needs_user_file",
     },
+    "CONTENT_IMAGE_UNREADABLE": {
+        "title": "Markdown 本地图片文件不可读",
+        "why": "Markdown 链接指向的本地图片文件存在，但不是 Word 可渲染的正常图片，常见原因是文件损坏、扩展名不匹配，或使用了当前生成器不支持的图片格式。",
+        "user_action": "先用系统图片查看器打开该图片；如果打不开或显示异常，请从原始图片重新导出为普通 PNG/JPG，再更新 Markdown 图片链接后重新运行流水线。",
+        "developer_action": "检查 `md_parser.py` 的本地图片可读性校验，以及是否需要支持新的图片格式。",
+        "auto_level": "needs_user_file",
+    },
     "IMAGE_EXTRACT_FAILED": {
         "title": "DOCX 图片关系读取失败",
         "why": "源 DOCX 中有图片关系无法读取，通常和损坏图片、特殊嵌入对象或兼容模式有关。",

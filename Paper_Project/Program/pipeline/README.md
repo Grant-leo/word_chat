@@ -41,14 +41,16 @@ CLI, output, verification, and QA details in a focused package:
 
 Current baseline as of 2026-06-01:
 
-- Synthetic regression after the Markdown shortcut-reference image fix: `225 passed, 0 failed`.
+- Synthetic regression after the Markdown unreadable-image and strict body-start fixes: `228 passed, 0 failed`.
 - Agent-first flow: `--agent-auto` scans local inputs, auto-selects only single candidates, defaults to user auto-repair, and writes `agent_summary.md/json`.
 - Novice interruption coverage: interactive cancellation/EOF, missing preflight inputs, generated-script build failures, QA dependency failures, and auto-repair blockers all route to a next action.
 - Strict/visual report handoff coverage: `conformance_report.md/json` and `visual_report.md/json` top-level `next_action` values name the leading issue code before the beginner-facing repair step, so users can connect codes such as `PLACEHOLDER_TEXT_LEFT`, `PDF_PAGE_COUNT_INVALID`, and `GOLDEN_BASELINE_MISSING` to the next concrete action even without opening `agent_summary.md`.
 - Workflow rerun command hygiene: absolute inputs outside this project's `Inputs/` / `Templates/`, including external same-named folders, do not collapse to misleading basename rerun commands; reports instead tell users to place the file in the correct source folder and rerun by file name.
 - Markdown remote image handoff: remote `http://` / `https://` image URLs surface `CONTENT_IMAGE_REMOTE_UNSUPPORTED`, stop as user-file input blockers, and tell users to download the image locally and update the Markdown relative path before rerunning.
-- Markdown local image path variants: local paths continue resolving `%20` spaces and `<path with spaces>` wrappers, and now strip local `?query` / `#fragment` suffixes copied from Markdown tools before checking the filesystem.
+- Markdown local image path variants: local paths continue resolving `%20` spaces, `<path with spaces>` wrappers, balanced filename parentheses, and local `?query` / `#fragment` suffixes copied from Markdown tools before checking the filesystem.
+- Markdown unreadable image handoff: existing local image files that are corrupt, mislabeled, or unsupported surface `CONTENT_IMAGE_UNREADABLE`, stop as user-file blockers, and tell users to re-export a normal PNG/JPG before rerunning.
 - Markdown reference-style images: `![alt][id]` plus `[id]: path` and shortcut reference images `![alt]` plus `[alt]: path` now copy local images into the content stream; undefined image references become `CONTENT_IMAGE_MISSING` instead of staying as ordinary body text, and reference-definition-like lines inside fenced code blocks stay in code.
+- Strict conformance body-start detection: default body paragraphs before the first explicit Markdown heading stay inside strict content checks instead of being skipped as TOC/front matter.
 - Content-summary coverage: `内容提取.md` renders structured `role="image"` items, including table-cell images, as `[图片]` instead of opaque `[结构化内容]`.
 - Output-boundary coverage: standalone/default `format_extractor`, `content_parser`, and `md_parser` outputs stay under `Outputs/_...` instead of beside private source files.
 - Controlled auto-repair loop regression: repairable build-script error, no-improvement stop, rebuild-failure stop, needs-user-file stop, strict/visual dependency failure, WPS page-count/page-size/text-page/sample-image visual blockers, visual option preservation, summary next-action promotion, and sanitized report paths passed.

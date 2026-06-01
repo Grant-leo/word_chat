@@ -61,9 +61,16 @@ def run_content_checks(out_dir: str, paths: Dict[str, str], counts: Dict[str, An
                 item for item in missing_images
                 if isinstance(item, dict) and str(item.get("reason") or "").lower() == "remote"
             ]
+            unreadable_images = [
+                item for item in missing_images
+                if isinstance(item, dict) and str(item.get("reason") or "").lower() == "unreadable"
+            ]
             local_missing_images = [
                 item for item in missing_images
-                if not (isinstance(item, dict) and str(item.get("reason") or "").lower() == "remote")
+                if not (
+                    isinstance(item, dict)
+                    and str(item.get("reason") or "").lower() in {"remote", "unreadable"}
+                )
             ]
             if remote_missing_images:
                 add(
@@ -71,6 +78,13 @@ def run_content_checks(out_dir: str, paths: Dict[str, str], counts: Dict[str, An
                     "error",
                     "Markdown 引用了远程图片 URL，流水线不会自动联网下载图片。",
                     json.dumps(sanitize_value(remote_missing_images[:5], os.getcwd()), ensure_ascii=False),
+                )
+            if unreadable_images:
+                add(
+                    "CONTENT_IMAGE_UNREADABLE",
+                    "error",
+                    "Markdown 本地图片文件存在，但无法作为可渲染图片读取。",
+                    json.dumps(sanitize_value(unreadable_images[:5], os.getcwd()), ensure_ascii=False),
                 )
             if local_missing_images:
                 add(

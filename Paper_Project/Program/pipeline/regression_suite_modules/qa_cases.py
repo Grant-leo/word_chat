@@ -14,7 +14,7 @@ from qa_checker_modules.report_phase import build_report
 from qa_checker_modules.repair import build_repair_plan
 from qa_checker_modules.repair_guides import REPAIR_GUIDES
 from qa_checker_modules.reports import repair_plan_to_markdown
-from qa_conformance_modules.content_checks import _expected_paragraphs, _find_para_by_text
+from qa_conformance_modules.content_checks import _expected_paragraphs, _find_body_start_index, _find_para_by_text
 
 from regression_suite_modules.generated_docx import run_generated_case
 from regression_suite_modules.harness import (
@@ -138,6 +138,53 @@ def conformance_finds_inline_math_paragraphs_by_linearized_text() -> None:
     para = ET.fromstring(xml)
     found = _find_para_by_text([para], "Inline formula E=mc^2 should remain editable.")
     assert_true(found is para, "conformance QA did not match paragraph text containing editable inline math")
+
+
+@case
+def conformance_body_start_keeps_default_body_before_first_heading() -> None:
+    def para(text: str) -> ET.Element:
+        return ET.fromstring(
+            '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            f"<w:r><w:t>{text}</w:t></w:r>"
+            "</w:p>"
+        )
+
+    content = {
+        "sections": [
+            {
+                "heading": "正文",
+                "level": 1,
+                "role": "body",
+                "paragraphs": [
+                    "This paragraph appears before the first explicit heading.",
+                    "It must still be checked by strict QA.",
+                ],
+            },
+            {
+                "heading": "Methods",
+                "level": 2,
+                "role": "",
+                "paragraphs": ["Method body text."],
+            },
+        ],
+        "references": [],
+    }
+    expected = _expected_paragraphs(content)
+    paragraphs = [
+        para("Cover Title"),
+        para("目 录"),
+        para("Methods\t1"),
+        para("This paragraph appears before the first explicit heading."),
+        para("It must still be checked by strict QA."),
+        para("Methods"),
+        para("Method body text."),
+    ]
+    start = _find_body_start_index(paragraphs, expected)
+    used: set[int] = set()
+    assert_true(
+        _find_para_by_text(paragraphs[start:], "This paragraph appears before the first explicit heading.", used) is not None,
+        f"strict QA body start skipped default body paragraphs before the first explicit heading; start={start}",
+    )
 
 
 @case
