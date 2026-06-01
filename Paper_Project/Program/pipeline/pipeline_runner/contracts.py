@@ -176,12 +176,24 @@ def validate_qa_report(data: Any) -> List[ContractIssue]:
     issues: List[ContractIssue] = []
     if not _require_mapping(data, issues, "qa_report"):
         return issues
-    if not isinstance(data.get("passed"), bool):
+    passed = data.get("passed")
+    passed_is_bool = isinstance(passed, bool)
+    if not passed_is_bool:
         _add(issues, "QA_REPORT_PASSED_NOT_BOOL", "qa_report.passed must be a boolean.", "$.passed")
     status = data.get("status")
-    if status is not None and status not in {"passed", "passed_with_warnings", "failed"}:
+    status_valid = False
+    if "status" not in data or not str(status or "").strip():
+        _add(issues, "QA_REPORT_STATUS_MISSING", "qa_report.status is required.", "$.status")
+    elif status not in {"passed", "passed_with_warnings", "failed"}:
         _add(issues, "QA_REPORT_STATUS_INVALID", "qa_report.status must be passed, passed_with_warnings, or failed.", "$.status")
+    else:
+        status_valid = True
     result_label = data.get("result_label")
+    label_valid = False
+    if "result_label" not in data or not str(result_label or "").strip():
+        _add(issues, "QA_REPORT_RESULT_LABEL_MISSING", "qa_report.result_label is required.", "$.result_label")
+    else:
+        label_valid = True
     if result_label is not None and not str(result_label).strip():
         _add(issues, "QA_REPORT_RESULT_LABEL_EMPTY", "qa_report.result_label must be non-empty when present.", "$.result_label")
     if not _is_mapping(data.get("counts")):
@@ -190,6 +202,28 @@ def validate_qa_report(data: Any) -> List[ContractIssue]:
     if not _is_list(issues_value):
         _add(issues, "QA_REPORT_ISSUES_NOT_LIST", "qa_report.issues must be a list.", "$.issues")
         return issues
+    if passed_is_bool:
+        has_warnings = any(_is_mapping(item) and item.get("severity") == "warning" for item in issues_value)
+        if not passed:
+            expected_status, expected_label = "failed", "未通过"
+        elif has_warnings:
+            expected_status, expected_label = "passed_with_warnings", "通过但有警告"
+        else:
+            expected_status, expected_label = "passed", "通过"
+        if status_valid and status != expected_status:
+            _add(
+                issues,
+                "QA_REPORT_STATUS_MISMATCH",
+                f"qa_report.status should be {expected_status} for this passed/issues combination.",
+                "$.status",
+            )
+        if label_valid and str(result_label) != expected_label:
+            _add(
+                issues,
+                "QA_REPORT_RESULT_LABEL_MISMATCH",
+                f"qa_report.result_label should be {expected_label} for this passed/issues combination.",
+                "$.result_label",
+            )
     for idx, item in enumerate(issues_value[:100]):
         if not _is_mapping(item):
             _add(issues, "QA_REPORT_ISSUE_NOT_OBJECT", "each QA issue should be an object.", f"$.issues[{idx}]")

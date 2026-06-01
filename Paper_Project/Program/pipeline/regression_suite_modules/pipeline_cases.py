@@ -38,6 +38,7 @@ from pipeline_runner.execution import ScriptExecutionResult, run_generated_scrip
 from pipeline_runner.io import choose_file, choose_mode, normalize_mode, scan_inputs
 from pipeline_runner.qa import QADependencies, run_qa_phases
 from pipeline_runner.repair_loop import run_repair_loop
+from pipeline_runner.reports import qa_status_fields
 from pipeline_runner.summary import build_completion_summary, write_agent_preflight_report, write_agent_summary
 from pipeline_runner.template_phase import write_template_profile_phase, write_template_requirements_phase
 from pipeline_runner.verification import VerificationError, _merge_content_results, double_verify
@@ -116,6 +117,7 @@ def _fake_repair_report(out_dir: str, *, code: str, severity: str = "error", mes
         "next_action": "repair",
         "output_dir_name": Path(out_dir).name,
     }
+    report.update(qa_status_fields(report["passed"], report["issues"]))
     report["repair_plan"] = build_repair_plan(report, out_dir)
     write_reports(report, out_dir)
     return report
@@ -178,6 +180,14 @@ def pipeline_contracts_report_structural_errors() -> None:
         + validate_content_data({"sections": {}})
         + validate_build_manifest({"counts": {"content_images_rendered": -1}})
         + validate_qa_report({"passed": "yes", "status": "maybe", "result_label": "", "counts": [], "issues": [{"code": ""}]})
+        + validate_qa_report({"passed": False, "counts": {}, "issues": []})
+        + validate_qa_report({
+            "passed": True,
+            "status": "passed",
+            "result_label": "通过",
+            "counts": {},
+            "issues": [{"code": "WARN", "severity": "warning", "message": "review"}],
+        })
     )
     codes = {issue.code for issue in issues}
     assert_true("FORMAT_SECTIONS_MISSING" in codes, "missing format sections was not reported")
@@ -185,8 +195,12 @@ def pipeline_contracts_report_structural_errors() -> None:
     assert_true("CONTENT_SECTIONS_NOT_LIST" in codes, "invalid content sections was not reported")
     assert_true("MANIFEST_COUNT_INVALID" in codes, "invalid manifest count was not reported")
     assert_true("QA_REPORT_PASSED_NOT_BOOL" in codes, "invalid QA passed flag was not reported")
+    assert_true("QA_REPORT_STATUS_MISSING" in codes, "missing QA status was not reported")
     assert_true("QA_REPORT_STATUS_INVALID" in codes, "invalid QA status was not reported")
+    assert_true("QA_REPORT_RESULT_LABEL_MISSING" in codes, "missing QA result label was not reported")
     assert_true("QA_REPORT_RESULT_LABEL_EMPTY" in codes, "invalid QA result label was not reported")
+    assert_true("QA_REPORT_STATUS_MISMATCH" in codes, "mismatched QA status was not reported")
+    assert_true("QA_REPORT_RESULT_LABEL_MISMATCH" in codes, "mismatched QA result label was not reported")
     assert_true("QA_REPORT_ISSUE_CODE_MISSING" in codes, "invalid QA issue code was not reported")
     assert_true(has_contract_errors(issues), "structural contract errors should be marked as errors")
 
@@ -2074,7 +2088,9 @@ def pipeline_qa_runs_strict_and_blocks_failures() -> None:
 
     def passing_qa(out_dir, mode, output_docx_name):
         calls.append("qa")
-        return {"passed": True, "issues": [], "counts": {}, "mode": mode}
+        report = {"passed": True, "issues": [], "counts": {}, "mode": mode}
+        report.update(qa_status_fields(report["passed"], report["issues"]))
+        return report
 
     def passing_conformance(out_dir, mode, output_docx_name, project_root):
         calls.append("conformance")
@@ -2093,12 +2109,14 @@ def pipeline_qa_runs_strict_and_blocks_failures() -> None:
     assert_true(calls == ["qa", "conformance"], f"unexpected QA call order: {calls}")
 
     def failing_qa(out_dir, mode, output_docx_name):
-        return {
+        report = {
             "passed": False,
             "counts": {},
             "issues": [{"severity": "error", "code": "TEST_ERROR", "message": "Synthetic failure", "active_owner": "developer"}],
             "repair_plan": {"steps": []},
         }
+        report.update(qa_status_fields(report["passed"], report["issues"]))
+        return report
 
     failing_deps = QADependencies(
         qa_check_and_write=failing_qa,
