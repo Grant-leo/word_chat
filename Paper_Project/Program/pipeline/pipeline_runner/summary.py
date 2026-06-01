@@ -102,6 +102,15 @@ def _repair_step_actions(label, report, limit=5):
     return actions
 
 
+def _repair_plan_input_location_action(label, report):
+    repair_plan = report.get("repair_plan") or {}
+    commands = repair_plan.get("commands") or {}
+    hint = str(commands.get("input_location_hint") or "").strip()
+    if hint:
+        return f"{label}: {hint}"
+    return ""
+
+
 def _issue_actions(label, report, report_path, limit=5):
     issues = report.get("issues") or []
     if not issues:
@@ -170,6 +179,9 @@ def _report_summary(out_dir, folder_name):
                 report_actions = step_actions or issue_actions
                 if report_actions:
                     next_actions.extend(report_actions)
+                    input_location_action = _repair_plan_input_location_action(label, report)
+                    if input_location_action:
+                        next_actions.append(input_location_action)
                 elif next_action:
                     next_actions.append(f"{label}: {next_action}")
         reports[key] = {

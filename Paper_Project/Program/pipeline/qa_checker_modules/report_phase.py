@@ -60,6 +60,14 @@ def _next_action(passed: bool, mode: str, issues: List[Dict[str, Any]], repair_p
     )
 
 
+def _with_input_location_hint(action: str, repair_plan: Dict[str, Any]) -> str:
+    commands = repair_plan.get("commands") or {}
+    hint = str(commands.get("input_location_hint") or "").strip()
+    if hint and hint not in action:
+        return f"{action} {hint}"
+    return action
+
+
 def build_report(out_dir: str, mode: str, counts: Dict[str, Any], issues: List[Dict[str, Any]]) -> Dict[str, Any]:
     passed = not any(i["severity"] == "error" for i in issues)
     report = {
@@ -72,6 +80,9 @@ def build_report(out_dir: str, mode: str, counts: Dict[str, Any], issues: List[D
         "issues": issues,
     }
     report["repair_plan"] = build_repair_plan(report, out_dir)
-    report["next_action"] = _next_action(passed, mode, issues, report["repair_plan"])
+    report["next_action"] = _with_input_location_hint(
+        _next_action(passed, mode, issues, report["repair_plan"]),
+        report["repair_plan"],
+    )
     return report
 

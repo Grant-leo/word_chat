@@ -40,16 +40,26 @@ def _workflow_commands(out_dir: str, mode: str) -> Dict[str, str]:
     commands = {
         "rebuild_current_docx": f"python {build_path}",
         "rerun_current_pipeline": "",
+        "input_location_hint": "",
     }
     try:
         workflow = _load_json(workflow_path)
+        location_warnings = [
+            str(item).strip()
+            for item in (workflow.get("input_location_warnings") or [])
+            if str(item).strip()
+        ]
+        if location_warnings:
+            commands["input_location_hint"] = " ".join(location_warnings)
         template = workflow.get("template")
         content = workflow.get("content")
         md_file = workflow.get("md")
         if not md_file and template and content and str(template).lower().endswith(".md") and template == content:
             md_file = template
         args = ["python", "run_pipeline.py", "--mode", mode]
-        if md_file:
+        if location_warnings:
+            args = []
+        elif md_file:
             args.extend(["--md", str(md_file)])
         elif template and content:
             args.extend(["--template", str(template), "--content", str(content)])
@@ -146,6 +156,13 @@ def _leading_action(step: Dict[str, Any]) -> str:
     return action
 
 
+def _with_input_location_hint(route: str, commands: Dict[str, str]) -> str:
+    hint = str(commands.get("input_location_hint") or "").strip()
+    if hint:
+        return f"{route} {hint}"
+    return route
+
+
 def _resume_route(
     passed: bool,
     mode: str,
@@ -200,6 +217,7 @@ def _next_action(
     commands: Dict[str, str],
 ) -> Dict[str, str]:
     route = _resume_route(passed, mode, steps, all_errors_need_user, all_errors_need_environment, commands)
+    route["route"] = _with_input_location_hint(str(route.get("route") or ""), commands)
     action = _leading_action(_leading_step(steps)) if steps else ""
     parts = []
     if action:

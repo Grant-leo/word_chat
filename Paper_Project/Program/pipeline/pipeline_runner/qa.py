@@ -137,6 +137,8 @@ def _workflow_resume_command(out_dir, fallback_mode):
         return ""
 
     mode = str(workflow.get("mode") or fallback_mode or "user")
+    if workflow.get("input_location_warnings"):
+        return ""
     template = workflow.get("template")
     content = workflow.get("content")
     md_file = workflow.get("md")
@@ -170,6 +172,17 @@ def _workflow_resume_command(out_dir, fallback_mode):
     return " ".join(_quote_command_arg(arg) for arg in args)
 
 
+def _workflow_input_location_hint(out_dir):
+    workflow_path = os.path.join(out_dir, "workflow_mode.json")
+    try:
+        with open(workflow_path, "r", encoding="utf-8") as f:
+            workflow = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return ""
+    warnings = [str(item).strip() for item in (workflow.get("input_location_warnings") or []) if str(item).strip()]
+    return " ".join(warnings)
+
+
 def _write_structural_dependency_handoff(
     out_dir,
     *,
@@ -187,11 +200,14 @@ def _write_structural_dependency_handoff(
     detail = _safe_report_value(detail, project_root)
     output_dir_name = os.path.basename(os.path.abspath(out_dir))
     resume_command = _workflow_resume_command(out_dir, mode)
+    location_hint = _workflow_input_location_hint(out_dir)
     if next_action is None:
         next_action = (
             "结构 QA 无法运行。先修复 qa_checker.py 或 qa_checker_modules 的导入/依赖，"
             "然后重新运行完整流水线；先查看 qa_report.md 和 qa_repair_plan.md。"
         )
+    if location_hint:
+        next_action = f"{next_action} {location_hint}"
     if resume_command:
         next_action = f"{next_action} 修复后运行：`{resume_command}`"
     issue = {

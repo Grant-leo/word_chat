@@ -70,6 +70,8 @@ Agent 内部优先使用项目的自动入口；普通用户不用自己输入 P
 
 如果流程在预检、交互选择、构建最终 DOCX、QA、依赖或自动修复阶段中断，Agent 必须明确告诉用户下一步该做什么；预检阶段会写入 `Outputs/_agent_preflight_latest/agent_preflight_report.md`，多候选时会列出“可以直接回复：使用 Templates/... 作为模板 / 使用 Inputs/... 作为内容”的候选句。正式运行后优先看 `agent_summary.md`。如果 `build_generated.py` 执行失败，流水线也会写出 `qa_report.md/json`、`qa_repair_plan.md/json` 和 `qa_fix_prompt.txt`，并把下一步指向本次 `build_generated.py`。结构/strict/visual QA 失败时，`agent_summary.md/json` 会直接列出前几个问题码和“小白用户下一步”，`conformance_report.md` 和 `visual_report.md` 也会针对占位符、Word 域、PDF 页数、不可读页面等常见阻断给出具体下一步。交互模式被取消或输入流中断时，下一步默认是改用 `python run_pipeline.py --agent-auto`。
 
+如果高级用户用绝对路径传入了不在本项目 `Inputs/` / `Templates/` 下的文件，即使外部目录也恰好叫 `Inputs` 或 `Templates`，后续报告也不会生成可能失效的“只剩文件名”的重跑命令；下一步会提示先把文件放入本项目对应目录，再用文件名重跑。
+
 自动修复闭环会生成 `repair_loop_report.md/json`，最多运行有限轮次，只允许修改本次输出目录的 `build_generated.py`。如果连续修复没有减少 error、重建失败、达到轮次上限，或遇到缺图、扫描 PDF、内容缺失等必须由用户补文件的问题，会停止并说明原因。报告顶部会写明 `next_action`、`resume_scope` 和 `resume_command`，`agent_summary.md/json` 也会汇总这条下一步。即使自动 QA 已无 error，也不代表 100% 正确，最终仍建议用 Word/WPS 做视觉检查。
 
 `strict` / `visual` 等级下，自动修复闭环会把结构 QA、DOCX/XML 合规 QA、PDF/PNG 视觉 QA 一起作为收敛条件；缺少必要检查工具时不会假装通过。报告中的重建命令使用相对路径，便于直接复制给 Agent 继续处理。
@@ -178,10 +180,10 @@ build_generated.py ─────────→ 最终论文.docx
 
 截至 2026-06-01：
 
-- 合成回归：`215 passed, 0 failed`
+- 合成回归：`216 passed, 0 failed`
 - 自动修复闭环回归：可修复 QA error、连续无改善停止、重建失败停止、needs_user_file 停止、strict/visual QA 依赖缺失、visual 参数保持、报告路径脱敏、停止后 `agent_summary` 汇总下一步均已覆盖
 - Agent-first 自动入口：`--agent-auto` 可自动扫描单候选模板/内容；多候选时预检报告会把每个候选转成可直接回复给 Agent 的句子；默认普通用户自动修复，并写出 `agent_summary.md/json`
-- 小白中断体验：交互取消、EOF、预检失败、生成脚本构建失败、QA/依赖失败都会给出下一步，`agent_summary.md/json` 会聚合结构/strict/visual QA 的问题码和具体修复动作，构建失败也会生成 `qa_report.md/json`、`qa_repair_plan.md/json` 和 `qa_fix_prompt.txt`；`qa_report.md/json` 顶部会点名首个结构 QA 问题码和动作；strict/visual 报告会针对占位符、Word 域、PDF 页数无效、页面图片不可读等问题给出更具体的下一步；Markdown 图片路径已覆盖 `%20` 空格编码与 `<带空格路径>` 本地写法，远程图片 URL 会以 `CONTENT_IMAGE_REMOTE_UNSUPPORTED` 提示下载到本地并改相对路径，UTF-8 BOM 开头的 YAML/front matter、Markdown H1、Setext 一级英文题名，以及“格式块 + 公式 + 缺图”的组合边界已覆盖；DOCX 表格单元格图、页眉/页脚 non-body 图和 `内容提取.md` 图片摘要也有回归覆盖，visual/WPS 样张对比会优先抽封面、目录/正文锚点和图表公式风险页
+- 小白中断体验：交互取消、EOF、预检失败、生成脚本构建失败、QA/依赖失败都会给出下一步，`agent_summary.md/json` 会聚合结构/strict/visual QA 的问题码和具体修复动作，构建失败也会生成 `qa_report.md/json`、`qa_repair_plan.md/json` 和 `qa_fix_prompt.txt`；`qa_report.md/json` 顶部会点名首个结构 QA 问题码和动作；strict/visual 报告会针对占位符、Word 域、PDF 页数无效、页面图片不可读等问题给出更具体的下一步；外部绝对路径输入不会生成失效的 basename 重跑命令，即使外部路径中也有同名 `Inputs` / `Templates` 目录，而会提示放入本项目 `Inputs/` / `Templates/` 后按文件名重跑；Markdown 图片路径已覆盖 `%20` 空格编码与 `<带空格路径>` 本地写法，远程图片 URL 会以 `CONTENT_IMAGE_REMOTE_UNSUPPORTED` 提示下载到本地并改相对路径，UTF-8 BOM 开头的 YAML/front matter、Markdown H1、Setext 一级英文题名，以及“格式块 + 公式 + 缺图”的组合边界已覆盖；DOCX 表格单元格图、页眉/页脚 non-body 图和 `内容提取.md` 图片摘要也有回归覆盖，visual/WPS 样张对比会优先抽封面、目录/正文锚点和图表公式风险页
 - 输出边界：独立 `format_extractor.py` / `content_parser.py` / `md_parser.py` 默认写入 `Outputs/_...`，不污染 `Inputs/` 或 `Templates/`
 - PDF 模板端到端 strict QA：合成文字说明 PDF 模板 + DOCX 内容，`passed`
 - 稀疏 PDF 文字说明：缺少标题、图表题注、参考文献等关键规则时，结构 QA 以 `PDF_TEMPLATE_INSTRUCTION_INCOMPLETE` warning 暴露具体缺失项，`qa_report` / `qa_repair_plan` / `agent_summary` 都给出补规则或人工核对下一步

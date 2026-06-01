@@ -439,6 +439,89 @@ def pipeline_context_resolves_inputs_outputs_and_workflow() -> None:
 
 
 @case
+def pipeline_workflow_external_input_avoids_fake_rerun_command() -> None:
+    from qa_checker_modules.repair import build_repair_plan
+    from qa_checker_modules.report_phase import build_report
+
+    work = new_workdir("pipeline_workflow_external_input")
+    outputs_dir = work / "Outputs"
+    external_dir = work / "External Files"
+    outputs_dir.mkdir()
+    external_dir.mkdir()
+    external_md = external_dir / "external paper.md"
+    external_md.write_text("# External Paper\n\n![missing](missing.png)", encoding="utf-8")
+
+    workflow_path = write_workflow_mode(
+        str(outputs_dir),
+        mode="user",
+        template_path=str(external_md),
+        content_path=str(external_md),
+        run_qa=True,
+        qa_level="strict",
+        golden_dir=None,
+        update_golden=False,
+        require_wps=False,
+    )
+    workflow = json.loads(Path(workflow_path).read_text(encoding="utf-8"))
+    workflow_text = json.dumps(workflow, ensure_ascii=False)
+    assert_true(workflow.get("md") == "", f"external MD should not become a fake basename rerun arg: {workflow}")
+    assert_true(workflow.get("input_location_warnings"), f"external input workflow should record beginner guidance: {workflow}")
+    assert_true(str(external_dir) not in workflow_text, f"workflow leaked an absolute external path: {workflow}")
+
+    external_inputs_dir = work / "Other Project" / "Inputs"
+    external_inputs_dir.mkdir(parents=True)
+    lookalike_md = external_inputs_dir / "lookalike.md"
+    lookalike_md.write_text("# Lookalike Paper\n\n![missing](missing.png)", encoding="utf-8")
+    lookalike_workflow_path = write_workflow_mode(
+        str(outputs_dir),
+        mode="user",
+        template_path=str(lookalike_md),
+        content_path=str(lookalike_md),
+        run_qa=True,
+        qa_level="strict",
+        golden_dir=None,
+        update_golden=False,
+        require_wps=False,
+    )
+    lookalike_workflow = json.loads(Path(lookalike_workflow_path).read_text(encoding="utf-8"))
+    lookalike_text = json.dumps(lookalike_workflow, ensure_ascii=False)
+    assert_true(lookalike_workflow.get("md") == "", f"external lookalike Inputs folder should not become a rerun arg: {lookalike_workflow}")
+    assert_true(lookalike_workflow.get("input_location_warnings"), f"lookalike external Inputs folder should still guide users: {lookalike_workflow}")
+    assert_true(str(external_inputs_dir.parent) not in lookalike_text, f"lookalike workflow leaked an absolute external path: {lookalike_workflow}")
+
+    report = {
+        "mode": "user",
+        "passed": False,
+        "issues": [{"code": "CONTENT_IMAGE_MISSING", "severity": "error", "message": "missing image"}],
+        "counts": {},
+    }
+    plan = build_repair_plan(report, str(outputs_dir))
+    assert_true(not plan["commands"].get("rerun_current_pipeline"), f"repair plan should not offer a non-runnable basename command: {plan}")
+    assert_true(not plan.get("resume_command"), f"input-location blocker should omit fake resume command: {plan}")
+    assert_true("Inputs/" in plan.get("next_action", "") and "放入" in plan.get("next_action", ""), f"repair plan should tell users where to put the file: {plan}")
+
+    qa_report = build_report(
+        str(outputs_dir),
+        "user",
+        {},
+        [{"code": "CONTENT_IMAGE_MISSING", "severity": "error", "message": "missing image"}],
+    )
+    assert_true("Inputs/" in qa_report.get("next_action", "") and "放入" in qa_report.get("next_action", ""), f"qa_report next_action should carry input-location guidance: {qa_report}")
+
+    write_json(outputs_dir / "qa_report.json", qa_report)
+    summary_json, _summary_md = write_agent_summary(
+        str(outputs_dir),
+        outputs_dir.name,
+        "最终论文.docx",
+        "user",
+        pipeline_status="failed",
+    )
+    summary = json.loads(Path(summary_json).read_text(encoding="utf-8"))
+    action_text = "\n".join(summary.get("next_actions") or summary.get("manual_check_required") or [])
+    assert_true("Inputs/" in action_text and "放入" in action_text, f"agent summary should surface input-location guidance: {summary}")
+
+
+@case
 def pipeline_auto_repair_patches_build_script_and_reruns_qa() -> None:
     from qa_checker import check_and_write as qa_check_and_write
 

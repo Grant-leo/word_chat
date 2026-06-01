@@ -497,6 +497,10 @@ def _write_structural_failure_report(
         project_root=project_root,
     )
     resume_command = _workflow_resume_command_fallback(out_path, mode)
+    location_hint = _workflow_input_location_hint_fallback(out_path)
+    next_action = f"修复 qa_checker.py / qa_checker_modules 后重新运行完整流水线。{(' 修复后运行：`' + resume_command + '`') if resume_command else ''}"
+    if location_hint:
+        next_action = f"{next_action} {location_hint}"
     issue = {
         "code": code,
         "severity": "error",
@@ -515,7 +519,7 @@ def _write_structural_failure_report(
         "mode": mode,
         "blocking_errors": 1,
         "warnings": 0,
-        "next_action": f"修复 qa_checker.py / qa_checker_modules 后重新运行完整流水线。{(' 修复后运行：`' + resume_command + '`') if resume_command else ''}",
+        "next_action": next_action,
         "resume_scope": "full_pipeline",
         "resume_command": resume_command,
         "steps": [issue],
@@ -1014,6 +1018,8 @@ def _workflow_resume_command_fallback(out_path: Path, fallback_mode: str) -> str
         return ""
 
     mode = str(workflow.get("mode") or fallback_mode or "user")
+    if workflow.get("input_location_warnings"):
+        return ""
     template = workflow.get("template")
     content = workflow.get("content")
     md_file = workflow.get("md")
@@ -1044,6 +1050,15 @@ def _workflow_resume_command_fallback(out_path: Path, fallback_mode: str) -> str
     if workflow.get("golden_dir"):
         args.extend(["--golden-dir", str(workflow.get("golden_dir"))])
     return " ".join(_quote_cmd_arg(arg) for arg in args)
+
+
+def _workflow_input_location_hint_fallback(out_path: Path) -> str:
+    try:
+        workflow = json.loads((out_path / "workflow_mode.json").read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    warnings = [str(item).strip() for item in (workflow.get("input_location_warnings") or []) if str(item).strip()]
+    return " ".join(warnings)
 
 
 def _report_to_markdown(report: Dict[str, Any]) -> str:
