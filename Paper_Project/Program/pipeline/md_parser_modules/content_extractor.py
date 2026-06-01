@@ -185,8 +185,35 @@ def extract_content(md_path, output_dir=None):
             table_rows, next_i = _parse_markdown_table(lines, i)
             if table_rows:
                 _flush_paragraphs()
+                table_block = '\n'.join(lines[i:next_i])
+                table_items, imgs, missing = _parse_paragraph_items(
+                    table_block,
+                    fig_dir,
+                    f'{base}_img',
+                    base_dir=base_dir,
+                    image_refs=image_refs,
+                )
+                table_media_items = []
+                for item in table_items:
+                    if not isinstance(item, dict) or item.get('role') not in ('image', 'missing_image'):
+                        continue
+                    marked = dict(item)
+                    marked['location'] = 'markdown_table_cell'
+                    table_media_items.append(marked)
+                if table_media_items:
+                    table_missing = []
+                    for item in missing:
+                        marked = dict(item)
+                        marked['location'] = 'markdown_table_cell'
+                        table_missing.append(marked)
+                    current_section['images'].extend(imgs)
+                    all_images.extend(imgs)
+                    missing_images.extend(table_missing)
                 current_section['paragraphs'].append({'role': 'table', 'table_rows': table_rows})
                 total_paras += 1
+                for item in table_media_items:
+                    current_section['paragraphs'].append(item)
+                    total_paras += 1
                 total_tables += 1
                 i = next_i
                 continue

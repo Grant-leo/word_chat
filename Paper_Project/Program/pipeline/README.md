@@ -41,7 +41,7 @@ CLI, output, verification, and QA details in a focused package:
 
 Current baseline as of 2026-06-01:
 
-- Synthetic regression after the Markdown reference-title continuation fix: `230 passed, 0 failed`.
+- Synthetic regression after the Markdown table-cell image promotion fix: `231 passed, 0 failed`.
 - Agent-first flow: `--agent-auto` scans local inputs, auto-selects only single candidates, defaults to user auto-repair, and writes `agent_summary.md/json`.
 - Novice interruption coverage: interactive cancellation/EOF, missing preflight inputs, generated-script build failures, QA dependency failures, and auto-repair blockers all route to a next action.
 - Strict/visual report handoff coverage: `conformance_report.md/json` and `visual_report.md/json` top-level `next_action` values name the leading issue code before the beginner-facing repair step, so users can connect codes such as `PLACEHOLDER_TEXT_LEFT`, `PDF_PAGE_COUNT_INVALID`, and `GOLDEN_BASELINE_MISSING` to the next concrete action even without opening `agent_summary.md`.
@@ -50,6 +50,7 @@ Current baseline as of 2026-06-01:
 - Markdown local image path variants: local paths continue resolving `%20` spaces, `<path with spaces>` wrappers, balanced filename parentheses, optional image titles such as `![图](path "title")`, and local `?query` / `#fragment` suffixes copied from Markdown tools before checking the filesystem.
 - Markdown unreadable image handoff: existing local image files that are corrupt, mislabeled, or unsupported surface `CONTENT_IMAGE_UNREADABLE`, stop as user-file blockers, and tell users to re-export a normal PNG/JPG before rerunning.
 - Markdown reference-style images: `![alt][id]` plus `[id]: path` and shortcut reference images `![alt]` plus `[alt]: path` now copy local images into the content stream; optional title continuation lines after reference definitions are stripped with the definition; undefined image references become `CONTENT_IMAGE_MISSING` instead of staying as ordinary body text, and reference-definition-like lines inside fenced code blocks stay in code.
+- Markdown table-cell images: images embedded inside GitHub-style Markdown table cells are promoted into the content stream with `location="markdown_table_cell"`; missing table-cell images remain QA-visible `CONTENT_IMAGE_MISSING` blockers instead of being stripped by table text cleanup.
 - Strict conformance body-start detection: default body paragraphs before the first explicit Markdown heading stay inside strict content checks instead of being skipped as TOC/front matter.
 - Content-summary coverage: `内容提取.md` renders structured `role="image"` items, including table-cell images, as `[图片]` instead of opaque `[结构化内容]`.
 - Output-boundary coverage: standalone/default `format_extractor`, `content_parser`, and `md_parser` outputs stay under `Outputs/_...` instead of beside private source files.

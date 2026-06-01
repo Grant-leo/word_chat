@@ -328,6 +328,47 @@ def md_image_resolves_inline_paths_with_titles() -> None:
 
 
 @case
+def md_table_cell_images_are_extracted_or_reported() -> None:
+    work = new_workdir("md_table_cell_images")
+    figures = work / "figures"
+    figures.mkdir()
+    (figures / "table panel.png").write_bytes(PNG_1X1)
+    md = work / "table_cell_images.md"
+    md.write_text(
+        "# Table Cell Images\n\n"
+        "| Item | Evidence |\n"
+        "| --- | --- |\n"
+        "| Existing | ![panel](figures/table%20panel.png) |\n"
+        "| Missing | ![missing](figures/missing.png) |\n",
+        encoding="utf-8",
+    )
+    content = extract_md_content(str(md), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    images = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "image"]
+    missing_markers = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "missing_image"]
+    missing = content["_meta"].get("missing_images") or []
+    assert_true(any(isinstance(p, dict) and p.get("role") == "table" for p in paragraphs), f"Markdown table was not preserved: {paragraphs}")
+    assert_true(content["_meta"]["images_extracted"] == 1, f"Markdown table-cell image was silently dropped: {content['_meta']}")
+    assert_true(len(images) == 1, f"Markdown table-cell image was not promoted into content stream: {paragraphs}")
+    assert_true(images[0].get("location") == "markdown_table_cell", f"table-cell image should keep its origin: {images}")
+    assert_true(
+        len(missing) == 1 and missing[0].get("reason") == "not_found" and missing[0].get("location") == "markdown_table_cell",
+        f"missing Markdown table-cell image was not recorded with table-cell origin: {missing}",
+    )
+    assert_true(
+        missing_markers and missing_markers[0].get("location") == "markdown_table_cell",
+        f"missing Markdown table-cell image marker was not preserved: {paragraphs}",
+    )
+
+    result = run_generated_case("md_table_cell_images_generated", content, base_format())
+    report = result["report"]
+    codes = [item["code"] for item in report["issues"]]
+    assert_true(result["manifest"]["counts"]["content_images_rendered"] == 1, f"existing table-cell image was not rendered once: {result['manifest']}")
+    assert_true("CONTENT_IMAGE_MISSING" in codes, f"QA did not report missing Markdown table-cell image: {codes}")
+    assert_true(report["passed"] is False, "missing Markdown table-cell image should fail structural QA")
+
+
+@case
 def md_reference_style_images_are_extracted_or_reported() -> None:
     work = new_workdir("md_reference_style_images")
     figures = work / "figures"
