@@ -4,6 +4,16 @@ from __future__ import annotations
 from .contracts import format_contract_issues
 
 
+def qa_status_fields(passed, issues):
+    """Return the common machine-readable QA status fields."""
+    has_warnings = any((item or {}).get("severity") == "warning" for item in issues or [])
+    if not passed:
+        return {"status": "failed", "result_label": "未通过"}
+    if has_warnings:
+        return {"status": "passed_with_warnings", "result_label": "通过但有警告"}
+    return {"status": "passed", "result_label": "通过"}
+
+
 def step(msg):
     print(f'\n{"=" * 50}')
     print(f"  {msg}")

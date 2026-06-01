@@ -7,7 +7,7 @@ import json
 import os
 
 from .contracts import validate_qa_report
-from .reports import print_contract_issues, print_repair_hint
+from .reports import print_contract_issues, print_repair_hint, qa_status_fields
 
 try:
     from privacy import sanitize_value
@@ -102,6 +102,7 @@ def _write_dependency_report(out_dir, *, report_name, mode, code, message, detai
         "issues": [_safe_report_value({"code": code, "severity": "error", "message": message, "detail": detail}, project_root)],
         "next_action": next_action,
     }
+    report.update(qa_status_fields(report["passed"], report["issues"]))
     with open(os.path.join(out_dir, f"{report_name}.json"), "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
     lines = [
@@ -264,6 +265,7 @@ def _write_structural_dependency_handoff(
         "next_action": next_action,
         "repair_plan": plan,
     }
+    report.update(qa_status_fields(report["passed"], report["issues"]))
     report = _safe_report_value(report, project_root)
     plan = report["repair_plan"]
     issue = report["issues"][0]

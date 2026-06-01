@@ -11,7 +11,13 @@ from types import SimpleNamespace
 from typing import Any, Dict, List
 
 from docx import Document
-from pipeline_runner.artifacts import build_content_markdown, write_content_artifacts, write_format_artifacts
+from pipeline_runner.artifacts import (
+    build_content_markdown,
+    write_build_failure_report,
+    write_content_artifacts,
+    write_extraction_failure_report,
+    write_format_artifacts,
+)
 from pipeline_runner.build_phase import generate_and_build_docx_phase
 from pipeline_runner.cli import DEFAULT_GOLDEN_DIR, build_arg_parser, dispatch_cli
 from pipeline_runner.contracts import (
@@ -611,6 +617,118 @@ def pipeline_auto_repair_patches_build_script_and_reruns_qa() -> None:
     )
     assert_true(private_file.read_bytes() == private_before, "auto repair modified a private input file")
     assert_true(core_file.read_bytes() == core_before, "auto repair modified a core engine file")
+
+
+@case
+def pipeline_fallback_qa_reports_expose_explicit_status_labels() -> None:
+    work = new_workdir("pipeline_fallback_status_structural")
+    write_workflow_mode(
+        str(work),
+        mode="user",
+        template_path="template.docx",
+        content_path="content.docx",
+        run_qa=True,
+        qa_level="basic",
+        golden_dir=None,
+        update_golden=False,
+        require_wps=False,
+    )
+    result = run_qa_phases(
+        str(work),
+        mode="user",
+        output_docx_name="missing.docx",
+        qa_level="basic",
+        project_root=str(work),
+        deps=QADependencies(
+            qa_check_and_write=None,
+            conformance_check_and_write=None,
+            visual_check_and_write=None,
+            optional_import_detail=lambda name: "synthetic missing dependency",
+        ),
+    )
+    assert_true(result is False, "missing structural QA dependency should stop the pipeline")
+    structural = json.loads((work / "qa_report.json").read_text(encoding="utf-8"))
+    assert_true(structural["status"] == "failed", f"structural dependency report should expose failed status: {structural}")
+    assert_true(structural["result_label"] == "未通过", f"structural dependency report should expose result label: {structural}")
+
+    work2 = new_workdir("pipeline_fallback_status_conformance")
+    write_workflow_mode(
+        str(work2),
+        mode="user",
+        template_path="template.docx",
+        content_path="content.docx",
+        run_qa=True,
+        qa_level="strict",
+        golden_dir=None,
+        update_golden=False,
+        require_wps=False,
+    )
+    result2 = run_qa_phases(
+        str(work2),
+        mode="user",
+        output_docx_name="missing.docx",
+        qa_level="strict",
+        project_root=str(work2),
+        deps=QADependencies(
+            qa_check_and_write=lambda out_dir, mode="user", output_docx_name="missing.docx": _fake_repair_report(out_dir, code="NO_ISSUE", severity="info"),
+            conformance_check_and_write=None,
+            visual_check_and_write=None,
+            optional_import_detail=lambda name: "synthetic conformance dependency",
+        ),
+    )
+    assert_true(result2 is False, "missing conformance QA dependency should stop the pipeline")
+    conformance = json.loads((work2 / "conformance_report.json").read_text(encoding="utf-8"))
+    assert_true(conformance["status"] == "failed", f"conformance dependency report should expose failed status: {conformance}")
+    assert_true(conformance["result_label"] == "未通过", f"conformance dependency report should expose result label: {conformance}")
+
+    work3 = new_workdir("pipeline_fallback_status_visual")
+    write_workflow_mode(
+        str(work3),
+        mode="user",
+        template_path="template.docx",
+        content_path="content.docx",
+        run_qa=True,
+        qa_level="visual",
+        golden_dir=None,
+        update_golden=False,
+        require_wps=False,
+    )
+    result3 = run_qa_phases(
+        str(work3),
+        mode="user",
+        output_docx_name="missing.docx",
+        qa_level="visual",
+        project_root=str(work3),
+        deps=QADependencies(
+            qa_check_and_write=lambda out_dir, mode="user", output_docx_name="missing.docx": _fake_repair_report(out_dir, code="NO_ISSUE", severity="info"),
+            conformance_check_and_write=lambda out_dir, mode="user", output_docx_name="missing.docx", project_root="": _write_conformance_report(out_dir, passed=True),
+            visual_check_and_write=None,
+            optional_import_detail=lambda name: "synthetic visual dependency",
+        ),
+    )
+    assert_true(result3 is False, "missing visual QA dependency should stop the pipeline")
+    visual = json.loads((work3 / "visual_report.json").read_text(encoding="utf-8"))
+    assert_true(visual["status"] == "failed", f"visual dependency report should expose failed status: {visual}")
+    assert_true(visual["result_label"] == "未通过", f"visual dependency report should expose result label: {visual}")
+
+    build = write_build_failure_report(
+        str(new_workdir("pipeline_fallback_status_build")),
+        mode="user",
+        stderr="synthetic build failure",
+        stdout="",
+    )
+    assert_true(build["status"] == "failed", f"build failure report should expose failed status: {build}")
+    assert_true(build["result_label"] == "未通过", f"build failure report should expose result label: {build}")
+
+    extraction = write_extraction_failure_report(
+        str(new_workdir("pipeline_fallback_status_extract")),
+        mode="developer",
+        label="Content",
+        error="synthetic verification mismatch",
+        target="content_parser.py",
+    )
+    assert_true(extraction["status"] == "failed", f"extraction failure report should expose failed status: {extraction}")
+    assert_true(extraction["result_label"] == "未通过", f"extraction failure report should expose result label: {extraction}")
 
 
 @case

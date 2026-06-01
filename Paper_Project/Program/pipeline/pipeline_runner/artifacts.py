@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import os
 
+from .reports import qa_status_fields
+
 
 def _sanitize_report_value(value, project_root=None):
     try:
@@ -51,6 +53,7 @@ def write_extraction_failure_report(out_dir, *, mode, label, error, target):
         "output_dir_name": os.path.basename(os.path.abspath(out_dir)),
         "next_action": "查看 qa_repair_plan.md；优先核对输入文件是否稳定可提取，开发者再检查对应提取器。",
     }
+    report.update(qa_status_fields(report["passed"], report["issues"]))
     report["repair_plan"] = build_repair_plan(report, out_dir)
     report["repair_plan"]["open_first"] = [
         "qa_repair_plan.md",
@@ -103,6 +106,7 @@ def write_build_failure_report(
         "issues": [issue],
         "output_dir_name": os.path.basename(os.path.abspath(out_dir)),
     }
+    report.update(qa_status_fields(report["passed"], report["issues"]))
     report["repair_plan"] = build_repair_plan(report, out_dir)
     report["repair_plan"]["open_first"] = [
         "qa_repair_plan.md",
