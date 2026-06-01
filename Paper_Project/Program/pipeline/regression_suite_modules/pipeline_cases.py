@@ -2362,6 +2362,34 @@ def pipeline_warning_only_markdown_result_labels_are_explicit() -> None:
 
 
 @case
+def pipeline_conformance_report_markdown_lists_review_artifacts() -> None:
+    from qa_conformance_modules.reports import report_to_markdown as conformance_report_markdown
+
+    report = {
+        "passed": False,
+        "mode": "developer",
+        "output_dir_name": "demo",
+        "next_action": "对照内容和最终 DOCX 修复遗漏段落后重跑 strict QA。",
+        "counts": {"content_paragraphs": 10, "docx_paragraphs": 9},
+        "issues": [
+            {
+                "code": "CONTENT_PARAGRAPH_MISSING",
+                "severity": "error",
+                "message": "content paragraph missing",
+                "detail": "paragraph=9",
+            }
+        ],
+    }
+    markdown = conformance_report_markdown(report)
+    assert_true("## 核对入口" in markdown, f"strict report should list review artifacts: {markdown}")
+    assert_true("Outputs/demo/最终论文.docx" in markdown, f"strict report should point to final DOCX: {markdown}")
+    assert_true("Outputs/demo/内容提取.md" in markdown, f"strict report should point to content summary: {markdown}")
+    assert_true("Outputs/demo/content.json" in markdown, f"strict report should point to structured content: {markdown}")
+    assert_true("Outputs/demo/build_manifest.json" in markdown, f"strict report should point to build manifest: {markdown}")
+    assert_true("Outputs/demo/template_requirements.json" in markdown, f"strict report should point to template requirements: {markdown}")
+
+
+@case
 def pipeline_visual_report_markdown_lists_diagnostic_artifacts() -> None:
     from qa_visual_modules.reports import report_to_markdown as visual_report_markdown
 

@@ -77,6 +77,28 @@ def _next_action(mode: str, issues: List[Dict[str, Any]]) -> str:
     return _action_for_codes(error_codes, mode)
 
 
+def _append_review_artifacts(lines: List[str], output_dir_name: Any) -> None:
+    folder = str(output_dir_name or "").strip()
+    if not folder:
+        return
+    artifacts = [
+        ("最终 DOCX", "最终论文.docx"),
+        ("内容摘要", "内容提取.md"),
+        ("结构化内容", "content.json"),
+        ("渲染清单", "build_manifest.json"),
+        ("模板要求", "template_requirements.json"),
+        ("格式数据", "format.json"),
+    ]
+    lines.extend([
+        "",
+        "## 核对入口",
+        "",
+        "- 以下是本轮常用核对产物；若某项还未生成，先按顶部“下一步”恢复流水线。",
+    ])
+    for label, filename in artifacts:
+        lines.append(f"- {label}: `Outputs/{folder}/{filename}`")
+
+
 def build_report(
     out_dir: str,
     mode: str,
@@ -111,6 +133,7 @@ def report_to_markdown(report: Dict[str, Any]) -> str:
     ]
     for key, value in sorted((report.get("counts") or {}).items()):
         lines.append(f"- `{key}`: {value}")
+    _append_review_artifacts(lines, report.get("output_dir_name"))
     lines.extend(["", "## 问题", ""])
     if not issues:
         lines.append("- 自动合规检查未发现问题。")
