@@ -56,7 +56,7 @@ If no mode is known and the user has not said they are the developer, use `user`
 1. Use the project Agent entry: `python run_pipeline.py --agent-auto`
 2. Let it scan `Templates/` and `Inputs/`
 3. If there is exactly one valid template/content pair, run it directly
-4. If there are multiple candidates, ask the user to choose only the file name; `agent_preflight_report.md/json` should also list direct reply sentences such as `使用 Templates/<文件名> 作为模板` or `使用 Inputs/<文件名> 作为内容`
+4. If there are multiple candidates, ask the user to choose only the file name; `agent_preflight_report.md/json` should also list direct reply sentences such as `使用 Templates/<文件名> 作为模板` or `使用 Inputs/<文件名> 作为内容`, and include a stable `文件应该放哪里` / `source_folders` handoff that names `Templates/` (`.docx`/`.pdf`) and `Inputs/` (`.docx`/`.md`)
 5. After the run, read `Outputs/<latest>/agent_summary.md` first, then the detailed QA reports; structural/strict/visual QA failures are summarized there with issue codes and beginner-facing next actions
 6. If anything interrupts before or during the run, do not leave ordinary users waiting: read or write the relevant `agent_preflight_report.md`, `agent_summary.md`, or QA report, and state the next concrete action they should take
 7. If interactive selection is cancelled or stdin closes, tell the user to rerun through `python run_pipeline.py --agent-auto`, or rerun with explicit `--template` / `--content` file names

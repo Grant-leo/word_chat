@@ -32,7 +32,7 @@ from pipeline_runner.execution import ScriptExecutionResult, run_generated_scrip
 from pipeline_runner.io import choose_file, choose_mode, normalize_mode, scan_inputs
 from pipeline_runner.qa import QADependencies, run_qa_phases
 from pipeline_runner.repair_loop import run_repair_loop
-from pipeline_runner.summary import build_completion_summary, write_agent_summary
+from pipeline_runner.summary import build_completion_summary, write_agent_preflight_report, write_agent_summary
 from pipeline_runner.template_phase import write_template_profile_phase, write_template_requirements_phase
 from pipeline_runner.verification import VerificationError, _merge_content_results, double_verify
 
@@ -369,6 +369,32 @@ def pipeline_agent_auto_guides_missing_and_ambiguous_inputs() -> None:
     assert_true("使用 Inputs/a.docx 作为内容" in content_steps, f"content ambiguity should offer a copyable Agent reply: {content_report}")
     assert_true("使用 Inputs/b.md 作为内容" in content_steps, f"content ambiguity should include every candidate: {content_report}")
     assert_true(not calls, "missing/ambiguous agent-auto inputs should not call the pipeline")
+
+
+@case
+def pipeline_agent_preflight_report_lists_source_folders_and_formats() -> None:
+    work = new_workdir("pipeline_agent_preflight_source_folders")
+    json_path, md_path = write_agent_preflight_report(
+        str(work / "Outputs"),
+        status="blocked_missing_input",
+        message="没有找到可运行的模板和内容。",
+        next_steps=[
+            "把模板 DOCX/PDF 放入 Templates/，把内容 DOCX 或 Markdown 放入 Inputs/。",
+            "放好后让 Agent 重新运行自动入口。",
+        ],
+        candidates={"Templates": ["a.docx"], "Inputs": ["paper.docx", "paper.md"]},
+    )
+    report = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    folders = {item.get("folder"): item for item in report.get("source_folders") or []}
+    assert_true("Templates" in folders, f"preflight JSON should name where templates go: {report}")
+    assert_true("Inputs" in folders, f"preflight JSON should name where content goes: {report}")
+    assert_true({".docx", ".pdf"}.issubset(set(folders["Templates"].get("accepted_extensions") or [])), f"template formats missing: {report}")
+    assert_true({".docx", ".md"}.issubset(set(folders["Inputs"].get("accepted_extensions") or [])), f"content formats missing: {report}")
+    text = Path(md_path).read_text(encoding="utf-8")
+    assert_true("## 文件应该放哪里" in text, f"preflight markdown should have a stable source-folder section: {text}")
+    assert_true("Templates/" in text and ".docx" in text and ".pdf" in text, f"template source-folder guidance missing: {text}")
+    assert_true("Inputs/" in text and ".docx" in text and ".md" in text, f"input source-folder guidance missing: {text}")
+    assert_true("python run_pipeline.py --agent-auto" in text, f"preflight markdown should give a rerun route: {text}")
 
 
 @case

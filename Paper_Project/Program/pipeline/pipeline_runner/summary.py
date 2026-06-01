@@ -14,6 +14,21 @@ REPORT_SPECS = (
 
 REPORT_LABELS = {key: label for key, label, _json_name, _md_name in REPORT_SPECS}
 
+PREFLIGHT_SOURCE_FOLDERS = (
+    {
+        "folder": "Templates",
+        "role": "模板",
+        "accepted_extensions": [".docx", ".pdf"],
+        "description": "把论文模板放入这里；DOCX 模板最完整，PDF 模板会按可提取信息尽量适配。",
+    },
+    {
+        "folder": "Inputs",
+        "role": "内容",
+        "accepted_extensions": [".docx", ".md"],
+        "description": "把论文正文或纯 Markdown 输入放入这里；Markdown 图片建议放在同目录或相对路径可找到的位置。",
+    },
+)
+
 REPORT_ISSUE_ACTIONS = {
     "STRUCTURAL_QA_UNAVAILABLE": "修复结构 QA 依赖后重跑完整流水线；先查看 {report_path} 和 qa_repair_plan.md，确认 qa_checker.py / qa_checker_modules 的导入错误。",
     "STRUCTURAL_QA_FAILED": "结构 QA 运行中断；先查看 {report_path} 和 qa_repair_plan.md，修复 qa_checker.py / qa_checker_modules 的异常后重跑完整流水线。",
@@ -466,6 +481,22 @@ def _agent_preflight_markdown(report):
     ]
     for item in report.get("next_steps") or []:
         lines.append(f"- {item}")
+    source_folders = report.get("source_folders") or PREFLIGHT_SOURCE_FOLDERS
+    if source_folders:
+        lines.extend(["", "## 文件应该放哪里", ""])
+        for item in source_folders:
+            folder = str(item.get("folder") or "").strip()
+            role = str(item.get("role") or "").strip()
+            description = str(item.get("description") or "").strip()
+            extensions = [str(ext).strip() for ext in item.get("accepted_extensions") or [] if str(ext).strip()]
+            ext_text = " / ".join(extensions)
+            label = f"`{folder}/`" if folder else "`<folder>/`"
+            role_text = f"{role}：" if role else ""
+            if ext_text:
+                lines.append(f"- {label}：{role_text}{description} 支持 `{ext_text}`。")
+            else:
+                lines.append(f"- {label}：{role_text}{description}")
+        lines.append("- 放好文件后，让 Agent 重新运行 `python run_pipeline.py --agent-auto`；如果报告列出候选，只回复文件名或报告里的“使用 ...”句子。")
     candidates = report.get("candidates") or {}
     if candidates:
         lines.extend(["", "## 候选文件", ""])
@@ -488,6 +519,7 @@ def write_agent_preflight_report(outputs_dir, *, status, message, next_steps, ca
         "message": str(message or "").strip(),
         "next_steps": [str(item or "").strip() for item in (next_steps or []) if str(item or "").strip()],
         "candidates": candidates or {},
+        "source_folders": [dict(item) for item in PREFLIGHT_SOURCE_FOLDERS],
         "output_dir": "Outputs/_agent_preflight_latest",
     }
     json_path = os.path.join(out_dir, "agent_preflight_report.json")
