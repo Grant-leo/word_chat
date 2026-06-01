@@ -41,10 +41,11 @@ CLI, output, verification, and QA details in a focused package:
 
 Current baseline as of 2026-06-01:
 
-- Synthetic regression after the unreadable DOCX relationship-image fail-closed guard: `239 passed, 0 failed`.
+- Synthetic regression after explicit QA JSON status labels: `240 passed, 0 failed`.
 - Agent-first flow: `--agent-auto` scans local inputs, auto-selects only single candidates, defaults to user auto-repair, and writes `agent_summary.md/json`.
 - Novice interruption coverage: interactive cancellation/EOF, missing preflight inputs, generated-script build failures, QA dependency failures, and auto-repair blockers all route to a next action.
 - Strict/visual report handoff coverage: `conformance_report.md/json` and `visual_report.md/json` top-level `next_action` values name the leading issue code before the beginner-facing repair step, so users can connect codes such as `PLACEHOLDER_TEXT_LEFT`, `PDF_PAGE_COUNT_INVALID`, and `GOLDEN_BASELINE_MISSING` to the next concrete action even without opening `agent_summary.md`.
+- QA JSON status contract: structural `qa_report.json`, strict `conformance_report.json`, and visual `visual_report.json` now expose `status` (`passed`, `passed_with_warnings`, or `failed`) plus `result_label`; `agent_summary.json` preserves the same per-report status so UI/Agent consumers do not have to infer warning-only state from `passed`.
 - Workflow rerun command hygiene: absolute inputs outside this project's `Inputs/` / `Templates/`, including external same-named folders, do not collapse to misleading basename rerun commands; reports instead tell users to place the file in the correct source folder and rerun by file name.
 - Markdown remote image handoff: remote `http://` / `https://` image URLs surface `CONTENT_IMAGE_REMOTE_UNSUPPORTED`, stop as user-file input blockers, and tell users to download the image locally and update the Markdown relative path before rerunning.
 - Markdown local image path variants: local paths continue resolving `%20` spaces, `<path with spaces>` wrappers, balanced filename parentheses, optional image titles such as `![图](path "title")`, and local `?query` / `#fragment` suffixes copied from Markdown tools before checking the filesystem.

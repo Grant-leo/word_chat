@@ -14,7 +14,9 @@ from qa_checker_modules.report_phase import build_report
 from qa_checker_modules.repair import build_repair_plan
 from qa_checker_modules.repair_guides import REPAIR_GUIDES
 from qa_checker_modules.reports import repair_plan_to_markdown
+from qa_conformance_modules.reports import build_report as build_conformance_report
 from qa_conformance_modules.content_checks import _expected_paragraphs, _find_body_start_index, _find_para_by_text
+from qa_visual_modules.checks import check_visual
 
 from regression_suite_modules.generated_docx import run_generated_case
 from regression_suite_modules.harness import (
@@ -490,6 +492,47 @@ def qa_report_next_action_names_warning_step() -> None:
     assert_true("REFERENCES_MISSING" in report["next_action"], f"warning next_action lost the issue code: {report['next_action']}")
     assert_true("参考文献" in report["next_action"], f"warning next_action lost the beginner action: {report['next_action']}")
     assert_true("警告" in report["next_action"] or "warning" in report["next_action"], f"warning next_action should not sound like plain pass: {report['next_action']}")
+
+
+@case
+def qa_json_reports_expose_explicit_status_labels() -> None:
+    work = new_workdir("qa_json_status_labels")
+    write_json(work / "workflow_mode.json", {"mode": "developer"})
+    failed = build_report(
+        str(work),
+        "developer",
+        {},
+        [{"code": "CONTENT_IMAGE_MISSING", "severity": "error", "message": "missing image"}],
+    )
+    assert_true(failed["status"] == "failed", f"structural error status should be failed: {failed}")
+    assert_true(failed["result_label"] == "未通过", f"structural error label should be explicit: {failed}")
+
+    warning = build_report(
+        str(work),
+        "developer",
+        {},
+        [{"code": "REFERENCES_MISSING", "severity": "warning", "message": "missing refs"}],
+    )
+    assert_true(warning["status"] == "passed_with_warnings", f"structural warning status should be explicit: {warning}")
+    assert_true(warning["result_label"] == "通过但有警告", f"structural warning label should be explicit: {warning}")
+
+    clean = build_report(str(work), "developer", {}, [])
+    assert_true(clean["status"] == "passed", f"structural clean status should be explicit: {clean}")
+    assert_true(clean["result_label"] == "通过", f"structural clean label should be explicit: {clean}")
+
+    conformance = build_conformance_report(
+        str(work),
+        "developer",
+        {},
+        [{"code": "STYLE_MISMATCH", "severity": "warning", "message": "style differs"}],
+        project_root=str(work),
+    )
+    assert_true(conformance["status"] == "passed_with_warnings", f"strict QA status should expose warnings: {conformance}")
+    assert_true(conformance["result_label"] == "通过但有警告", f"strict QA label should expose warnings: {conformance}")
+
+    visual = check_visual(str(work), output_docx_name="missing.docx", project_root=str(work))
+    assert_true(visual["status"] == "failed", f"visual missing-DOCX status should fail explicitly: {visual}")
+    assert_true(visual["result_label"] == "未通过", f"visual missing-DOCX label should fail explicitly: {visual}")
 
 
 @case

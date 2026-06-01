@@ -174,6 +174,16 @@ def _report_result_label(*, exists, passed=None, warnings=0):
     return "通过"
 
 
+def _report_status(*, exists, passed=None, warnings=0):
+    if not exists:
+        return "missing"
+    if not passed:
+        return "failed"
+    if int(warnings or 0) > 0:
+        return "passed_with_warnings"
+    return "passed"
+
+
 def _report_summary(out_dir, folder_name):
     reports = {}
     total_errors = 0
@@ -203,14 +213,19 @@ def _report_summary(out_dir, folder_name):
             "label": label,
             "exists": exists,
             "passed": bool(report.get("passed")) if exists else None,
-            "errors": errors,
-            "warnings": warnings,
-            "issues": total,
-            "result_label": _report_result_label(
+            "status": str(report.get("status") or _report_status(
                 exists=exists,
                 passed=bool(report.get("passed")) if exists else None,
                 warnings=warnings,
-            ),
+            )),
+            "errors": errors,
+            "warnings": warnings,
+            "issues": total,
+            "result_label": str(report.get("result_label") or _report_result_label(
+                exists=exists,
+                passed=bool(report.get("passed")) if exists else None,
+                warnings=warnings,
+            )),
             "report": report_path,
         }
     return reports, total_errors, total_warnings, next_actions

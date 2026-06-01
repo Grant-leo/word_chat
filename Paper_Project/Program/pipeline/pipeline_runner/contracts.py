@@ -46,6 +46,8 @@ class QaReport(TypedDict, total=False):
     schema_version: int
     mode: str
     passed: bool
+    status: str
+    result_label: str
     counts: Dict[str, Any]
     issues: List[QaIssue]
     next_action: str
@@ -176,6 +178,12 @@ def validate_qa_report(data: Any) -> List[ContractIssue]:
         return issues
     if not isinstance(data.get("passed"), bool):
         _add(issues, "QA_REPORT_PASSED_NOT_BOOL", "qa_report.passed must be a boolean.", "$.passed")
+    status = data.get("status")
+    if status is not None and status not in {"passed", "passed_with_warnings", "failed"}:
+        _add(issues, "QA_REPORT_STATUS_INVALID", "qa_report.status must be passed, passed_with_warnings, or failed.", "$.status")
+    result_label = data.get("result_label")
+    if result_label is not None and not str(result_label).strip():
+        _add(issues, "QA_REPORT_RESULT_LABEL_EMPTY", "qa_report.result_label must be non-empty when present.", "$.result_label")
     if not _is_mapping(data.get("counts")):
         _add(issues, "QA_REPORT_COUNTS_NOT_OBJECT", "qa_report.counts must be an object.", "$.counts")
     issues_value = data.get("issues")

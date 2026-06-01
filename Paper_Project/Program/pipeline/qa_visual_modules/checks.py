@@ -27,6 +27,26 @@ def _issue(code: str, severity: str, message: str, detail: str = "") -> Dict[str
     return {"code": code, "severity": severity, "message": message, "detail": detail}
 
 
+def _has_warnings(issues: List[Dict[str, Any]]) -> bool:
+    return any(item.get("severity") == "warning" for item in issues or [])
+
+
+def _status_label(passed: bool, issues: List[Dict[str, Any]]) -> str:
+    if not passed:
+        return "failed"
+    if _has_warnings(issues):
+        return "passed_with_warnings"
+    return "passed"
+
+
+def _result_label(passed: bool, issues: List[Dict[str, Any]]) -> str:
+    if not passed:
+        return "未通过"
+    if _has_warnings(issues):
+        return "通过但有警告"
+    return "通过"
+
+
 def _float_or_none(value: Any) -> float | None:
     try:
         number = float(value)
@@ -359,6 +379,8 @@ def check_visual(
         "schema_version": 1,
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "passed": passed,
+        "status": _status_label(passed, issues),
+        "result_label": _result_label(passed, issues),
         "output_dir_name": os.path.basename(out_dir),
         "counts": counts,
         "issues": sanitize_value(issues, project_root),

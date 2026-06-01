@@ -150,6 +150,8 @@ def pipeline_contracts_accept_current_handoffs() -> None:
         "schema_version": 1,
         "mode": "developer",
         "passed": True,
+        "status": "passed",
+        "result_label": "通过",
         "counts": {},
         "issues": [],
         "next_action": "ok",
@@ -169,7 +171,7 @@ def pipeline_contracts_report_structural_errors() -> None:
         validate_format_data({"paragraphs": {}})
         + validate_content_data({"sections": {}})
         + validate_build_manifest({"counts": {"content_images_rendered": -1}})
-        + validate_qa_report({"passed": "yes", "counts": [], "issues": [{"code": ""}]})
+        + validate_qa_report({"passed": "yes", "status": "maybe", "result_label": "", "counts": [], "issues": [{"code": ""}]})
     )
     codes = {issue.code for issue in issues}
     assert_true("FORMAT_SECTIONS_MISSING" in codes, "missing format sections was not reported")
@@ -177,6 +179,8 @@ def pipeline_contracts_report_structural_errors() -> None:
     assert_true("CONTENT_SECTIONS_NOT_LIST" in codes, "invalid content sections was not reported")
     assert_true("MANIFEST_COUNT_INVALID" in codes, "invalid manifest count was not reported")
     assert_true("QA_REPORT_PASSED_NOT_BOOL" in codes, "invalid QA passed flag was not reported")
+    assert_true("QA_REPORT_STATUS_INVALID" in codes, "invalid QA status was not reported")
+    assert_true("QA_REPORT_RESULT_LABEL_EMPTY" in codes, "invalid QA result label was not reported")
     assert_true("QA_REPORT_ISSUE_CODE_MISSING" in codes, "invalid QA issue code was not reported")
     assert_true(has_contract_errors(issues), "structural contract errors should be marked as errors")
 
@@ -3152,6 +3156,9 @@ def pipeline_agent_summary_markdown_labels_warning_reports_explicitly() -> None:
     assert_true(summary["reports"]["structural"]["result_label"] == "通过但有警告", f"structural JSON label should flag warnings: {summary}")
     assert_true(summary["reports"]["conformance"]["result_label"] == "通过但有警告", f"strict JSON label should flag warnings: {summary}")
     assert_true(summary["reports"]["visual"]["result_label"] == "通过但有警告", f"visual JSON label should flag warnings: {summary}")
+    assert_true(summary["reports"]["structural"]["status"] == "passed_with_warnings", f"structural JSON status should flag warnings: {summary}")
+    assert_true(summary["reports"]["conformance"]["status"] == "passed_with_warnings", f"strict JSON status should flag warnings: {summary}")
+    assert_true(summary["reports"]["visual"]["status"] == "passed_with_warnings", f"visual JSON status should flag warnings: {summary}")
     assert_true("结构 QA：通过但有警告" in text, f"structural summary line should not say plain pass: {text}")
     assert_true("DOCX/XML 合规 QA：通过但有警告" in text, f"strict summary line should not say plain pass: {text}")
     assert_true("视觉 QA：通过但有警告" in text, f"visual summary line should not say plain pass: {text}")

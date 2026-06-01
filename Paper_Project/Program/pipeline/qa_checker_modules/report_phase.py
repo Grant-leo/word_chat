@@ -29,6 +29,26 @@ def _leading_step_action(steps: List[Dict[str, Any]]) -> str:
     return user_action
 
 
+def _has_warning_items(issues: List[Dict[str, Any]]) -> bool:
+    return any(item.get("severity") == "warning" for item in issues or [])
+
+
+def _status_label(passed: bool, issues: List[Dict[str, Any]]) -> str:
+    if not passed:
+        return "failed"
+    if _has_warning_items(issues):
+        return "passed_with_warnings"
+    return "passed"
+
+
+def _result_label(passed: bool, issues: List[Dict[str, Any]]) -> str:
+    if not passed:
+        return "未通过"
+    if _has_warning_items(issues):
+        return "通过但有警告"
+    return "通过"
+
+
 def _next_action(passed: bool, mode: str, issues: List[Dict[str, Any]], repair_plan: Dict[str, Any]) -> str:
     steps = repair_plan.get("steps") or []
     if passed:
@@ -76,6 +96,8 @@ def build_report(out_dir: str, mode: str, counts: Dict[str, Any], issues: List[D
         "mode": mode,
         "output_dir_name": os.path.basename(os.path.abspath(out_dir)),
         "passed": passed,
+        "status": _status_label(passed, issues),
+        "result_label": _result_label(passed, issues),
         "counts": counts,
         "issues": issues,
     }

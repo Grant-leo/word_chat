@@ -30,6 +30,14 @@ def _result_label(passed: bool, issues: List[Dict[str, Any]]) -> str:
     return "通过"
 
 
+def _status_label(passed: bool, issues: List[Dict[str, Any]]) -> str:
+    if not passed:
+        return "failed"
+    if _has_warnings(issues):
+        return "passed_with_warnings"
+    return "passed"
+
+
 def _ordered_codes(issues: List[Dict[str, Any]], severity: str) -> List[str]:
     codes: List[str] = []
     seen = set()
@@ -108,12 +116,15 @@ def build_report(
     issues: List[Dict[str, Any]],
     project_root: str | None,
 ) -> Dict[str, Any]:
+    passed = not any(i.get("severity") == "error" for i in issues)
     return {
         "schema_version": 1,
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "mode": mode,
         "output_dir_name": os.path.basename(os.path.abspath(out_dir)),
-        "passed": not any(i.get("severity") == "error" for i in issues),
+        "passed": passed,
+        "status": _status_label(passed, issues),
+        "result_label": _result_label(passed, issues),
         "counts": counts,
         "issues": sanitize_value(issues, project_root),
         "next_action": _next_action(mode, issues),
