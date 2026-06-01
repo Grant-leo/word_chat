@@ -251,7 +251,7 @@ def _split_image_tokens_from_text(text: str, fig_dir: str, prefix: str, base_dir
     pos = 0
     refs = image_refs or {}
 
-    for m in re.finditer(r'!\[([^\]]*)\](?:\((.+?)\)|\[([^\]]*)\])', text):
+    for m in re.finditer(r'!\[([^\]]*)\](?:\((.+?)\)|\[([^\]]*)\])?', text):
         if m.start() > pos:
             tokens.append({'type': 'text', 'text': text[pos:m.start()]})
         alt = m.group(1).strip()

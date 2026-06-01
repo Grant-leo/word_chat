@@ -302,6 +302,33 @@ def md_reference_style_images_are_extracted_or_reported() -> None:
 
 
 @case
+def md_shortcut_reference_images_are_extracted_or_reported() -> None:
+    work = new_workdir("md_shortcut_reference_images")
+    figures = work / "figures"
+    figures.mkdir()
+    (figures / "shortcut panel.png").write_bytes(PNG_1X1)
+    md = work / "shortcut_reference_images.md"
+    md.write_text(
+        "# Shortcut Reference Images\n\n"
+        "Before ![Shortcut Panel] after.\n\n"
+        "Missing ![Missing Shortcut] should become a QA-visible marker.\n\n"
+        "[Shortcut Panel]: figures/shortcut%20panel.png?raw=true#panel-a\n",
+        encoding="utf-8",
+    )
+    content = extract_md_content(str(md), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    images = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "image"]
+    missing = content["_meta"].get("missing_images") or []
+    assert_true(content["_meta"]["images_extracted"] == 1, f"shortcut reference Markdown image was not copied: {content['_meta']}")
+    assert_true(len(images) == 1, f"shortcut reference Markdown image was not preserved in content stream: {paragraphs}")
+    assert_true(len(missing) == 1 and missing[0].get("reason") == "reference_not_found", f"undefined shortcut image reference was not reported clearly: {missing}")
+    assert_true(
+        all("[Shortcut Panel]:" not in str(p) for p in paragraphs),
+        f"Markdown shortcut image reference definition leaked into body content: {paragraphs}",
+    )
+
+
+@case
 def md_reference_definition_like_code_lines_stay_in_code_blocks() -> None:
     work = new_workdir("md_reference_code")
     md = work / "reference_code.md"
