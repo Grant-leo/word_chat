@@ -305,6 +305,14 @@ def _data_uri_extension(mime_type: str) -> str:
     return ''
 
 
+_SUPPORTED_LOCAL_IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg'}
+_PIL_FORMAT_FOR_EXTENSION = {
+    '.png': 'PNG',
+    '.jpg': 'JPEG',
+    '.jpeg': 'JPEG',
+}
+
+
 def _decode_data_uri_image(src: str) -> Tuple[bytes | None, str, str]:
     raw = str(src or '').strip()
     if ',' not in raw:
@@ -347,13 +355,21 @@ def _local_image_filesystem_source(src: str) -> str:
 
 
 def _local_image_read_error(path: str) -> str:
+    ext = os.path.splitext(str(path or ''))[1].lower()
+    if ext not in _SUPPORTED_LOCAL_IMAGE_EXTENSIONS:
+        readable_ext = ext or '(no extension)'
+        return f'unsupported local image format: {readable_ext}; re-export as PNG/JPG'
     if Image is None:
         return ''
     try:
         with Image.open(path) as image:
+            detected = str(image.format or '').upper()
             image.verify()
     except Exception as exc:
         return f'{type(exc).__name__}: {exc}'
+    expected = _PIL_FORMAT_FOR_EXTENSION.get(ext)
+    if expected and detected and detected != expected:
+        return f'image extension {ext} does not match detected format {detected}; re-export as PNG/JPG'
     return ''
 
 

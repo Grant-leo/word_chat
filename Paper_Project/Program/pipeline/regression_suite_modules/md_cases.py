@@ -16,6 +16,13 @@ from regression_suite_modules.harness import (
 )
 
 
+GIF_1X1 = (
+    b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff"
+    b"!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01"
+    b"\x00\x00\x02\x02D\x01\x00;"
+)
+
+
 def _table_cell_media_items(paragraphs):
     items = []
     for paragraph in paragraphs:
@@ -703,6 +710,37 @@ def md_unreadable_local_images_are_reported_to_qa() -> None:
     )
     action = str(unreadable_step.get("user_action") or "")
     assert_true("重新导出" in action and "PNG" in action, f"unreadable image guide should tell users to re-export a normal image: {unreadable_step}")
+
+
+@case
+def md_unsupported_local_image_formats_are_reported_to_qa() -> None:
+    work = new_workdir("md_unsupported_image_formats")
+    (work / "animated.gif").write_bytes(GIF_1X1)
+    md = work / "unsupported_image_format.md"
+    md.write_text(
+        "# Unsupported Image Format\n\nGIF ![animated](animated.gif) should ask users to export PNG/JPG first.",
+        encoding="utf-8",
+    )
+    content = extract_md_content(str(md), output_dir=str(work))
+    missing = content["_meta"].get("missing_images") or []
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    assert_true(content["_meta"].get("images_extracted") == 0, f"unsupported GIF should not be counted as extracted: {content['_meta']}")
+    assert_true(
+        any(isinstance(item, dict) and item.get("reason") == "unreadable" and ".gif" in str(item.get("detail") or "") for item in missing),
+        f"unsupported GIF was not recorded as an unreadable user-file issue: {missing}",
+    )
+    assert_true(
+        any(isinstance(p, dict) and p.get("role") == "missing_image" and p.get("reason") == "unreadable" for p in paragraphs),
+        f"unsupported GIF marker not preserved in content stream: {paragraphs}",
+    )
+
+    result = run_generated_case("md_unsupported_image_formats_generated", content, base_format())
+    report = result["report"]
+    codes = [item["code"] for item in report["issues"]]
+    assert_true("CONTENT_IMAGE_UNREADABLE" in codes, f"QA did not report unsupported local image formats: {codes}")
+    assert_true("CONTENT_IMAGE_MISSING" not in codes, f"unsupported local formats should not collapse into generic missing-image guidance: {codes}")
+    action = str((report.get("repair_plan") or {}).get("next_action") or report.get("next_action") or "")
+    assert_true("CONTENT_IMAGE_UNREADABLE" in action and "PNG" in action, f"unsupported-format next action should tell users to export PNG/JPG: {action}")
 
 
 @case
