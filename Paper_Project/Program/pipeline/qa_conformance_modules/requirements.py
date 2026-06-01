@@ -53,11 +53,18 @@ def _content_counts(content: Dict[str, Any]) -> Dict[str, int]:
         for item in sec.get("paragraphs") or []:
             if not isinstance(item, dict):
                 continue
+            item_image_names = []
             if item.get("role") in {"image", "figure"} or item.get("image") or item.get("filename"):
-                name = str(item.get("image") or item.get("filename") or item.get("asset") or "")
-                inline_images += 1
-                if name:
-                    inline_names.append(name)
+                item_image_names.append(str(item.get("image") or item.get("filename") or item.get("asset") or ""))
+            for cell in item.get("table_cell_items") or []:
+                if not isinstance(cell, dict):
+                    continue
+                for nested in cell.get("items") or []:
+                    if isinstance(nested, dict) and (nested.get("role") in {"image", "figure"} or nested.get("image") or nested.get("filename")):
+                        item_image_names.append(str(nested.get("image") or nested.get("filename") or nested.get("asset") or ""))
+            if item_image_names:
+                inline_images += len(item_image_names)
+                inline_names.extend(name for name in item_image_names if name)
             if item.get("table_rows") and item.get("role") != "code":
                 tables += 1
             math_items = item.get("math") or []

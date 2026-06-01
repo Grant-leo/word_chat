@@ -1,6 +1,8 @@
 ﻿"""Markdown parser regression cases."""
 from __future__ import annotations
 
+import re
+
 from md_parser import extract_content as extract_md_content
 
 from regression_suite_modules.generated_docx import run_generated_case
@@ -11,6 +13,17 @@ from regression_suite_modules.harness import (
     case,
     new_workdir,
 )
+
+
+def _table_cell_media_items(paragraphs):
+    items = []
+    for paragraph in paragraphs:
+        if not isinstance(paragraph, dict):
+            continue
+        for cell in paragraph.get("table_cell_items") or []:
+            items.extend(cell.get("items") or [])
+    return items
+
 
 @case
 def md_parser_keeps_table_code_and_rich_math() -> None:
@@ -344,16 +357,21 @@ def md_table_cell_images_are_extracted_or_reported() -> None:
     )
     content = extract_md_content(str(md), output_dir=str(work))
     paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
-    images = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "image"]
+    images = [p for p in _table_cell_media_items(paragraphs) if isinstance(p, dict) and p.get("role") == "image"]
     missing_markers = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "missing_image"]
+    nested_missing = [p for p in _table_cell_media_items(paragraphs) if isinstance(p, dict) and p.get("role") == "missing_image"]
     missing = content["_meta"].get("missing_images") or []
     assert_true(any(isinstance(p, dict) and p.get("role") == "table" for p in paragraphs), f"Markdown table was not preserved: {paragraphs}")
     assert_true(content["_meta"]["images_extracted"] == 1, f"Markdown table-cell image was silently dropped: {content['_meta']}")
-    assert_true(len(images) == 1, f"Markdown table-cell image was not promoted into content stream: {paragraphs}")
+    assert_true(len(images) == 1, f"Markdown table-cell image was not attached to table cell content: {paragraphs}")
     assert_true(images[0].get("location") == "markdown_table_cell", f"table-cell image should keep its origin: {images}")
     assert_true(
         len(missing) == 1 and missing[0].get("reason") == "not_found" and missing[0].get("location") == "markdown_table_cell",
         f"missing Markdown table-cell image was not recorded with table-cell origin: {missing}",
+    )
+    assert_true(
+        nested_missing and nested_missing[0].get("location") == "markdown_table_cell",
+        f"missing Markdown table-cell image was not attached to table cell content: {paragraphs}",
     )
     assert_true(
         missing_markers and missing_markers[0].get("location") == "markdown_table_cell",
@@ -366,6 +384,31 @@ def md_table_cell_images_are_extracted_or_reported() -> None:
     assert_true(result["manifest"]["counts"]["content_images_rendered"] == 1, f"existing table-cell image was not rendered once: {result['manifest']}")
     assert_true("CONTENT_IMAGE_MISSING" in codes, f"QA did not report missing Markdown table-cell image: {codes}")
     assert_true(report["passed"] is False, "missing Markdown table-cell image should fail structural QA")
+
+
+@case
+def md_table_cell_images_render_inside_generated_table() -> None:
+    work = new_workdir("md_table_cell_image_render")
+    figures = work / "figures"
+    figures.mkdir()
+    (figures / "table panel.png").write_bytes(PNG_1X1)
+    md = work / "table_cell_image_render.md"
+    md.write_text(
+        "# Table Cell Image Render\n\n"
+        "| Item | Evidence |\n"
+        "| --- | --- |\n"
+        "| Existing | ![panel](figures/table%20panel.png) |\n",
+        encoding="utf-8",
+    )
+    content = extract_md_content(str(md), output_dir=str(work))
+    result = run_generated_case("md_table_cell_image_render_generated", content, base_format())
+    table_xmls = re.findall(r"<w:tbl\b.*?</w:tbl>", result["xml"], flags=re.S)
+    table_drawings = sum(xml.count("<w:drawing>") for xml in table_xmls)
+    total_drawings = result["xml"].count("<w:drawing>")
+    assert_true(total_drawings == 1, f"expected one rendered image drawing, saw {total_drawings}")
+    assert_true(table_drawings == 1, "Markdown table-cell image rendered outside the generated Word table")
+    assert_true(result["manifest"]["counts"]["content_images_rendered"] == 1, f"table-cell image render count changed: {result['manifest']}")
+    assert_true(result["report"]["passed"] is True, f"table-cell image render should pass QA: {result['report']}")
 
 
 @case

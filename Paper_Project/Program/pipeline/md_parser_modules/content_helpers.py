@@ -573,6 +573,10 @@ def _is_markdown_table_separator(line: str) -> bool:
 
 
 def _split_markdown_table_row(line: str) -> List[str]:
+    return [_strip_md_formatting(c.strip()) for c in _split_markdown_table_row_raw(line)]
+
+
+def _split_markdown_table_row_raw(line: str) -> List[str]:
     text = str(line or '').strip()
     if '|' not in text:
         return []
@@ -581,7 +585,7 @@ def _split_markdown_table_row(line: str) -> List[str]:
         text = text[1:]
     if text.endswith('|'):
         text = text[:-1]
-    return [_strip_md_formatting(c.strip()) for c in text.split('|')]
+    return [c.strip() for c in text.split('|')]
 
 
 def _parse_markdown_table(lines: List[str], start: int) -> Tuple[List[List[str]], int]:

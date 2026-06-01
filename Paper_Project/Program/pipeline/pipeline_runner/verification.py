@@ -138,10 +138,27 @@ def _image_name_from_item(item):
     return str(item.get("image") or item.get("filename") or item.get("asset") or "")
 
 
+def _image_names_from_item(item):
+    if not isinstance(item, dict):
+        return []
+    names = []
+    name = _image_name_from_item(item)
+    if name:
+        names.append(name)
+    for cell in item.get("table_cell_items") or []:
+        if not isinstance(cell, dict):
+            continue
+        for nested in cell.get("items") or []:
+            name = _image_name_from_item(nested)
+            if name:
+                names.append(name)
+    return names
+
+
 def _merge_item_key(item):
-    image_name = _image_name_from_item(item)
-    if image_name:
-        return ("image", image_name)
+    image_names = _image_names_from_item(item)
+    if image_names:
+        return ("image", "|".join(image_names))
     return ("item", _canonical(item))
 
 
@@ -150,9 +167,7 @@ def _collect_image_names(content):
     for section in content.get("sections") or []:
         names.extend(str(item) for item in (section.get("images") or []) if item)
         for paragraph in section.get("paragraphs") or []:
-            name = _image_name_from_item(paragraph)
-            if name:
-                names.append(name)
+            names.extend(_image_names_from_item(paragraph))
     return _unique_items(names)
 
 
@@ -163,7 +178,7 @@ def _paragraph_score(item):
         return (0, 0)
     role = str(item.get("role") or "")
     return (
-        5 if role in ("figure", "image") or item.get("image") else 0,
+        5 if _image_names_from_item(item) else 0,
         4 if role == "formula" or item.get("math") or item.get("latex") or item.get("xml") else 0,
         3 if item.get("table_rows") else 0,
         2 if role == "rich_text" else 0,
@@ -177,7 +192,7 @@ def _section_score(section):
     return (
         len(paragraphs),
         len(images),
-        sum(1 for item in paragraphs if isinstance(item, dict) and (item.get("image") or item.get("role") in ("figure", "image"))),
+        sum(1 for item in paragraphs if isinstance(item, dict) and _image_names_from_item(item)),
         sum(1 for item in paragraphs if isinstance(item, dict) and (item.get("math") or item.get("role") == "formula")),
         sum(1 for item in paragraphs if isinstance(item, dict) and item.get("table_rows")),
         sum(max(_paragraph_score(item)) for item in paragraphs),

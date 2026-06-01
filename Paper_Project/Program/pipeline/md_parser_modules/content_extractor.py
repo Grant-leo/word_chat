@@ -15,6 +15,7 @@ try:
         _extract_markdown_reference_definitions,
         _parse_markdown_table,
         _parse_paragraph_items,
+        _split_markdown_table_row_raw,
         _skip_format_section,
         _strip_md_formatting,
         _title_info_from_title,
@@ -29,6 +30,7 @@ except ImportError:  # pragma: no cover - package-style imports
         _extract_markdown_reference_definitions,
         _parse_markdown_table,
         _parse_paragraph_items,
+        _split_markdown_table_row_raw,
         _skip_format_section,
         _strip_md_formatting,
         _title_info_from_title,
@@ -36,6 +38,26 @@ except ImportError:  # pragma: no cover - package-style imports
 
 def _default_output_dir():
     return os.path.abspath(os.path.join(os.getcwd(), 'Outputs', '_md_parser_extract'))
+
+
+def _normalize_table_row_width(row, ncols):
+    if ncols <= 0:
+        return row
+    if len(row) < ncols:
+        return row + [''] * (ncols - len(row))
+    if len(row) > ncols:
+        return row[:ncols - 1] + [' | '.join(row[ncols - 1:])]
+    return row
+
+
+def _raw_markdown_table_rows(lines, start, next_i, ncols):
+    raw_rows = []
+    table_lines = [lines[start]] + lines[start + 2:next_i]
+    for line in table_lines:
+        raw = _split_markdown_table_row_raw(line)
+        if raw:
+            raw_rows.append(_normalize_table_row_width(raw, ncols))
+    return raw_rows
 
 
 def extract_content(md_path, output_dir=None):
@@ -185,33 +207,42 @@ def extract_content(md_path, output_dir=None):
             table_rows, next_i = _parse_markdown_table(lines, i)
             if table_rows:
                 _flush_paragraphs()
-                table_block = '\n'.join(lines[i:next_i])
-                table_items, imgs, missing = _parse_paragraph_items(
-                    table_block,
-                    fig_dir,
-                    f'{base}_img',
-                    base_dir=base_dir,
-                    image_refs=image_refs,
-                )
-                table_media_items = []
-                for item in table_items:
-                    if not isinstance(item, dict) or item.get('role') not in ('image', 'missing_image'):
-                        continue
-                    marked = dict(item)
-                    marked['location'] = 'markdown_table_cell'
-                    table_media_items.append(marked)
-                if table_media_items:
-                    table_missing = []
-                    for item in missing:
-                        marked = dict(item)
-                        marked['location'] = 'markdown_table_cell'
-                        table_missing.append(marked)
-                    current_section['images'].extend(imgs)
-                    all_images.extend(imgs)
-                    missing_images.extend(table_missing)
-                current_section['paragraphs'].append({'role': 'table', 'table_rows': table_rows})
+                ncols = max((len(row) for row in table_rows), default=0)
+                raw_rows = _raw_markdown_table_rows(lines, i, next_i, ncols)
+                table_cell_items = []
+                table_missing_markers = []
+                for ri, raw_row in enumerate(raw_rows):
+                    for ci, raw_cell in enumerate(raw_row):
+                        cell_items, imgs, missing = _parse_paragraph_items(
+                            raw_cell,
+                            fig_dir,
+                            f'{base}_img',
+                            base_dir=base_dir,
+                            image_refs=image_refs,
+                        )
+                        media_items = []
+                        for item in cell_items:
+                            if not isinstance(item, dict) or item.get('role') not in ('image', 'missing_image'):
+                                continue
+                            marked = dict(item)
+                            marked['location'] = 'markdown_table_cell'
+                            media_items.append(marked)
+                        if not media_items:
+                            continue
+                        table_cell_items.append({'row': ri, 'col': ci, 'items': media_items})
+                        current_section['images'].extend(imgs)
+                        all_images.extend(imgs)
+                        for item in missing:
+                            marked = dict(item)
+                            marked['location'] = 'markdown_table_cell'
+                            missing_images.append(marked)
+                        table_missing_markers.extend(item for item in media_items if item.get('role') == 'missing_image')
+                table_item = {'role': 'table', 'table_rows': table_rows}
+                if table_cell_items:
+                    table_item['table_cell_items'] = table_cell_items
+                current_section['paragraphs'].append(table_item)
                 total_paras += 1
-                for item in table_media_items:
+                for item in table_missing_markers:
                     current_section['paragraphs'].append(item)
                     total_paras += 1
                 total_tables += 1

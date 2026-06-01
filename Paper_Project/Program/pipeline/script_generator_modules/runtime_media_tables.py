@@ -204,10 +204,69 @@ def keep_table_together(table):
                     p.paragraph_format.keep_with_next = True
 
 
-def render_table(rows):
+def content_image_path(filename):
+    img_dir = DATA.get('images_dir') or ''
+    candidates = []
+    if os.path.isabs(img_dir):
+        candidates.append(os.path.join(img_dir, filename))
+    candidates += [
+        os.path.join(BASE, img_dir, filename),
+        os.path.abspath(os.path.join(os.getcwd(), img_dir, filename)),
+        os.path.abspath(os.path.join(BASE, '..', img_dir, filename)),
+        os.path.join(BASE, 'figures', filename),
+    ]
+    return next((p for p in candidates if p and os.path.exists(p)), None)
+
+
+def fit_table_cell_picture_dimensions(path, ncols=1):
+    try:
+        px_width, px_height, image = picture_pixel_size(path)
+        if image is None:
+            return Inches(max(1.0, text_width_inches(1.0) / max(int(ncols or 1), 1) * 0.9)), None
+        max_width = Inches(max(0.75, text_width_inches(1.0) / max(int(ncols or 1), 1) * 0.9))
+        if px_width and px_height and (px_width < 240 or px_height < 80):
+            width, height = image.scaled_dimensions()
+            if width <= max_width:
+                return width, height
+        return image.scaled_dimensions(width=max_width)
+    except Exception:
+        return Inches(max(0.75, text_width_inches(1.0) / max(int(ncols or 1), 1) * 0.9)), None
+
+
+def render_table_cell_image(cell, filename, ncols=1):
+    path = content_image_path(filename)
+    if not path:
+        return None
+    p = cell.paragraphs[0] if cell.paragraphs and not cell.paragraphs[0].text.strip() else cell.add_paragraph()
+    configure_picture_paragraph(p, keep_with_next=False)
+    r = p.add_run()
+    try:
+        width, height = fit_table_cell_picture_dimensions(path, ncols=ncols)
+        r.add_picture(path, width=width, height=height)
+    except Exception:
+        return None
+    BUILD_STATS['content_images_rendered'] = BUILD_STATS.get('content_images_rendered', 0) + 1
+    return p
+
+
+def table_cell_media_map(cell_items):
+    by_cell = {}
+    for entry in cell_items or []:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            key = (int(entry.get('row') or 0), int(entry.get('col') or 0))
+        except Exception:
+            continue
+        by_cell.setdefault(key, []).extend(entry.get('items') or [])
+    return by_cell
+
+
+def render_table(rows, cell_items=None):
     if not rows:
         return
     ncols = max(len(r) for r in rows)
+    media_by_cell = table_cell_media_map(cell_items)
     table = doc.add_table(rows=len(rows), cols=ncols)
     BUILD_STATS['content_tables_rendered'] = BUILD_STATS.get('content_tables_rendered', 0) + 1
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
@@ -227,6 +286,16 @@ def render_table(rows):
                 apply_paragraph_profile(p, prof, first_indent_override=0)
                 r = p.add_run(part)
                 apply_run_profile(r, prof, part)
+            for media in media_by_cell.get((ri, ci), []):
+                if not isinstance(media, dict):
+                    continue
+                if media.get('role') == 'image' or media.get('image'):
+                    render_table_cell_image(cell, media.get('image') or media.get('filename') or media.get('asset') or '', ncols=ncols)
+                elif media.get('role') == 'missing_image':
+                    p = cell.paragraphs[0] if cell.paragraphs and not cell.paragraphs[0].text.strip() else cell.add_paragraph()
+                    apply_paragraph_profile(p, prof, first_indent_override=0)
+                    r = p.add_run(media.get('text') or media.get('source') or 'missing image')
+                    apply_run_profile(r, prof, r.text)
     apply_three_line_borders(table)
     if should_keep_table_together(rows):
         keep_table_together(table)
@@ -248,17 +317,7 @@ def keep_paragraph_with_previous(p):
 
 
 def render_image(filename, caption=''):
-    img_dir = DATA.get('images_dir') or ''
-    candidates = []
-    if os.path.isabs(img_dir):
-        candidates.append(os.path.join(img_dir, filename))
-    candidates += [
-        os.path.join(BASE, img_dir, filename),
-        os.path.abspath(os.path.join(os.getcwd(), img_dir, filename)),
-        os.path.abspath(os.path.join(BASE, '..', img_dir, filename)),
-        os.path.join(BASE, 'figures', filename),
-    ]
-    path = next((p for p in candidates if p and os.path.exists(p)), None)
+    path = content_image_path(filename)
     if not path:
         return None
     p = doc.add_paragraph()

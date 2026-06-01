@@ -2,6 +2,18 @@
 from __future__ import annotations
 
 BODY_RUNTIME = r'''
+def paragraph_item_has_image(item):
+    if not isinstance(item, dict):
+        return False
+    if item.get('role') in ('image', 'figure') or item.get('image'):
+        return True
+    for cell in item.get('table_cell_items') or []:
+        for nested in cell.get('items') or []:
+            if isinstance(nested, dict) and (nested.get('role') in ('image', 'figure') or nested.get('image')):
+                return True
+    return False
+
+
 def render_paragraph_item(item, code_sensitive=False, chapter=None):
     if isinstance(item, dict) and item.get('role') == 'rich_text':
         add_rich_text_runs(item, role='body', first_indent=True)
@@ -31,7 +43,7 @@ def render_paragraph_item(item, code_sensitive=False, chapter=None):
         if item.get('role') == 'code' or rows_look_like_code(rows):
             add_code_block(item.get('code') or code_text_from_rows(rows))
         else:
-            render_table(rows)
+            render_table(rows, item.get('table_cell_items') or [])
         return
     if isinstance(item, dict) and (item.get('role') == 'figure_caption'):
         add_caption(item.get('text') or '', 'figure_caption')
@@ -79,7 +91,7 @@ def render_body():
             if int(sec.get('level') or 1) == 1:
                 current_chapter = chapter_number_from_heading(h) or current_chapter
         paragraphs = sec.get('paragraphs', []) or []
-        has_inline_images = any(isinstance(x, dict) and (x.get('role') in ('image', 'figure') or x.get('image')) for x in paragraphs)
+        has_inline_images = any(paragraph_item_has_image(x) for x in paragraphs)
         # New content_parser keeps images in the paragraph stream.  For old
         # content.json files, fall back to section-level images, but do not
         # invent a caption from the heading because that caused figure-title
@@ -93,7 +105,7 @@ def render_body():
             nxt = paragraphs[idx + 1] if idx + 1 < len(paragraphs) else None
             if isinstance(para, str) and is_table_item(nxt) and looks_like_table_title(para):
                 add_caption(next_table_caption(para, current_chapter), 'table_caption')
-                render_table(nxt.get('table_rows') or [])
+                render_table(nxt.get('table_rows') or [], nxt.get('table_cell_items') or [])
                 idx += 2
                 continue
             if is_table_item(para):

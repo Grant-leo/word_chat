@@ -42,6 +42,22 @@ def _image_name_from_item(item: Dict[str, Any]) -> str:
     return ""
 
 
+def _image_names_from_item(item: Dict[str, Any]) -> List[str]:
+    names: List[str] = []
+    name = _image_name_from_item(item)
+    if name:
+        names.append(name)
+    for cell in item.get("table_cell_items") or []:
+        if not isinstance(cell, dict):
+            continue
+        for nested in cell.get("items") or []:
+            if isinstance(nested, dict):
+                name = _image_name_from_item(nested)
+                if name:
+                    names.append(name)
+    return names
+
+
 def _count_content_images(content: Dict[str, Any]) -> int:
     inline_total = 0
     inline_names: List[str] = []
@@ -54,10 +70,10 @@ def _count_content_images(content: Dict[str, Any]) -> int:
         for item in sec.get("paragraphs") or []:
             if not isinstance(item, dict):
                 continue
-            name = _image_name_from_item(item)
-            if name:
-                inline_total += 1
-                inline_names.append(name)
+            item_names = _image_names_from_item(item)
+            if item_names:
+                inline_total += len(item_names)
+                inline_names.extend(item_names)
     if inline_total:
         extra_section_only = [name for name in section_names if name and name not in inline_names]
         return inline_total + len(extra_section_only)
@@ -73,10 +89,10 @@ def _iter_content_image_refs(content: Dict[str, Any]) -> Iterable[Dict[str, str]
         for item in sec.get("paragraphs") or []:
             if not isinstance(item, dict):
                 continue
-            name = _image_name_from_item(item)
-            if name and name not in seen:
-                seen.add(name)
-                yield {"name": name, "heading": heading, "caption": str(item.get("caption") or "")}
+            for name in _image_names_from_item(item):
+                if name and name not in seen:
+                    seen.add(name)
+                    yield {"name": name, "heading": heading, "caption": str(item.get("caption") or "")}
         for name in sec.get("images") or []:
             name = str(name or "")
             if name and name not in seen:

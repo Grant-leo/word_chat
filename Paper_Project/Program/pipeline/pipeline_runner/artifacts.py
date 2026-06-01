@@ -209,7 +209,9 @@ def _paragraph_summary(paragraph):
         return f"{text} — {caption}" if caption else text
     if paragraph.get("table_rows") or role == "table":
         rows, cols = _table_shape(paragraph.get("table_rows") or [])
-        return f"[表格] {rows}行 x {cols}列"
+        cell_images = _paragraph_image_names(paragraph)
+        suffix = f"，单元格图片 {len(cell_images)}" if cell_images else ""
+        return f"[表格] {rows}行 x {cols}列{suffix}"
     if role in {"figure_caption", "table_caption"}:
         return paragraph.get("text") or "[题注]"
     if role == "formula_problem":
@@ -224,6 +226,25 @@ def _paragraph_summary(paragraph):
     if count:
         text += f" (+{count}公式)"
     return text
+
+
+def _paragraph_image_names(paragraph):
+    if not isinstance(paragraph, dict):
+        return []
+    names = []
+    if paragraph.get("role") in {"figure", "image"} or paragraph.get("image"):
+        name = paragraph.get("image") or paragraph.get("filename") or paragraph.get("asset") or ""
+        if name:
+            names.append(str(name))
+    for cell in paragraph.get("table_cell_items") or []:
+        if not isinstance(cell, dict):
+            continue
+        for item in cell.get("items") or []:
+            if isinstance(item, dict) and (item.get("role") in {"figure", "image"} or item.get("image")):
+                name = item.get("image") or item.get("filename") or item.get("asset") or ""
+                if name:
+                    names.append(str(name))
+    return names
 
 
 def write_format_artifacts(fmt, md_text, out_dir):
@@ -241,9 +262,9 @@ def build_content_markdown(content, content_path):
     for sec in content.get("sections", []):
         lines.append(f'## {sec.get("heading", "")}\n')
         inline_images = {
-            str(paragraph.get("image") or paragraph.get("filename") or paragraph.get("asset") or "")
+            image
             for paragraph in sec.get("paragraphs", [])
-            if isinstance(paragraph, dict) and (paragraph.get("role") in {"figure", "image"} or paragraph.get("image"))
+            for image in _paragraph_image_names(paragraph)
         }
         for img in sec.get("images", []):
             if str(img) not in inline_images:
