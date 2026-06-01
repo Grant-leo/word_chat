@@ -144,6 +144,54 @@ def _title_info_from_title(title: str) -> Dict[str, str]:
     return {"title_en": title}
 
 
+def _normalize_reference_label(label: str) -> str:
+    return re.sub(r'\s+', ' ', str(label or '').strip()).lower()
+
+
+def _parse_markdown_reference_definition(line: str) -> Tuple[str, str] | None:
+    match = re.match(r'^\s{0,3}\[([^\]]+)\]:\s*(.+?)\s*$', str(line or ''))
+    if not match:
+        return None
+    label = _normalize_reference_label(match.group(1))
+    rest = match.group(2).strip()
+    if not label or not rest:
+        return None
+    if rest.startswith('<'):
+        end = rest.find('>')
+        target = rest[1:end].strip() if end != -1 else rest[1:].strip()
+    else:
+        target = rest.split()[0].strip()
+    if not target:
+        return None
+    return label, target
+
+
+def _extract_markdown_reference_definitions(lines: List[str]) -> Tuple[List[str], Dict[str, str]]:
+    filtered: List[str] = []
+    references: Dict[str, str] = {}
+    fence_marker = ''
+    for line in lines:
+        fence = re.match(r'^\s*(```|~~~)', str(line or ''))
+        if fence:
+            marker = fence.group(1)
+            if not fence_marker:
+                fence_marker = marker
+            elif marker == fence_marker:
+                fence_marker = ''
+            filtered.append(line)
+            continue
+        if fence_marker:
+            filtered.append(line)
+            continue
+        parsed = _parse_markdown_reference_definition(line)
+        if parsed:
+            label, target = parsed
+            references[label] = target
+            continue
+        filtered.append(line)
+    return filtered, references
+
+
 def _process_inline_math(text: str) -> List[Tuple[str, bool]]:
     """Split text by $...$ spans. Returns list of (text, is_math) tuples."""
     parts: List[Tuple[str, bool]] = []
@@ -195,18 +243,32 @@ def _local_image_filesystem_source(src: str) -> str:
     return local
 
 
-def _split_image_tokens_from_text(text: str, fig_dir: str, prefix: str, base_dir: str = '') -> Tuple[List[Dict[str, Any]], List[str], List[Dict[str, str]]]:
+def _split_image_tokens_from_text(text: str, fig_dir: str, prefix: str, base_dir: str = '', image_refs: Dict[str, str] | None = None) -> Tuple[List[Dict[str, Any]], List[str], List[Dict[str, str]]]:
     """Split Markdown image references into ordered text/image tokens."""
     imgs: List[str] = []
     missing: List[Dict[str, str]] = []
     tokens: List[Dict[str, Any]] = []
     pos = 0
+    refs = image_refs or {}
 
-    for m in re.finditer(r'!\[([^\]]*)\]\((.+?)\)', text):
+    for m in re.finditer(r'!\[([^\]]*)\](?:\((.+?)\)|\[([^\]]*)\])', text):
         if m.start() > pos:
             tokens.append({'type': 'text', 'text': text[pos:m.start()]})
         alt = m.group(1).strip()
-        src = m.group(2).strip().strip('"').strip("'")
+        inline_src = m.group(2)
+        ref_label = m.group(3)
+        if inline_src is None:
+            label = _normalize_reference_label(ref_label if ref_label is not None and ref_label.strip() else alt)
+            src = refs.get(label, '')
+            if not src:
+                source = f'[{label}]' if label else ''
+                missing.append({'source': source, 'alt': alt, 'reason': 'reference_not_found'})
+                tokens.append({'type': 'missing_image', 'source': source, 'alt': alt, 'reason': 'reference_not_found'})
+                pos = m.end()
+                continue
+        else:
+            src = inline_src
+        src = src.strip().strip('"').strip("'")
         if src.startswith("<") and src.endswith(">"):
             src = src[1:-1].strip()
         source_for_report = unquote(src)
@@ -307,9 +369,9 @@ def _parse_text_paragraph(text: str) -> Any:
     return plain_text if plain_text else None
 
 
-def _parse_paragraph_items(text: str, fig_dir: str, prefix: str, base_dir: str = '') -> Tuple[List[Any], List[str], List[Dict[str, str]]]:
+def _parse_paragraph_items(text: str, fig_dir: str, prefix: str, base_dir: str = '', image_refs: Dict[str, str] | None = None) -> Tuple[List[Any], List[str], List[Dict[str, str]]]:
     """Parse a Markdown paragraph into ordered content items and image names."""
-    tokens, images, missing = _split_image_tokens_from_text(text, fig_dir, prefix, base_dir=base_dir)
+    tokens, images, missing = _split_image_tokens_from_text(text, fig_dir, prefix, base_dir=base_dir, image_refs=image_refs)
     items = []
     for tok in tokens:
         if tok.get('type') == 'image':

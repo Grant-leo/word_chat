@@ -12,6 +12,7 @@ try:
         _RE_REF_HEADING,
         _classify_markdown_heading_role,
         _detect_title,
+        _extract_markdown_reference_definitions,
         _parse_markdown_table,
         _parse_paragraph_items,
         _skip_format_section,
@@ -25,6 +26,7 @@ except ImportError:  # pragma: no cover - package-style imports
         _RE_REF_HEADING,
         _classify_markdown_heading_role,
         _detect_title,
+        _extract_markdown_reference_definitions,
         _parse_markdown_table,
         _parse_paragraph_items,
         _skip_format_section,
@@ -45,6 +47,7 @@ def extract_content(md_path, output_dir=None):
 
     lines = raw.split('\n')
     lines = _skip_format_section(lines)
+    lines, image_refs = _extract_markdown_reference_definitions(lines)
 
     base = os.path.splitext(os.path.basename(md_path))[0]
     base_dir = os.path.dirname(os.path.abspath(md_path))
@@ -92,7 +95,7 @@ def extract_content(md_path, output_dir=None):
                     block = block.strip()
                     if not block:
                         continue
-                    items, imgs, missing = _parse_paragraph_items(block, fig_dir, f'{base}_img', base_dir=base_dir)
+                    items, imgs, missing = _parse_paragraph_items(block, fig_dir, f'{base}_img', base_dir=base_dir, image_refs=image_refs)
                     current_section['images'].extend(imgs)
                     all_images.extend(imgs)
                     missing_images.extend(missing)

@@ -275,6 +275,52 @@ def md_image_resolves_local_uri_suffixes() -> None:
 
 
 @case
+def md_reference_style_images_are_extracted_or_reported() -> None:
+    work = new_workdir("md_reference_style_images")
+    figures = work / "figures"
+    figures.mkdir()
+    (figures / "ref panel.png").write_bytes(PNG_1X1)
+    md = work / "reference_images.md"
+    md.write_text(
+        "# Reference Images\n\n"
+        "Before ![diagram][fig-one] after.\n\n"
+        "Missing ![missing][not-defined] should become a QA-visible marker.\n\n"
+        "[fig-one]: figures/ref%20panel.png?raw=true#panel-a\n",
+        encoding="utf-8",
+    )
+    content = extract_md_content(str(md), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    images = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "image"]
+    missing = content["_meta"].get("missing_images") or []
+    assert_true(content["_meta"]["images_extracted"] == 1, f"reference-style Markdown image was not copied: {content['_meta']}")
+    assert_true(len(images) == 1, f"reference-style Markdown image was not preserved in content stream: {paragraphs}")
+    assert_true(len(missing) == 1 and missing[0].get("reason") == "reference_not_found", f"undefined image reference was not reported clearly: {missing}")
+    assert_true(
+        all("[fig-one]:" not in str(p) for p in paragraphs),
+        f"Markdown image reference definition leaked into body content: {paragraphs}",
+    )
+
+
+@case
+def md_reference_definition_like_code_lines_stay_in_code_blocks() -> None:
+    work = new_workdir("md_reference_code")
+    md = work / "reference_code.md"
+    md.write_text(
+        "# Reference Code\n\n"
+        "```markdown\n"
+        "[fig-one]: figures/example.png\n"
+        "![diagram][fig-one]\n"
+        "```\n",
+        encoding="utf-8",
+    )
+    content = extract_md_content(str(md), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    code = next((p for p in paragraphs if isinstance(p, dict) and p.get("role") == "code"), {})
+    assert_true("[fig-one]: figures/example.png" in str(code.get("code") or ""), f"reference definition-like code line was stripped: {paragraphs}")
+    assert_true(content["_meta"].get("images_extracted") == 0, f"code-block image reference should not be extracted: {content['_meta']}")
+
+
+@case
 def md_missing_images_are_reported_to_qa() -> None:
     work = new_workdir("md_missing_images")
     md = work / "missing_images.md"
