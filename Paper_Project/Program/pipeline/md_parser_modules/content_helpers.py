@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+from html.parser import HTMLParser
 from typing import Any, Dict, List, Tuple
 from urllib.parse import unquote
 
@@ -320,6 +321,74 @@ def _find_markdown_close(text: str, start: int, close_char: str) -> int:
     return -1
 
 
+class _HtmlImageParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.attrs: Dict[str, str] = {}
+
+    def handle_starttag(self, tag: str, attrs: List[Tuple[str, str | None]]) -> None:
+        if tag.lower() != 'img' or self.attrs:
+            return
+        self.attrs = {str(name or '').lower(): str(value or '') for name, value in attrs}
+
+
+def _find_html_img_tag_end(text: str, start: int) -> int | None:
+    quote = ''
+    idx = start
+    while idx < len(text):
+        ch = text[idx]
+        if quote:
+            if ch == quote:
+                quote = ''
+        elif ch in ('"', "'"):
+            quote = ch
+        elif ch == '>':
+            return idx + 1
+        idx += 1
+    return None
+
+
+def _html_img_attrs(tag_text: str) -> Dict[str, str]:
+    parser = _HtmlImageParser()
+    try:
+        parser.feed(tag_text)
+    except Exception:
+        return {}
+    return parser.attrs
+
+
+def _iter_html_image_tokens(text: str) -> List[Tuple[int, int, str, str | None, str | None]]:
+    tokens: List[Tuple[int, int, str, str | None, str | None]] = []
+    pos = 0
+    while True:
+        match = re.search(r'<\s*img\b', text[pos:], re.I)
+        if not match:
+            break
+        start = pos + match.start()
+        end = _find_html_img_tag_end(text, start)
+        if end is None:
+            pos = start + 1
+            continue
+        attrs = _html_img_attrs(text[start:end])
+        src = attrs.get('src', '')
+        alt = attrs.get('alt', '')
+        tokens.append((start, end, alt, src, None))
+        pos = end
+    return tokens
+
+
+def _strip_html_image_tags(text: str) -> str:
+    parts = []
+    pos = 0
+    for start, end, _alt, _src, _ref in _iter_html_image_tokens(str(text or '')):
+        if start < pos:
+            continue
+        parts.append(str(text or '')[pos:start])
+        pos = end
+    parts.append(str(text or '')[pos:])
+    return ''.join(parts)
+
+
 def _parse_inline_image_destination(text: str, open_pos: int) -> Tuple[str | None, int | None]:
     depth = 0
     in_angle = False
@@ -391,7 +460,12 @@ def _split_image_tokens_from_text(text: str, fig_dir: str, prefix: str, base_dir
     pos = 0
     refs = image_refs or {}
 
-    for start, end, raw_alt, inline_src, ref_label in _iter_markdown_image_tokens(text):
+    image_tokens = _iter_markdown_image_tokens(text) + _iter_html_image_tokens(text)
+    image_tokens.sort(key=lambda item: item[0])
+
+    for start, end, raw_alt, inline_src, ref_label in image_tokens:
+        if start < pos:
+            continue
         if start > pos:
             tokens.append({'type': 'text', 'text': text[pos:start]})
         alt = raw_alt.strip()
@@ -540,7 +614,7 @@ def _strip_md_formatting(text: str, preserve_edges: bool = False) -> str:
     raw = str(text or '')
     has_leading = bool(re.match(r'^\s+', raw))
     has_trailing = bool(re.search(r'\s+$', raw))
-    text = raw
+    text = _strip_html_image_tags(raw)
     text = re.sub(r'!\[.*?\]\(.+?\)', '', text)
     text = re.sub(r'\[([^\]]*)\]\(.+?\)', r'\1', text)
     text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
