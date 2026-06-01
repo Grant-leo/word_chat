@@ -18,6 +18,30 @@ def _result_label(passed: bool, has_warnings: bool, *, passed_text: str, failed_
     return passed_text
 
 
+def _as_report_path(base_dir: str, item: Any) -> str:
+    value = str(item or "").strip().replace("\\", "/")
+    if not value:
+        return ""
+    if value.startswith("Outputs/") or not base_dir:
+        return value
+    return f"{base_dir.rstrip('/')}/{value.lstrip('/')}"
+
+
+def _append_open_first(lines: list[str], repair_plan: Dict[str, Any], report: Dict[str, Any]) -> None:
+    items = [item for item in repair_plan.get("open_first") or [] if str(item or "").strip()]
+    if not items:
+        return
+    base_dir = str(repair_plan.get("output_dir") or "").strip().replace("\\", "/")
+    if not base_dir:
+        folder = str(report.get("output_dir_name") or "").strip()
+        base_dir = f"Outputs/{folder}" if folder else ""
+    lines.extend(["", "## 先打开这些文件", ""])
+    for item in items:
+        path = _as_report_path(base_dir, item)
+        if path:
+            lines.append(f"- `{path}`")
+
+
 def report_to_markdown(report: Dict[str, Any]) -> str:
     issues = report.get("issues") or []
     lines = [
@@ -53,7 +77,10 @@ def report_to_markdown(report: Dict[str, Any]) -> str:
     if repair_plan:
         lines.extend(["", "## 修复计划", ""])
         lines.append(f"- 摘要：{repair_plan.get('summary')}")
+        _append_open_first(lines, repair_plan, report)
         commands = repair_plan.get("commands") or {}
+        if commands.get("rerun_current_pipeline") or commands.get("rebuild_current_docx"):
+            lines.extend(["", "## 可执行命令", ""])
         if commands.get("rerun_current_pipeline"):
             lines.append(f"- 重新跑完整流水线：`{commands.get('rerun_current_pipeline')}`")
         if commands.get("rebuild_current_docx"):

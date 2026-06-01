@@ -357,6 +357,51 @@ def qa_repair_plan_warning_only_is_not_plain_pass() -> None:
 
 
 @case
+def qa_report_markdown_lists_repair_plan_open_first_files() -> None:
+    from qa_checker_modules.reports import report_to_markdown
+
+    report = {
+        "mode": "user",
+        "passed": False,
+        "output_dir_name": "demo",
+        "next_action": "优先处理 `CONTENT_IMAGE_MISSING`。",
+        "counts": {},
+        "issues": [
+            {
+                "code": "CONTENT_IMAGE_MISSING",
+                "severity": "error",
+                "message": "missing image",
+                "active_owner": "User input/template file",
+            }
+        ],
+        "repair_plan": {
+            "summary": "QA 发现 1 个阻断错误。",
+            "output_dir": "Outputs/demo",
+            "open_first": [
+                "qa_repair_plan.md",
+                "qa_report.md",
+                "内容提取.md",
+                "build_manifest.json",
+                "最终论文.docx",
+            ],
+            "commands": {
+                "rerun_current_pipeline": "python run_pipeline.py --mode user --template t.docx --content c.docx",
+                "rebuild_current_docx": "python Outputs/demo/build_generated.py",
+            },
+            "steps": [],
+        },
+    }
+    markdown = report_to_markdown(report)
+    assert_true("## 先打开这些文件" in markdown, f"QA report should surface repair-plan review files: {markdown}")
+    assert_true("Outputs/demo/qa_repair_plan.md" in markdown, f"QA report should point to repair plan: {markdown}")
+    assert_true("Outputs/demo/内容提取.md" in markdown, f"QA report should point to content summary: {markdown}")
+    assert_true("Outputs/demo/build_manifest.json" in markdown, f"QA report should point to build manifest: {markdown}")
+    assert_true("Outputs/demo/最终论文.docx" in markdown, f"QA report should point to final DOCX: {markdown}")
+    assert_true("## 可执行命令" in markdown, f"QA report should keep commands separate from open-first files: {markdown}")
+    assert_true(markdown.index("## 先打开这些文件") < markdown.index("## 可执行命令"), f"open-first files should be listed before commands: {markdown}")
+
+
+@case
 def qa_report_next_action_names_first_repair_step() -> None:
     work = new_workdir("qa_next_action_first_step")
     write_json(work / "workflow_mode.json", {"mode": "user"})
