@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import base64
 import re
+from io import BytesIO
 
+from PIL import Image
 from md_parser import extract_content as extract_md_content
 
 from regression_suite_modules.generated_docx import run_generated_case
@@ -21,6 +23,12 @@ GIF_1X1 = (
     b"!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01"
     b"\x00\x00\x02\x02D\x01\x00;"
 )
+
+
+def _jpeg_1x1() -> bytes:
+    buffer = BytesIO()
+    Image.new("RGB", (1, 1), "white").save(buffer, format="JPEG")
+    return buffer.getvalue()
 
 
 def _table_cell_media_items(paragraphs):
@@ -463,6 +471,42 @@ def md_html_bad_data_uri_images_are_reported_as_unreadable() -> None:
     assert_true("CONTENT_IMAGE_UNREADABLE" in codes, f"QA did not report broken data URI as unreadable: {codes}")
     assert_true("CONTENT_IMAGE_REMOTE_UNSUPPORTED" not in codes, f"data URI should not be reported as a remote image: {codes}")
     assert_true(result["report"]["passed"] is False, "broken data URI images should fail structural QA")
+
+
+@case
+def md_html_data_uri_mime_mismatch_is_reported_as_unreadable() -> None:
+    work = new_workdir("md_html_data_uri_mime_mismatch")
+    mismatched_uri = "data:image/png;base64," + base64.b64encode(_jpeg_1x1()).decode("ascii")
+    md = work / "html_data_uri_mismatch.md"
+    md.write_text(
+        "# HTML Data URI MIME Mismatch\n\n"
+        "## Abstract\n"
+        "This abstract keeps the document in normal paper shape.\n\n"
+        "## 1 Introduction\n"
+        f"Mismatched <img alt=\"mismatch\" src=\"{mismatched_uri}\"> image should ask users to export PNG/JPG again.\n\n"
+        "## References\n"
+        "[1] Synthetic reference.",
+        encoding="utf-8",
+    )
+    content = extract_md_content(str(md), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    missing = content["_meta"].get("missing_images") or []
+    joined = "\n".join(str(p) for p in paragraphs)
+    assert_true(content["_meta"]["images_extracted"] == 0, f"mismatched data URI should not be copied: {content['_meta']}")
+    assert_true(
+        len(missing) == 1 and missing[0].get("reason") == "unreadable" and "JPEG" in str(missing[0].get("detail") or ""),
+        f"mismatched data URI was not recorded as unreadable with detected format detail: {missing}",
+    )
+    assert_true("data:image" not in str(missing), f"raw data URI payload leaked into missing-image metadata: {missing}")
+    assert_true("<img" not in joined and "data:image" not in joined, f"raw mismatched HTML image tag leaked into body content: {paragraphs}")
+
+    result = run_generated_case("md_html_data_uri_mime_mismatch_generated", content, base_format())
+    report = result["report"]
+    codes = [item["code"] for item in report["issues"]]
+    assert_true("CONTENT_IMAGE_UNREADABLE" in codes, f"QA did not report mismatched data URI as unreadable: {codes}")
+    assert_true(report["passed"] is False, "mismatched data URI images should fail structural QA")
+    action = str((report.get("repair_plan") or {}).get("next_action") or report.get("next_action") or "")
+    assert_true("CONTENT_IMAGE_UNREADABLE" in action and "PNG" in action, f"mismatched data URI next action should tell users to export PNG/JPG: {action}")
 
 
 @case

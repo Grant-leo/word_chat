@@ -87,8 +87,8 @@ REPAIR_GUIDES = {
     },
     "CONTENT_IMAGE_UNREADABLE": {
         "title": "Markdown 图片不可读",
-        "why": "Markdown 链接指向的本地图片文件或内联 data URI 存在，但不是 Word 可渲染的正常图片，常见原因是文件损坏、扩展名不匹配、data URI 损坏，或使用了当前生成器不支持的图片格式。",
-        "user_action": "先用系统图片查看器打开该图片；如果打不开、显示异常，或它是坏的内联 data URI，请从原始图片重新导出为普通 PNG/JPG 文件，把 Markdown 图片链接改成本地相对路径后重新运行流水线。",
+        "why": "Markdown 链接指向的本地图片文件或内联 data URI 存在，但不是 Word 可渲染的正常图片，常见原因是文件损坏、扩展名不匹配、data URI 损坏、data URI 声明类型和真实图片格式不一致，或使用了当前生成器不支持的图片格式。",
+        "user_action": "先用系统图片查看器打开该图片；如果打不开、显示异常，或它是坏的内联 data URI / 类型标错的 data URI，请从原始图片重新导出为普通 PNG/JPG 文件，把 Markdown 图片链接改成本地相对路径后重新运行流水线。",
         "developer_action": "检查 `md_parser.py` 的本地图片可读性校验，以及是否需要支持新的图片格式。",
         "auto_level": "needs_user_file",
     },

@@ -335,9 +335,13 @@ def _decode_data_uri_image(src: str) -> Tuple[bytes | None, str, str]:
     if Image is not None:
         try:
             with Image.open(BytesIO(data)) as image:
+                detected = str(image.format or '').upper()
                 image.verify()
         except Exception as exc:
             return None, ext, f'unreadable data URI image payload: {type(exc).__name__}: {exc}'
+        expected = _PIL_FORMAT_FOR_EXTENSION.get(ext)
+        if expected and detected and detected != expected:
+            return None, ext, f'data URI MIME type {mime_type or "unknown"} does not match detected format {detected}; re-export as PNG/JPG'
     return data, ext, ''
 
 
