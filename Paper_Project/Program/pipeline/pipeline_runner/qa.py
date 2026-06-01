@@ -69,6 +69,10 @@ def _print_report_summary(label, report, *, show_owner=False, report_file="qa_re
             print(f"     下一步: {next_action[:220]}")
 
 
+def _print_report_contract(filename, report):
+    print_contract_issues(filename, validate_qa_report(report))
+
+
 def _print_failed_report_hint(qa_report, failed_reports):
     if qa_report and not qa_report.get("passed"):
         print_repair_hint(qa_report, None)
@@ -354,6 +358,7 @@ def run_qa_phases(
             detail=detail,
             project_root=project_root,
         )
+        _print_report_contract("qa_report.json", qa_report)
         print("  [ERROR] 结构 QA 依赖缺失，已写出 qa_report.md / qa_repair_plan.md / qa_fix_prompt.txt")
         failed_reports.append(("Structural QA", "qa_report.md / qa_repair_plan.md", qa_report))
         _print_failed_report_hint(qa_report, failed_reports)
@@ -377,10 +382,11 @@ def run_qa_phases(
             developer_action="检查 qa_checker.py / qa_checker_modules 的异常堆栈、输入报告和依赖状态，修复后重跑 targeted regression、完整 regression 与真实流水线。",
             next_action="结构 QA 运行中断。先修复 qa_checker.py / qa_checker_modules 的异常，再重新运行完整流水线；先查看 qa_report.md 和 qa_repair_plan.md。",
         )
+        _print_report_contract("qa_report.json", qa_report)
         failed_reports.append(("Structural QA", "qa_report.md / qa_repair_plan.md", qa_report))
         _print_failed_report_hint(qa_report, failed_reports)
         return False
-    print_contract_issues("qa_report.json", validate_qa_report(qa_report))
+    _print_report_contract("qa_report.json", qa_report)
     _print_report_summary("QA", qa_report, show_owner=True)
     print("  [OK] QA 报告 -> qa_report.json / qa_report.md")
     if not qa_report.get("passed"):
@@ -401,6 +407,7 @@ def run_qa_phases(
                 next_action="修复 strict conformance QA 依赖后重跑；先查看 conformance_report.md。",
                 project_root=project_root,
             )
+            _print_report_contract("conformance_report.json", conformance)
             failed_reports.append(("Conformance QA", "conformance_report.md", conformance))
             _print_failed_report_hint(qa_report, failed_reports)
             return False
@@ -424,10 +431,11 @@ def run_qa_phases(
                 next_action="strict conformance QA 运行中断。先修复 qa_conformance.py / qa_conformance_modules 的异常后重跑；先查看 conformance_report.md。",
                 project_root=project_root,
             )
+            _print_report_contract("conformance_report.json", conformance)
             failed_reports.append(("Conformance QA", "conformance_report.md", conformance))
             _print_failed_report_hint(qa_report, failed_reports)
             return False
-        print_contract_issues("conformance_report.json", validate_qa_report(conformance))
+        _print_report_contract("conformance_report.json", conformance)
         _print_report_summary("Conformance QA", conformance, report_file="conformance_report.md")
         print("  [OK] strict conformance QA -> conformance_report.json / conformance_report.md")
         if not conformance.get("passed"):
@@ -448,6 +456,7 @@ def run_qa_phases(
                 next_action="修复 visual QA 依赖后重跑；先查看 visual_report.md。",
                 project_root=project_root,
             )
+            _print_report_contract("visual_report.json", visual)
             failed_reports.append(("Visual QA", "visual_report.md", visual))
             _print_failed_report_hint(qa_report, failed_reports)
             return False
@@ -475,10 +484,11 @@ def run_qa_phases(
                 next_action="visual QA 运行中断。先修复 qa_visual.py / qa_visual_modules、Word COM 或 Poppler 渲染异常后重跑；先查看 visual_report.md。",
                 project_root=project_root,
             )
+            _print_report_contract("visual_report.json", visual)
             failed_reports.append(("Visual QA", "visual_report.md", visual))
             _print_failed_report_hint(qa_report, failed_reports)
             return False
-        print_contract_issues("visual_report.json", validate_qa_report(visual))
+        _print_report_contract("visual_report.json", visual)
         _print_report_summary("Visual QA", visual, report_file="visual_report.md")
         print("  [OK] PDF 渲染 QA -> visual_report.json / visual_report.md")
         if not visual.get("passed"):
