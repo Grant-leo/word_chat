@@ -140,6 +140,7 @@ def _write_conformance_report(out_dir: str, *, passed: bool) -> Dict[str, Any]:
         "issues": issues,
         "next_action": "Fix Outputs/<run>/build_generated.py and rerun it.",
     }
+    report.update(qa_status_fields(report["passed"], report["issues"]))
     Path(out_dir, "conformance_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report
 
@@ -2094,7 +2095,9 @@ def pipeline_qa_runs_strict_and_blocks_failures() -> None:
 
     def passing_conformance(out_dir, mode, output_docx_name, project_root):
         calls.append("conformance")
-        return {"passed": True, "issues": []}
+        report = {"passed": True, "issues": [], "counts": {}, "mode": mode}
+        report.update(qa_status_fields(report["passed"], report["issues"]))
+        return report
 
     deps = QADependencies(
         qa_check_and_write=passing_qa,
@@ -2128,6 +2131,73 @@ def pipeline_qa_runs_strict_and_blocks_failures() -> None:
         not run_qa_phases(str(work), mode="developer", output_docx_name="最终论文.docx", qa_level="basic", project_root=str(work), deps=failing_deps),
         "QA should block the pipeline when the required QA report fails",
     )
+
+
+@case
+def pipeline_qa_contract_checks_strict_and_visual_reports() -> None:
+    def passing_qa(out_dir, mode, output_docx_name):
+        report = {"passed": True, "issues": [], "counts": {}, "mode": mode}
+        report.update(qa_status_fields(report["passed"], report["issues"]))
+        return report
+
+    def invalid_conformance(out_dir, mode, output_docx_name, project_root):
+        return {"passed": True, "issues": [], "counts": {}, "mode": mode}
+
+    strict_work = new_workdir("pipeline_qa_contract_strict_report")
+    strict_deps = QADependencies(
+        qa_check_and_write=passing_qa,
+        conformance_check_and_write=invalid_conformance,
+        visual_check_and_write=None,
+        optional_import_detail=lambda name: "",
+    )
+    strict_buffer = io.StringIO()
+    with redirect_stdout(strict_buffer):
+        assert_true(
+            run_qa_phases(
+                str(strict_work),
+                mode="developer",
+                output_docx_name="最终论文.docx",
+                qa_level="strict",
+                project_root=str(strict_work),
+                deps=strict_deps,
+            ),
+            "contract warnings should not block an otherwise passing strict QA run",
+        )
+    strict_output = strict_buffer.getvalue()
+    assert_true("[CONTRACT] conformance_report.json" in strict_output, f"strict report contract warning was not printed: {strict_output}")
+    assert_true("QA_REPORT_STATUS_MISSING" in strict_output, f"strict report missing-status contract issue was not printed: {strict_output}")
+
+    def passing_conformance(out_dir, mode, output_docx_name, project_root):
+        report = {"passed": True, "issues": [], "counts": {}, "mode": mode}
+        report.update(qa_status_fields(report["passed"], report["issues"]))
+        return report
+
+    def invalid_visual(out_dir, output_docx_name, project_root, render_all_pages, require_wps, golden_dir, update_golden):
+        return {"passed": True, "issues": [], "counts": {}, "mode": "developer"}
+
+    visual_work = new_workdir("pipeline_qa_contract_visual_report")
+    visual_deps = QADependencies(
+        qa_check_and_write=passing_qa,
+        conformance_check_and_write=passing_conformance,
+        visual_check_and_write=invalid_visual,
+        optional_import_detail=lambda name: "",
+    )
+    visual_buffer = io.StringIO()
+    with redirect_stdout(visual_buffer):
+        assert_true(
+            run_qa_phases(
+                str(visual_work),
+                mode="developer",
+                output_docx_name="最终论文.docx",
+                qa_level="visual",
+                project_root=str(visual_work),
+                deps=visual_deps,
+            ),
+            "contract warnings should not block an otherwise passing visual QA run",
+        )
+    visual_output = visual_buffer.getvalue()
+    assert_true("[CONTRACT] visual_report.json" in visual_output, f"visual report contract warning was not printed: {visual_output}")
+    assert_true("QA_REPORT_STATUS_MISSING" in visual_output, f"visual report missing-status contract issue was not printed: {visual_output}")
 
 
 @case

@@ -427,6 +427,7 @@ def run_qa_phases(
             failed_reports.append(("Conformance QA", "conformance_report.md", conformance))
             _print_failed_report_hint(qa_report, failed_reports)
             return False
+        print_contract_issues("conformance_report.json", validate_qa_report(conformance))
         _print_report_summary("Conformance QA", conformance, report_file="conformance_report.md")
         print("  [OK] strict conformance QA -> conformance_report.json / conformance_report.md")
         if not conformance.get("passed"):
@@ -477,6 +478,7 @@ def run_qa_phases(
             failed_reports.append(("Visual QA", "visual_report.md", visual))
             _print_failed_report_hint(qa_report, failed_reports)
             return False
+        print_contract_issues("visual_report.json", validate_qa_report(visual))
         _print_report_summary("Visual QA", visual, report_file="visual_report.md")
         print("  [OK] PDF 渲染 QA -> visual_report.json / visual_report.md")
         if not visual.get("passed"):
