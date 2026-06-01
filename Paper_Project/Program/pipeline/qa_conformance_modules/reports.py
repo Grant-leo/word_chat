@@ -74,7 +74,9 @@ def _next_action(mode: str, issues: List[Dict[str, Any]]) -> str:
         return f"strict 合规 QA 没有阻断错误，但有警告 {leading} 需要人工确认；{action} 若确认不影响交付，可继续用 Word/WPS 做最终核对。{suffix}"
     if not error_codes:
         return "strict 合规 QA 的机器检查已通过；仍建议用 Word/WPS 打开最终 DOCX 做人工核对。"
-    return _action_for_codes(error_codes, mode)
+    leading = "、".join(f"`{code}`" for code in error_codes[:3])
+    suffix = f" 另有 {len(error_codes) - 3} 类错误。" if len(error_codes) > 3 else ""
+    return f"strict 合规 QA 未通过，优先处理 {leading}{suffix}；{_action_for_codes(error_codes, mode)}"
 
 
 def _append_review_artifacts(lines: List[str], output_dir_name: Any) -> None:

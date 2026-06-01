@@ -166,9 +166,10 @@ Open the newest `Outputs/<run>/` directory and inspect:
 - `repair_loop_report.md` / `repair_loop_report.json`: bounded auto-repair audit when `--auto-repair` was used; stopped loops expose top-level `next_action`, `resume_scope`, and `resume_command`.
 - `conformance_report.md`: strict DOCX/XML/template-content conformance report.
 - `visual_report.md` and `visual_qa/samples/`: PDF/render QA outputs when `--qa-level visual` was used.
-  Their top-level next action should be issue-code-specific for common blockers
-  such as placeholders, Word field errors, invalid PDF page count, unreadable
-  page PNGs, and missing render dependencies.
+  Their top-level next action should name the leading issue code and be
+  issue-code-specific for common blockers such as placeholders, Word field
+  errors, invalid PDF page count, unreadable page PNGs, and missing render
+  dependencies.
 - `build_manifest.json`: rendered images/tables/formulas counts.
 - `最终论文.docx`: final generated Word document.
 
@@ -342,7 +343,7 @@ When a user wants a document-specific feature:
 - Always honor workflow mode: user mode changes only `build_generated.py`; developer mode changes reusable core scripts and reruns the whole pipeline.
 - `template_profile.json/md` is the reusable template decision layer. Use profile capabilities/risk flags instead of school-name logic.
 - QA reports are routing-focused and block on `error`; they do not replace Word/WPS visual verification for final delivery.
-- QA also writes `qa_repair_plan.md/json` and `qa_fix_prompt.txt`; generated-script build failures should get the same QA-shaped handoff before asking the user to repair `build_generated.py`. `qa_report.md/json` and the repair plan should name the leading issue code and concrete next action first when repairing. The repair plan JSON should also expose `next_action`, `resume_scope`, and `resume_command` so the handoff says whether to fix input files, rebuild the current DOCX, rerun the full pipeline, or do final Word/WPS review. Strict/visual reports should also avoid generic "inspect the report" guidance when the issue code can provide a concrete next action.
+- QA also writes `qa_repair_plan.md/json` and `qa_fix_prompt.txt`; generated-script build failures should get the same QA-shaped handoff before asking the user to repair `build_generated.py`. `qa_report.md/json` and the repair plan should name the leading issue code and concrete next action first when repairing. The repair plan JSON should also expose `next_action`, `resume_scope`, and `resume_command` so the handoff says whether to fix input files, rebuild the current DOCX, rerun the full pipeline, or do final Word/WPS review. Strict/visual reports should also name the leading issue code in the top-level `next_action` and avoid generic "inspect the report" guidance when the issue code can provide a concrete next action.
 - QA/user-facing reports should prefer run-relative paths and avoid leaking absolute local paths.
 - `workflow_mode.json` should only create copyable rerun commands for inputs that can be safely expressed under this project's `Inputs/` or `Templates/`. If an absolute source file is outside those folders, including another same-named external `Inputs` or `Templates` directory, do not collapse it to a misleading basename; omit the fake command and tell the user to move/copy the file into the project source folder, then rerun by file name.
 - PDF templates are best-effort format sources: instruction-style PDFs provide text rules, sparse instruction PDFs must surface missing-rule warnings, visual sample PDFs provide estimated geometry/styles and must surface `PDF_TEMPLATE_VISUAL_APPROXIMATION` for Word/WPS layout review, landscape PDFs must surface `PDF_TEMPLATE_LANDSCAPE_PAGE`, missing Poppler tools must surface `PDF_TEMPLATE_DEPENDENCY_MISSING`, protected/password or copy-restricted PDFs must surface `PDF_TEMPLATE_PROTECTED`, corrupt/unreadable PDFs must surface `PDF_TEMPLATE_READ_FAILED`, and scanned/textless PDFs must surface `PDF_TEMPLATE_UNSUPPORTED`.

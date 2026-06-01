@@ -95,7 +95,7 @@ def _restore_rendered_text_artifact(visual_dir: str, label: str) -> None:
         shutil.copyfile(src, os.path.join(visual_dir, "rendered.txt"))
 
 
-def _next_action(issues: List[Dict[str, Any]]) -> str:
+def _next_action_body(issues: List[Dict[str, Any]]) -> str:
     error_codes = {str(item.get("code") or "") for item in issues if item.get("severity") == "error"}
     warning_codes = {str(item.get("code") or "") for item in issues if item.get("severity") == "warning"}
     if not error_codes and not warning_codes:
@@ -155,6 +155,37 @@ def _next_action(issues: List[Dict[str, Any]]) -> str:
     if warning_codes:
         return "visual QA 通过但仍有 warning；打开 visual_report.md 按问题码确认是否影响交付，必要时修复后重跑 visual QA。"
     return "打开 visual_report.md 和 visual_qa/samples/，按页面样张定位排版问题后重跑流水线。"
+
+
+def _ordered_issue_codes(issues: List[Dict[str, Any]], severity: str) -> List[str]:
+    codes: List[str] = []
+    seen = set()
+    for item in issues or []:
+        if item.get("severity") != severity:
+            continue
+        code = str(item.get("code") or "").strip()
+        if code and code not in seen:
+            seen.add(code)
+            codes.append(code)
+    return codes
+
+
+def _prefix_issue_action(issues: List[Dict[str, Any]], action: str) -> str:
+    error_codes = _ordered_issue_codes(issues, "error")
+    warning_codes = _ordered_issue_codes(issues, "warning")
+    if error_codes:
+        leading = "、".join(f"`{code}`" for code in error_codes[:3])
+        suffix = f" 另有 {len(error_codes) - 3} 类错误。" if len(error_codes) > 3 else ""
+        return f"visual QA 未通过，优先处理 {leading}{suffix}：{action}"
+    if warning_codes:
+        leading = "、".join(f"`{code}`" for code in warning_codes[:3])
+        suffix = f" 另有 {len(warning_codes) - 3} 类警告。" if len(warning_codes) > 3 else ""
+        return f"visual QA 通过但有警告，优先确认 {leading}{suffix}：{action}"
+    return action
+
+
+def _next_action(issues: List[Dict[str, Any]]) -> str:
+    return _prefix_issue_action(issues, _next_action_body(issues))
 
 
 def check_visual(

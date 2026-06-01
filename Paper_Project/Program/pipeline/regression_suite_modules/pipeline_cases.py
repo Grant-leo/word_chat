@@ -2281,6 +2281,7 @@ def pipeline_strict_and_visual_reports_surface_specific_next_actions() -> None:
         [{"code": "PLACEHOLDER_TEXT_LEFT", "severity": "error", "message": "placeholder remains", "detail": ""}],
         project_root=str(work),
     )
+    assert_true("PLACEHOLDER_TEXT_LEFT" in placeholder_report["next_action"], f"placeholder strict action lost the issue code: {placeholder_report}")
     assert_true("占位符" in placeholder_report["next_action"], f"placeholder strict report used a generic action: {placeholder_report}")
     assert_true("strict QA" in placeholder_report["next_action"], f"strict report should tell users how to verify after fixing: {placeholder_report}")
 
@@ -2291,6 +2292,7 @@ def pipeline_strict_and_visual_reports_surface_specific_next_actions() -> None:
         [{"code": "WORD_FIELD_ERROR", "severity": "error", "message": "field error remains", "detail": ""}],
         project_root=str(work),
     )
+    assert_true("WORD_FIELD_ERROR" in word_field_report["next_action"], f"Word field strict action lost the issue code: {word_field_report}")
     assert_true("Word 域" in word_field_report["next_action"] and "重跑 strict QA" in word_field_report["next_action"], f"Word field strict report used a generic action: {word_field_report}")
 
     strict_warning_report = build_conformance_report(
@@ -2307,12 +2309,15 @@ def pipeline_strict_and_visual_reports_surface_specific_next_actions() -> None:
     assert_true("机器检查已通过" not in strict_warning_report["next_action"], f"warning-only strict action should not hide the warning: {strict_warning_report}")
 
     invalid_pages = visual_next_action([{"code": "PDF_PAGE_COUNT_INVALID", "severity": "error", "message": "no pages"}])
+    assert_true("PDF_PAGE_COUNT_INVALID" in invalid_pages, f"invalid-page visual action lost the issue code: {invalid_pages}")
     assert_true("没有有效页面" in invalid_pages and "重跑 visual QA" in invalid_pages, f"invalid-page visual action is too generic: {invalid_pages}")
 
     unreadable_pages = visual_next_action([{"code": "PAGE_IMAGE_UNREADABLE", "severity": "error", "message": "bad png"}])
+    assert_true("PAGE_IMAGE_UNREADABLE" in unreadable_pages, f"unreadable-page visual action lost the issue code: {unreadable_pages}")
     assert_true("不可读页面" in unreadable_pages and "重跑 visual QA" in unreadable_pages, f"unreadable-page visual action is too generic: {unreadable_pages}")
 
     wps_mismatch = visual_next_action([{"code": "WPS_PAGE_COUNT_MISMATCH", "severity": "error", "message": "wps pages differ"}])
+    assert_true("WPS_PAGE_COUNT_MISMATCH" in wps_mismatch, f"WPS mismatch visual action lost the issue code: {wps_mismatch}")
     assert_true("WPS" in wps_mismatch and "分页差异" in wps_mismatch and "重跑 visual QA" in wps_mismatch, f"WPS mismatch action should tell users how to resume: {wps_mismatch}")
 
     wps_page_size = visual_next_action([{"code": "WPS_PAGE_SIZE_MISMATCH", "severity": "error", "message": "wps page size differs"}])
@@ -2336,6 +2341,7 @@ def pipeline_strict_and_visual_reports_surface_specific_next_actions() -> None:
     assert_true("WPS" in wps_invalid_pages and "有效页面" in wps_invalid_pages and "重跑 visual QA" in wps_invalid_pages, f"WPS invalid page-count action should tell users how to resume: {wps_invalid_pages}")
 
     missing_golden = visual_next_action([{"code": "GOLDEN_BASELINE_MISSING", "severity": "warning", "message": "no baseline"}])
+    assert_true("GOLDEN_BASELINE_MISSING" in missing_golden, f"warning-only visual action lost the issue code: {missing_golden}")
     assert_true("黄金基线" in missing_golden and "--update-golden" in missing_golden, f"warning-only visual action should still guide users: {missing_golden}")
     assert_true("机器检查已通过" not in missing_golden, f"warning-only visual action should not sound fully done: {missing_golden}")
 
