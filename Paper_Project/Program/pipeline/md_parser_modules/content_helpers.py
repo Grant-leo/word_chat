@@ -171,6 +171,37 @@ def _parse_markdown_reference_definition(line: str) -> Tuple[str, str] | None:
     return label, target
 
 
+def _is_markdown_image_title(text: str) -> bool:
+    raw = str(text or '').strip()
+    if not raw:
+        return False
+    opener = raw[0]
+    closer = ')' if opener == '(' else opener
+    if opener not in ('"', "'", '('):
+        return False
+    end = _find_markdown_close(raw, 1, closer)
+    return end == len(raw) - 1
+
+
+def _markdown_image_destination_without_title(raw_src: str) -> str:
+    """Return a Markdown image destination path, dropping an optional title."""
+    raw = str(raw_src or '').strip()
+    if not raw:
+        return ''
+    if raw.startswith('<'):
+        end = _find_markdown_close(raw, 1, '>')
+        if end != -1:
+            path = raw[1:end].strip()
+            rest = raw[end + 1:].strip()
+            if not rest or _is_markdown_image_title(rest):
+                return path
+            return raw
+    parts = raw.split(None, 1)
+    if len(parts) == 2 and _is_markdown_image_title(parts[1]):
+        return parts[0].strip()
+    return raw
+
+
 def _extract_markdown_reference_definitions(lines: List[str]) -> Tuple[List[str], Dict[str, str]]:
     filtered: List[str] = []
     references: Dict[str, str] = {}
@@ -360,6 +391,7 @@ def _split_image_tokens_from_text(text: str, fig_dir: str, prefix: str, base_dir
                 continue
         else:
             src = inline_src
+        src = _markdown_image_destination_without_title(src)
         src = src.strip().strip('"').strip("'")
         if src.startswith("<") and src.endswith(">"):
             src = src[1:-1].strip()

@@ -300,6 +300,34 @@ def md_image_resolves_parenthesized_inline_paths() -> None:
 
 
 @case
+def md_image_resolves_inline_paths_with_titles() -> None:
+    work = new_workdir("md_image_inline_titles")
+    figures = work / "figures"
+    figures.mkdir()
+    (figures / "inline panel.png").write_bytes(PNG_1X1)
+    (figures / "angle panel.png").write_bytes(PNG_1X1)
+    md = work / "image_inline_titles.md"
+    md.write_text(
+        "# Image Inline Titles\n\n"
+        "Bare image ![one](figures/inline%20panel.png \"Figure caption title\") should resolve.\n\n"
+        "Wrapped image ![two](<figures/angle panel.png> 'Wrapped caption title') should resolve.",
+        encoding="utf-8",
+    )
+    content = extract_md_content(str(md), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    images = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "image"]
+    missing = content["_meta"].get("missing_images") or []
+    joined = "\n".join(str(p) for p in paragraphs)
+    assert_true(content["_meta"]["images_extracted"] == 2, f"inline Markdown image titles were not copied: {content['_meta']}")
+    assert_true(len(images) == 2, f"inline Markdown image titles were not preserved in content stream: {paragraphs}")
+    assert_true(not missing, f"existing inline-title images were reported missing: {missing}")
+    assert_true(
+        "Figure caption title" not in joined and "Wrapped caption title" not in joined,
+        f"Markdown image titles leaked into body text: {paragraphs}",
+    )
+
+
+@case
 def md_reference_style_images_are_extracted_or_reported() -> None:
     work = new_workdir("md_reference_style_images")
     figures = work / "figures"
