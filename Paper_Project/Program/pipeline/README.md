@@ -41,7 +41,7 @@ CLI, output, verification, and QA details in a focused package:
 
 Current baseline as of 2026-06-01:
 
-- Synthetic regression after the Markdown HTML image support fix: `234 passed, 0 failed`.
+- Synthetic regression after the advanced Markdown HTML image support fix: `236 passed, 0 failed`.
 - Agent-first flow: `--agent-auto` scans local inputs, auto-selects only single candidates, defaults to user auto-repair, and writes `agent_summary.md/json`.
 - Novice interruption coverage: interactive cancellation/EOF, missing preflight inputs, generated-script build failures, QA dependency failures, and auto-repair blockers all route to a next action.
 - Strict/visual report handoff coverage: `conformance_report.md/json` and `visual_report.md/json` top-level `next_action` values name the leading issue code before the beginner-facing repair step, so users can connect codes such as `PLACEHOLDER_TEXT_LEFT`, `PDF_PAGE_COUNT_INVALID`, and `GOLDEN_BASELINE_MISSING` to the next concrete action even without opening `agent_summary.md`.
@@ -50,7 +50,7 @@ Current baseline as of 2026-06-01:
 - Markdown local image path variants: local paths continue resolving `%20` spaces, `<path with spaces>` wrappers, balanced filename parentheses, optional image titles such as `![图](path "title")`, and local `?query` / `#fragment` suffixes copied from Markdown tools before checking the filesystem.
 - Markdown unreadable image handoff: existing local image files that are corrupt, mislabeled, or unsupported surface `CONTENT_IMAGE_UNREADABLE`, stop as user-file blockers, and tell users to re-export a normal PNG/JPG before rerunning.
 - Markdown reference-style images: `![alt][id]` plus `[id]: path` and shortcut reference images `![alt]` plus `[alt]: path` now copy local images into the content stream; optional title continuation lines after reference definitions are stripped with the definition; undefined image references become `CONTENT_IMAGE_MISSING` instead of staying as ordinary body text, and reference-definition-like lines inside fenced code blocks stay in code.
-- Markdown HTML images: `<img src="path" alt="...">` tags use the same local/remote/missing/unreadable image routing as Markdown image syntax, and raw tags must not leak into generated DOCX text.
+- Markdown HTML images: `<img src="path" alt="...">`, lazy `data-src` / `data-original`, the first `srcset` candidate, and PNG/JPG data URI images use the same image routing as Markdown image syntax; malformed/unsupported data URI images surface as `CONTENT_IMAGE_UNREADABLE`, and raw tags or inline payloads must not leak into generated DOCX text or QA metadata.
 - Markdown table-cell images: images embedded inside GitHub-style Markdown table cells are attached to `table_cell_items`, keep `location="markdown_table_cell"`, and render inside generated Word table cells; missing table-cell images remain QA-visible `CONTENT_IMAGE_MISSING` blockers instead of being stripped by table text cleanup.
 - Strict conformance body-start detection: default body paragraphs before the first explicit Markdown heading stay inside strict content checks instead of being skipped as TOC/front matter.
 - Content-summary coverage: `内容提取.md` renders structured `role="image"` items, including table-cell images, as `[图片]` and mentions table-cell image counts in table summaries instead of opaque `[结构化内容]`.

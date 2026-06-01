@@ -1,12 +1,15 @@
 """Markdown content parsing helpers."""
 from __future__ import annotations
 
+import base64
+import binascii
+from io import BytesIO
 import os
 import re
 import shutil
 from html.parser import HTMLParser
 from typing import Any, Dict, List, Tuple
-from urllib.parse import unquote
+from urllib.parse import unquote, unquote_to_bytes
 
 try:
     from PIL import Image
@@ -282,6 +285,54 @@ def _is_remote_image_source(src: str) -> bool:
     return bool(re.match(r'^[a-z][a-z0-9+.-]*://', str(src or ''), re.I))
 
 
+def _is_data_uri_image_source(src: str) -> bool:
+    return str(src or '').strip().lower().startswith('data:image/')
+
+
+def _data_uri_report_source(src: str) -> str:
+    raw = str(src or '').strip()
+    header = raw.split(',', 1)[0] if ',' in raw else raw[:80]
+    mime_type = header[5:].split(';', 1)[0].strip().lower() if header.lower().startswith('data:') else ''
+    return f'inline data URI image ({mime_type or "unknown type"})'
+
+
+def _data_uri_extension(mime_type: str) -> str:
+    mime = str(mime_type or '').strip().lower()
+    if mime in {'image/jpeg', 'image/jpg'}:
+        return '.jpg'
+    if mime == 'image/png':
+        return '.png'
+    return ''
+
+
+def _decode_data_uri_image(src: str) -> Tuple[bytes | None, str, str]:
+    raw = str(src or '').strip()
+    if ',' not in raw:
+        return None, '', 'data URI is missing a comma separator'
+    header, payload = raw.split(',', 1)
+    header_lower = header.lower()
+    mime_type = header[5:].split(';', 1)[0].strip().lower() if header_lower.startswith('data:') else ''
+    ext = _data_uri_extension(mime_type)
+    if not ext:
+        return None, '', f'unsupported data URI image type: {mime_type or "unknown"}'
+    try:
+        if ';base64' in header_lower:
+            data = base64.b64decode(payload, validate=True)
+        else:
+            data = unquote_to_bytes(payload)
+    except (binascii.Error, ValueError) as exc:
+        return None, ext, f'invalid data URI image payload: {type(exc).__name__}'
+    if not data:
+        return None, ext, 'empty data URI image payload'
+    if Image is not None:
+        try:
+            with Image.open(BytesIO(data)) as image:
+                image.verify()
+        except Exception as exc:
+            return None, ext, f'unreadable data URI image payload: {type(exc).__name__}: {exc}'
+    return data, ext, ''
+
+
 def _local_image_filesystem_source(src: str) -> str:
     raw = str(src or '').strip()
     end = len(raw)
@@ -357,6 +408,33 @@ def _html_img_attrs(tag_text: str) -> Dict[str, str]:
     return parser.attrs
 
 
+def _first_srcset_candidate(srcset: str) -> str:
+    for candidate in str(srcset or '').split(','):
+        parts = candidate.strip().split()
+        if parts:
+            return parts[0]
+    return ''
+
+
+def _html_image_source_from_attrs(attrs: Dict[str, str]) -> str:
+    def value(name: str) -> str:
+        return str(attrs.get(name) or '').strip()
+
+    lazy_keys = ('data-src', 'data-original', 'data-lazy-src', 'data-url', 'data-original-src')
+    src = value('src')
+    if src and not (_is_data_uri_image_source(src) and any(value(key) for key in lazy_keys)):
+        return src
+    for key in lazy_keys:
+        candidate = value(key)
+        if candidate:
+            return candidate
+    for key in ('srcset', 'data-srcset'):
+        candidate = _first_srcset_candidate(value(key))
+        if candidate:
+            return candidate
+    return src
+
+
 def _iter_html_image_tokens(text: str) -> List[Tuple[int, int, str, str | None, str | None]]:
     tokens: List[Tuple[int, int, str, str | None, str | None]] = []
     pos = 0
@@ -370,7 +448,7 @@ def _iter_html_image_tokens(text: str) -> List[Tuple[int, int, str, str | None, 
             pos = start + 1
             continue
         attrs = _html_img_attrs(text[start:end])
-        src = attrs.get('src', '')
+        src = _html_image_source_from_attrs(attrs)
         alt = attrs.get('alt', '')
         tokens.append((start, end, alt, src, None))
         pos = end
@@ -484,7 +562,24 @@ def _split_image_tokens_from_text(text: str, fig_dir: str, prefix: str, base_dir
         src = src.strip().strip('"').strip("'")
         if src.startswith("<") and src.endswith(">"):
             src = src[1:-1].strip()
-        source_for_report = unquote(src)
+        source_for_report = _data_uri_report_source(src) if _is_data_uri_image_source(src) else unquote(src)
+        if _is_data_uri_image_source(src):
+            image_data, ext, data_uri_error = _decode_data_uri_image(src)
+            if data_uri_error or image_data is None:
+                missing.append({'source': source_for_report, 'alt': alt, 'reason': 'unreadable', 'detail': data_uri_error})
+                tokens.append({'type': 'missing_image', 'source': source_for_report, 'alt': alt, 'reason': 'unreadable'})
+                pos = end
+                continue
+            existing = [f for f in os.listdir(fig_dir) if f.startswith(prefix)]
+            seq = len(existing) + 1
+            dest = os.path.join(fig_dir, f'{prefix}_{seq:03d}{ext}')
+            with open(dest, 'wb') as fh:
+                fh.write(image_data)
+            copied = os.path.basename(dest)
+            imgs.append(copied)
+            tokens.append({'type': 'image', 'image': copied})
+            pos = end
+            continue
         if _is_remote_image_source(src) or _is_remote_image_source(source_for_report):
             missing.append({'source': source_for_report, 'alt': alt, 'reason': 'remote'})
             tokens.append({'type': 'missing_image', 'source': source_for_report, 'alt': alt, 'reason': 'remote'})

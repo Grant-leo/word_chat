@@ -83,7 +83,7 @@ def run_content_checks(out_dir: str, paths: Dict[str, str], counts: Dict[str, An
                 add(
                     "CONTENT_IMAGE_UNREADABLE",
                     "error",
-                    "Markdown 本地图片文件存在，但无法作为可渲染图片读取。",
+                    "Markdown 图片引用存在，但无法作为可渲染图片读取。",
                     json.dumps(sanitize_value(unreadable_images[:5], os.getcwd()), ensure_ascii=False),
                 )
             if local_missing_images:

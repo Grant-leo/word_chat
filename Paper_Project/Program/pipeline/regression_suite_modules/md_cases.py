@@ -1,6 +1,7 @@
 ﻿"""Markdown parser regression cases."""
 from __future__ import annotations
 
+import base64
 import re
 
 from md_parser import extract_content as extract_md_content
@@ -399,6 +400,62 @@ def md_html_table_cell_images_render_inside_generated_table() -> None:
     assert_true(table_drawings == 1, "HTML table-cell image rendered outside the generated Word table")
     assert_true("img src" not in result["xml"], "raw HTML image tag leaked into generated Word table text")
     assert_true(result["report"]["passed"] is True, f"HTML table-cell image render should pass QA: {result['report']}")
+
+
+@case
+def md_html_lazy_srcset_and_data_uri_images_are_extracted() -> None:
+    work = new_workdir("md_html_lazy_srcset_data_uri_images")
+    figures = work / "figures"
+    figures.mkdir()
+    (figures / "lazy panel.png").write_bytes(PNG_1X1)
+    (figures / "srcset panel.png").write_bytes(PNG_1X1)
+    data_uri = "data:image/png;base64," + base64.b64encode(PNG_1X1).decode("ascii")
+    md = work / "html_advanced_images.md"
+    md.write_text(
+        "# HTML Advanced Images\n\n"
+        "Lazy <img alt=\"lazy\" data-src=\"figures/lazy%20panel.png\"> image.\n\n"
+        "Srcset <img alt=\"srcset\" srcset=\"figures/srcset%20panel.png 1x, figures/missing@2x.png 2x\"> image.\n\n"
+        f"Inline <img alt=\"inline\" src=\"{data_uri}\"> image.",
+        encoding="utf-8",
+    )
+    content = extract_md_content(str(md), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    images = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "image"]
+    joined = "\n".join(str(p) for p in paragraphs)
+    assert_true(content["_meta"]["images_extracted"] == 3, f"advanced HTML images were not copied: {content['_meta']}")
+    assert_true(len(images) == 3, f"advanced HTML images were not preserved in content stream: {paragraphs}")
+    assert_true(not content["_meta"].get("missing_images"), f"advanced HTML images should not be missing: {content['_meta'].get('missing_images')}")
+    assert_true("<img" not in joined and "data:image" not in joined, f"raw advanced HTML image tag leaked into body content: {paragraphs}")
+
+    result = run_generated_case("md_html_advanced_images_generated", content, base_format())
+    assert_true(result["xml"].count("<w:drawing>") == 3, "advanced HTML images did not render as Word drawings")
+    assert_true("data:image" not in result["xml"] and "img src" not in result["xml"], "raw advanced HTML image data leaked into DOCX XML")
+    assert_true(result["report"]["passed"] is True, f"advanced HTML images should pass QA: {result['report']}")
+
+
+@case
+def md_html_bad_data_uri_images_are_reported_as_unreadable() -> None:
+    work = new_workdir("md_html_bad_data_uri_images")
+    md = work / "html_bad_data_uri.md"
+    md.write_text(
+        "# HTML Bad Data URI Images\n\n"
+        "Broken <img alt=\"broken\" src=\"data:image/png;base64,not-valid-base64\"> image.",
+        encoding="utf-8",
+    )
+    content = extract_md_content(str(md), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    missing = content["_meta"].get("missing_images") or []
+    joined = "\n".join(str(p) for p in paragraphs)
+    assert_true(content["_meta"]["images_extracted"] == 0, f"broken data URI should not be copied: {content['_meta']}")
+    assert_true(len(missing) == 1 and missing[0].get("reason") == "unreadable", f"broken data URI was not reported as unreadable: {missing}")
+    assert_true("not-valid-base64" not in str(missing), f"raw base64 payload leaked into missing-image metadata: {missing}")
+    assert_true("<img" not in joined and "data:image" not in joined, f"raw broken HTML image tag leaked into body content: {paragraphs}")
+
+    result = run_generated_case("md_html_bad_data_uri_images_generated", content, base_format())
+    codes = [item["code"] for item in result["report"]["issues"]]
+    assert_true("CONTENT_IMAGE_UNREADABLE" in codes, f"QA did not report broken data URI as unreadable: {codes}")
+    assert_true("CONTENT_IMAGE_REMOTE_UNSUPPORTED" not in codes, f"data URI should not be reported as a remote image: {codes}")
+    assert_true(result["report"]["passed"] is False, "broken data URI images should fail structural QA")
 
 
 @case
