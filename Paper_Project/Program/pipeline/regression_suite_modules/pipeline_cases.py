@@ -2362,6 +2362,45 @@ def pipeline_warning_only_markdown_result_labels_are_explicit() -> None:
 
 
 @case
+def pipeline_visual_report_markdown_lists_diagnostic_artifacts() -> None:
+    from qa_visual_modules.reports import report_to_markdown as visual_report_markdown
+
+    report = {
+        "passed": False,
+        "output_dir_name": "demo",
+        "next_action": "比较 Word/WPS 样张后重跑 visual QA。",
+        "counts": {"sample_images": 2, "wps_sample_images": 2},
+        "issues": [
+            {
+                "code": "WPS_SAMPLE_IMAGE_MISMATCH",
+                "severity": "error",
+                "message": "WPS sample images differ.",
+                "detail": "pages=1",
+            }
+        ],
+        "artifacts": {
+            "pdf": "<PROJECT>/Outputs/demo/visual_qa/rendered.pdf",
+            "word_text": "<PROJECT>/Outputs/demo/visual_qa/rendered_word.txt",
+            "wps_pdf": "<PROJECT>/Outputs/demo/visual_qa/rendered_wps.pdf",
+            "wps_text": "<PROJECT>/Outputs/demo/visual_qa/rendered_wps.txt",
+            "samples": [
+                "<PROJECT>/Outputs/demo/visual_qa/samples/page_001-01.png",
+                "<PROJECT>/Outputs/demo/visual_qa/samples/page_002-02.png",
+            ],
+            "wps_samples": [
+                "<PROJECT>/Outputs/demo/visual_qa/wps/samples/page_001-01.png",
+                "<PROJECT>/Outputs/demo/visual_qa/wps/samples/page_002-02.png",
+            ],
+        },
+    }
+    markdown = visual_report_markdown(report)
+    assert_true("## 诊断产物" in markdown, f"visual report should list diagnostic artifacts: {markdown}")
+    assert_true("rendered.pdf" in markdown and "rendered_wps.pdf" in markdown, f"visual report should name PDF artifacts: {markdown}")
+    assert_true("rendered_word.txt" in markdown and "rendered_wps.txt" in markdown, f"visual report should name text diagnostics: {markdown}")
+    assert_true("visual_qa/samples/" in markdown and "visual_qa/wps/samples/" in markdown, f"visual report should name both sample directories: {markdown}")
+
+
+@case
 def pipeline_summary_mentions_outputs_and_mode() -> None:
     summary = build_completion_summary("2026-05-27_demo", "最终论文.docx", "developer")
     assert_true("Outputs/2026-05-27_demo/" in summary, "output directory missing from completion summary")

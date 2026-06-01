@@ -18,6 +18,35 @@ def _result_label(passed: bool, issues: list[Dict[str, Any]]) -> str:
     return "通过"
 
 
+def _append_path_list(lines: list[str], label: str, paths: Any, limit: int = 6) -> None:
+    if isinstance(paths, str) and paths.strip():
+        lines.append(f"- {label}: `{paths}`")
+        return
+    if not isinstance(paths, list) or not paths:
+        return
+    shown = [str(item) for item in paths[:limit] if str(item).strip()]
+    if not shown:
+        return
+    lines.append(f"- {label}: `{len(paths)}` 个")
+    for item in shown:
+        lines.append(f"  - `{item}`")
+    if len(paths) > len(shown):
+        lines.append(f"  - 另有 `{len(paths) - len(shown)}` 个，见对应目录。")
+
+
+def _append_artifacts(lines: list[str], artifacts: Dict[str, Any]) -> None:
+    artifact_lines: list[str] = []
+    _append_path_list(artifact_lines, "Word PDF", artifacts.get("pdf"))
+    _append_path_list(artifact_lines, "Word 文本诊断", artifacts.get("word_text") or artifacts.get("rendered_text"))
+    _append_path_list(artifact_lines, "WPS PDF", artifacts.get("wps_pdf"))
+    _append_path_list(artifact_lines, "WPS 文本诊断", artifacts.get("wps_text"))
+    _append_path_list(artifact_lines, "Word 样张 PNG", artifacts.get("samples"))
+    _append_path_list(artifact_lines, "WPS 样张 PNG", artifacts.get("wps_samples"))
+    _append_path_list(artifact_lines, "全页 PNG", artifacts.get("all_pages"), limit=3)
+    if artifact_lines:
+        lines.extend(["", "## 诊断产物", "", *artifact_lines])
+
+
 def report_to_markdown(report: Dict[str, Any]) -> str:
     issues = report.get("issues") or []
     lines = [
@@ -33,6 +62,7 @@ def report_to_markdown(report: Dict[str, Any]) -> str:
     for key, value in sorted((report.get("counts") or {}).items()):
         lines.append(f"- `{key}`: {value}")
     artifacts = report.get("artifacts") or {}
+    _append_artifacts(lines, artifacts)
     golden = artifacts.get("golden_baseline") or {}
     if golden:
         lines.extend(["", "## 黄金基线", ""])
