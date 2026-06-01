@@ -176,6 +176,10 @@ build_generated.py ─────────→ 最终论文.docx
 
 提交时只提交核心脚本和公共文档。
 
+## Agent Skill 源文件
+
+项目专属的 `word-paper-pipeline` skill 源文件已放在 [docs/skills/word-paper-pipeline/SKILL.md](docs/skills/word-paper-pipeline/SKILL.md)。Codex 运行时可能还会在 `$CODEX_HOME/skills/word-paper-pipeline/SKILL.md` 或 `%USERPROFILE%\.codex\skills\word-paper-pipeline\SKILL.md` 有一份用户目录副本；如果用户目录副本缺失，Agent 应直接读取仓库里的这份源文件继续工作，而不是判定项目 workflow 缺失。
+
 ## 当前验证基线
 
 截至 2026-06-01：
@@ -205,6 +209,7 @@ build_generated.py ─────────→ 最终论文.docx
 
 - [AGENTS.md](AGENTS.md)：AI 助手工作流。
 - [CLAUDE.md](CLAUDE.md)：Claude/Codex 操作说明。
+- [docs/skills/word-paper-pipeline/SKILL.md](docs/skills/word-paper-pipeline/SKILL.md)：项目专属 Codex skill 的仓库源文件。
 - [Paper_Project/基础操作.md](Paper_Project/基础操作.md)：OOXML 和 python-docx 操作速查。
 - [Paper_Project/Program/pipeline/README.md](Paper_Project/Program/pipeline/README.md)：核心引擎模块结构。
 

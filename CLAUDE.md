@@ -68,6 +68,18 @@ memory/active_context.md
 `memory/` is private local development state and is ignored by git. Do not require
 it for ordinary users, do not create it for them unless asked, and do not commit it.
 
+### 1.6 Project Skill Source
+
+The tracked source copy of the project skill is:
+
+```text
+docs/skills/word-paper-pipeline/SKILL.md
+```
+
+Claude/Codex may also load a runtime copy from `$CODEX_HOME/skills/word-paper-pipeline/SKILL.md`
+or `%USERPROFILE%\.codex\skills\word-paper-pipeline\SKILL.md`. If that runtime copy is missing,
+read the tracked source file and continue instead of treating the project workflow as unavailable.
+
 ### 2. Check Inputs
 
 Check that the user has files in the local folders:

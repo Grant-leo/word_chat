@@ -34,6 +34,9 @@ Dependency notes:
 ### 1.5 Load Long-Term Memory
 Read `memory/PROJECT_MEMORY.md` and `memory/active_context.md` when they exist. These files are the disk-backed project memory and should guide long-running architecture work.
 
+### 1.6 Project Skill Source
+The tracked source copy of the project skill is `docs/skills/word-paper-pipeline/SKILL.md`. Codex may also load a runtime copy from `$CODEX_HOME/skills/word-paper-pipeline/SKILL.md` or `%USERPROFILE%\.codex\skills\word-paper-pipeline\SKILL.md`. If the runtime copy is missing, use the tracked source file instead of treating the workflow as unavailable.
+
 ### 2. Check Files
 ```bash
 ls Templates/*.docx Templates/*.pdf Inputs/*.docx Inputs/*.md 2>/dev/null
@@ -253,6 +256,7 @@ Example: template has no cross-references → generated script has no `B_ref()`.
 run_pipeline.py              ← One-click entry
 memory/                      ← Disk-backed project memory: summaries + JSONL audit streams
 scripts/project_memory.py    ← Memory append/validation helper
+docs/skills/word-paper-pipeline/SKILL.md ← Tracked source copy of the Codex project skill
 Paper_Project/Program/pipeline/
     format_extractor.py       ← Phase 1: template → format JSON
     format_extractor_modules/ ← format_extractor submodules: PDF template parsing, OOXML metrics, style inheritance, style profiles, cover assets/tables
