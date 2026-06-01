@@ -2294,6 +2294,11 @@ def pipeline_strict_and_visual_reports_surface_specific_next_actions() -> None:
 
     wps_text_mismatch = visual_next_action([{"code": "WPS_TEXT_PAGE_MISMATCH", "severity": "error", "message": "wps text pages missing"}])
     assert_true("WPS" in wps_text_mismatch and ("文本" in wps_text_mismatch or "内容" in wps_text_mismatch) and "重跑 visual QA" in wps_text_mismatch, f"WPS text mismatch action should tell users how to resume: {wps_text_mismatch}")
+    assert_true("rendered_word.txt" in wps_text_mismatch and "rendered_wps.txt" in wps_text_mismatch, f"WPS text mismatch action should name preserved diagnostics: {wps_text_mismatch}")
+
+    wps_sample_render_failed = visual_next_action([{"code": "WPS_SAMPLE_RENDER_FAILED", "severity": "error", "message": "wps sample render failed"}])
+    assert_true("visual_qa/samples/" in wps_sample_render_failed and "visual_qa/wps/samples/" in wps_sample_render_failed, f"WPS sample render action should name both sample directories: {wps_sample_render_failed}")
+    assert_true("重跑 visual QA" in wps_sample_render_failed, f"WPS sample render action should tell users how to resume: {wps_sample_render_failed}")
 
     wps_sample_mismatch = visual_next_action([{"code": "WPS_SAMPLE_IMAGE_MISMATCH", "severity": "error", "message": "wps sample images differ"}])
     assert_true("WPS" in wps_sample_mismatch and ("样张" in wps_sample_mismatch or "PNG" in wps_sample_mismatch or "画面" in wps_sample_mismatch) and "重跑 visual QA" in wps_sample_mismatch, f"WPS sample-image mismatch action should tell users how to resume: {wps_sample_mismatch}")
@@ -2852,6 +2857,7 @@ def pipeline_agent_summary_surfaces_wps_text_rerun_step() -> None:
 
     assert_true("WPS_TEXT_PAGE_MISMATCH" in action_text, f"summary lost the WPS text issue code: {summary}")
     assert_true(("文本" in action_text or "内容" in action_text) and "重跑 visual QA" in action_text, f"summary should tell users to rerun visual QA after WPS text repair: {summary}")
+    assert_true("rendered_word.txt" in action_text and "rendered_wps.txt" in action_text, f"summary should name WPS text diagnostic files: {summary}")
     assert_true("WPS_TEXT_PAGE_MISMATCH" in text and "重跑 visual QA" in text, "agent summary markdown should show the WPS text rerun step")
 
 
@@ -2898,7 +2904,55 @@ def pipeline_agent_summary_surfaces_wps_sample_rerun_step() -> None:
 
     assert_true("WPS_SAMPLE_IMAGE_MISMATCH" in action_text, f"summary lost the WPS sample issue code: {summary}")
     assert_true(("样张" in action_text or "PNG" in action_text or "画面" in action_text) and "重跑 visual QA" in action_text, f"summary should tell users to rerun visual QA after WPS sample repair: {summary}")
+    assert_true("visual_qa/samples/" in action_text and "visual_qa/wps/samples/" in action_text, f"summary should name both WPS/Word sample directories: {summary}")
     assert_true("WPS_SAMPLE_IMAGE_MISMATCH" in text and "重跑 visual QA" in text, "agent summary markdown should show the WPS sample rerun step")
+
+
+@case
+def pipeline_agent_summary_surfaces_wps_sample_render_paths() -> None:
+    work = new_workdir("pipeline_agent_summary_wps_sample_render")
+    write_workflow_mode(
+        str(work),
+        mode="developer",
+        template_path="template.docx",
+        content_path="content.docx",
+        run_qa=True,
+        qa_level="visual",
+        golden_dir=None,
+        update_golden=False,
+        require_wps=True,
+        auto_repair=False,
+        agent_auto=True,
+    )
+    (work / "最终论文.docx").write_bytes(b"synthetic")
+    write_json(work / "qa_report.json", {"passed": True, "issues": [], "counts": {}, "next_action": "ok"})
+    write_json(work / "conformance_report.json", {"passed": True, "issues": [], "counts": {}, "next_action": "ok"})
+    write_json(
+        work / "visual_report.json",
+        {
+            "passed": False,
+            "issues": [
+                {
+                    "code": "WPS_SAMPLE_RENDER_FAILED",
+                    "severity": "error",
+                    "message": "WPS sample images failed to render",
+                    "detail": "pages=4 rendered=2",
+                }
+            ],
+            "counts": {"sample_images": 4, "wps_sample_images": 2},
+            "next_action": "",
+        },
+    )
+
+    json_path, md_path = write_agent_summary(str(work), "2026-06-01_wps_sample_render", "最终论文.docx", "developer")
+    summary = json.loads(Path(json_path).read_text(encoding="utf-8"))
+    text = Path(md_path).read_text(encoding="utf-8")
+    action_text = "\n".join(summary.get("next_actions") or [])
+
+    assert_true("WPS_SAMPLE_RENDER_FAILED" in action_text, f"summary lost the WPS sample render issue code: {summary}")
+    assert_true("visual_qa/samples/" in action_text and "visual_qa/wps/samples/" in action_text, f"summary should name both sample directories: {summary}")
+    assert_true("重跑 visual QA" in action_text, f"summary should tell users to rerun visual QA after WPS sample render repair: {summary}")
+    assert_true("WPS_SAMPLE_RENDER_FAILED" in text and "visual_qa/wps/samples/" in text, "agent summary markdown should show the WPS sample render paths")
 
 
 @case

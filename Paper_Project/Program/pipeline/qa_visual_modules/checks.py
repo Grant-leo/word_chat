@@ -123,9 +123,9 @@ def _next_action(issues: List[Dict[str, Any]]) -> str:
     if error_codes & {"WPS_PAGE_SIZE_MISMATCH"}:
         return "分别打开 Word 与 WPS 导出的 PDF 比对纸张大小、页面尺寸和横竖方向；修复模板页面设置或 WPS 兼容性问题后重跑 visual QA。"
     if error_codes & {"WPS_TEXT_PAGE_MISMATCH"}:
-        return "分别打开 Word 与 WPS 导出的 PDF 比对正文、目录、公式和图片内容；WPS 文本页明显缺失时先修复 WPS 导出、字体兼容或排版生成问题，再重跑 visual QA。"
+        return "分别打开 Word 与 WPS 导出的 PDF 比对正文、目录、公式和图片内容；同时查看 `visual_qa/rendered_word.txt` 和 `visual_qa/rendered_wps.txt` 定位缺失文本。修复 WPS 导出、字体兼容或排版生成问题后重跑 visual QA。"
     if error_codes & {"WPS_SAMPLE_RENDER_FAILED"}:
-        return "WPS 样张 PNG 没有完整渲染；先检查 WPS 导出的 PDF 能否正常打开，并修复 Poppler/WPS 渲染问题后重跑 visual QA。"
+        return "WPS 样张 PNG 没有完整渲染；先比较 Word 样张 `visual_qa/samples/` 与 WPS 样张 `visual_qa/wps/samples/`，并检查 WPS 导出的 PDF 能否正常打开。修复 Poppler/WPS 渲染问题后重跑 visual QA。"
     if error_codes & {"WPS_SAMPLE_IMAGE_MISMATCH"}:
         return "分别打开 Word 样张 `visual_qa/samples/` 和 WPS 样张 `visual_qa/wps/samples/` 比对公式、图片、表格和正文画面差异；修复 WPS 兼容或排版生成问题后重跑 visual QA。"
     if error_codes & {"GOLDEN_BASELINE_MISMATCH"}:
@@ -149,9 +149,9 @@ def _next_action(issues: List[Dict[str, Any]]) -> str:
     if warning_codes & {"WPS_PAGE_SIZE_MISMATCH"}:
         return "visual QA 通过但 WPS 与 Word 的页面尺寸不同；需要 WPS 校验时比对纸张大小和横竖方向，修复后重跑 visual QA。"
     if warning_codes & {"WPS_TEXT_PAGE_MISMATCH"}:
-        return "visual QA 通过但 WPS 与 Word 的可提取文本页数不同；需要 WPS 校验时打开两份 PDF 比对内容，修复后重跑 visual QA。"
+        return "visual QA 通过但 WPS 与 Word 的可提取文本页数不同；需要 WPS 校验时打开两份 PDF 比对内容，并查看 `visual_qa/rendered_word.txt` 与 `visual_qa/rendered_wps.txt` 定位缺失文本，修复后重跑 visual QA。"
     if warning_codes & {"WPS_SAMPLE_RENDER_FAILED", "WPS_SAMPLE_IMAGE_MISMATCH"}:
-        return "visual QA 通过但 WPS 样张渲染或样张画面与 Word 不一致；需要 WPS 校验时打开两组 PNG 样张比对，修复后重跑 visual QA。"
+        return "visual QA 通过但 WPS 样张渲染或样张画面与 Word 不一致；需要 WPS 校验时比较 Word 样张 `visual_qa/samples/` 与 WPS 样张 `visual_qa/wps/samples/`，修复后重跑 visual QA。"
     if warning_codes:
         return "visual QA 通过但仍有 warning；打开 visual_report.md 按问题码确认是否影响交付，必要时修复后重跑 visual QA。"
     return "打开 visual_report.md 和 visual_qa/samples/，按页面样张定位排版问题后重跑流水线。"
