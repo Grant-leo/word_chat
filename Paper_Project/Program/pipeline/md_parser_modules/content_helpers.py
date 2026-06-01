@@ -202,10 +202,19 @@ def _markdown_image_destination_without_title(raw_src: str) -> str:
     return raw
 
 
+def _is_markdown_reference_title_continuation(line: str) -> bool:
+    raw = str(line or '').rstrip()
+    stripped = raw.lstrip(' ')
+    if len(raw) - len(stripped) >= 4:
+        return False
+    return _is_markdown_image_title(stripped)
+
+
 def _extract_markdown_reference_definitions(lines: List[str]) -> Tuple[List[str], Dict[str, str]]:
     filtered: List[str] = []
     references: Dict[str, str] = {}
     fence_marker = ''
+    skip_reference_title = False
     for line in lines:
         fence = re.match(r'^\s*(```|~~~)', str(line or ''))
         if fence:
@@ -215,14 +224,20 @@ def _extract_markdown_reference_definitions(lines: List[str]) -> Tuple[List[str]
             elif marker == fence_marker:
                 fence_marker = ''
             filtered.append(line)
+            skip_reference_title = False
             continue
         if fence_marker:
             filtered.append(line)
             continue
+        if skip_reference_title:
+            skip_reference_title = False
+            if _is_markdown_reference_title_continuation(line):
+                continue
         parsed = _parse_markdown_reference_definition(line)
         if parsed:
             label, target = parsed
             references[label] = target
+            skip_reference_title = True
             continue
         filtered.append(line)
     return filtered, references

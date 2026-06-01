@@ -355,6 +355,39 @@ def md_reference_style_images_are_extracted_or_reported() -> None:
 
 
 @case
+def md_reference_style_image_titles_do_not_leak_into_body() -> None:
+    work = new_workdir("md_reference_image_titles")
+    figures = work / "figures"
+    figures.mkdir()
+    (figures / "ref panel.png").write_bytes(PNG_1X1)
+    (figures / "angle panel.png").write_bytes(PNG_1X1)
+    md = work / "reference_image_titles.md"
+    md.write_text(
+        "# Reference Image Titles\n\n"
+        "Before ![diagram][fig-one] after.\n\n"
+        "Wrapped ![angle][fig-two] after.\n\n"
+        "[fig-one]: figures/ref%20panel.png\n"
+        "  \"Reference caption title\"\n\n"
+        "[fig-two]: <figures/angle panel.png>\n"
+        "  'Wrapped reference title'\n",
+        encoding="utf-8",
+    )
+    content = extract_md_content(str(md), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    images = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "image"]
+    missing = content["_meta"].get("missing_images") or []
+    joined = "\n".join(str(p) for p in paragraphs)
+    assert_true(content["_meta"]["images_extracted"] == 2, f"reference image titles prevented image copying: {content['_meta']}")
+    assert_true(len(images) == 2, f"reference image title paths were not preserved in content stream: {paragraphs}")
+    assert_true(not missing, f"existing reference-title images were reported missing: {missing}")
+    assert_true("[fig-one]:" not in joined and "[fig-two]:" not in joined, f"reference definitions leaked into body content: {paragraphs}")
+    assert_true(
+        "Reference caption title" not in joined and "Wrapped reference title" not in joined,
+        f"Markdown reference image titles leaked into body content: {paragraphs}",
+    )
+
+
+@case
 def md_shortcut_reference_images_are_extracted_or_reported() -> None:
     work = new_workdir("md_shortcut_reference_images")
     figures = work / "figures"
