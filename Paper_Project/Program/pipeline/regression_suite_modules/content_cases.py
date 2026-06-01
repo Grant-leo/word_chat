@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import zipfile
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -662,6 +663,40 @@ def content_parser_extracts_table_cell_images_and_flags_header_images() -> None:
     codes = [item["code"] for item in result["report"]["issues"]]
     assert_true(result["manifest"]["counts"]["content_images_rendered"] == 1, f"table-cell body image was not rendered once: {result['manifest']}")
     assert_true("NON_BODY_IMAGE_UNSUPPORTED" in codes, f"non-body header/footer image did not block with a clear code: {codes}")
+
+
+@case
+def content_parser_reports_unreadable_docx_image_relationships() -> None:
+    work = new_workdir("parser_unreadable_docx_image")
+    img = work / "dot.png"
+    img.write_bytes(PNG_1X1)
+    valid_docx = work / "valid_image.docx"
+    bad_docx = work / "bad_image.docx"
+    doc = Document()
+    doc.add_paragraph("1 Images")
+    doc.add_paragraph("Image before corrupted relationship.")
+    doc.add_picture(str(img))
+    doc.save(valid_docx)
+
+    with zipfile.ZipFile(valid_docx, "r") as src, zipfile.ZipFile(bad_docx, "w", zipfile.ZIP_DEFLATED) as dst:
+        for info in src.infolist():
+            data = src.read(info.filename)
+            if info.filename.startswith("word/media/") and info.filename.lower().endswith(".png"):
+                data = b"not-a-readable-image"
+            dst.writestr(info, data)
+
+    content = extract_docx_content(str(bad_docx), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    assert_true(content["_meta"].get("images_extracted") == 0, f"unreadable DOCX image should not be counted as extracted: {content['_meta']}")
+    failures = content["_meta"].get("image_extract_failures") or []
+    assert_true(failures and "image" in str(failures[0].get("target") or ""), f"unreadable DOCX image relationship was not recorded: {failures}")
+    assert_true(not any(isinstance(p, dict) and p.get("role") == "image" for p in paragraphs), f"unreadable DOCX image leaked into content stream: {paragraphs}")
+
+    result = run_generated_case("unreadable_docx_image_generated", content, base_format())
+    codes = [item["code"] for item in result["report"]["issues"]]
+    assert_true("IMAGE_EXTRACT_FAILED" in codes, f"QA did not report unreadable DOCX image extraction failure: {codes}")
+    action = str(result["report"].get("next_action") or "")
+    assert_true("IMAGE_EXTRACT_FAILED" in action or "图片" in action, f"unreadable DOCX image next_action was too generic: {action}")
 
 
 @case

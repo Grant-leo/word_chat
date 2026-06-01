@@ -34,9 +34,6 @@ Dependency notes:
 ### 1.5 Load Long-Term Memory
 Read `memory/PROJECT_MEMORY.md` and `memory/active_context.md` when they exist. These files are the disk-backed project memory and should guide long-running architecture work.
 
-### 1.6 Project Skill Source
-The tracked source copy of the project skill is `docs/skills/word-paper-pipeline/SKILL.md`. Codex may also load a runtime copy from `$CODEX_HOME/skills/word-paper-pipeline/SKILL.md` or `%USERPROFILE%\.codex\skills\word-paper-pipeline\SKILL.md`. If the runtime copy is missing, use the tracked source file instead of treating the workflow as unavailable.
-
 ### 2. Check Files
 ```bash
 ls Templates/*.docx Templates/*.pdf Inputs/*.docx Inputs/*.md 2>/dev/null
@@ -226,7 +223,7 @@ Example: template has no cross-references → generated script has no `B_ref()`.
 - Do not write private test data, generated DOCX/PDF/PNG, customer content, API keys, or raw chat logs into memory.
 - Standalone extractor/debug outputs must stay under `Outputs/_...`; never create derived JSON, Markdown reports, copied figures, or template assets beside private source files in `Inputs/` or `Templates/`.
 - `--qa-level visual` is the preferred delivery gate for developer/product checks. It requires Word COM for PDF export and Poppler tools (`pdfinfo`, `pdftotext`, `pdftoppm`) for page/text/sample checks; missing required render tools fail visual QA and make the pipeline exit nonzero. Visual sample pages should stay bounded but prioritize cover/TOC/body anchors plus detectable figure, table, and formula risk pages so WPS/Word sample-image comparison does not only inspect early pages. `visual_report.md` must expose the key diagnostic artifact paths so ordinary users can open the rendered PDFs, text diagnostics, and sample PNG folders without digging through JSON.
-- Missing local Markdown images, including images embedded in Markdown table cells, must surface as `CONTENT_IMAGE_MISSING`; unreadable or unsupported local Markdown image files must surface as `CONTENT_IMAGE_UNREADABLE` with a next step to re-export a normal PNG/JPG. Stable local Markdown image formats are `.png`, `.jpg`, and `.jpeg`; GIF/WebP/SVG/no-extension files, extension/actual-format mismatches, and data URI MIME/actual-format mismatches must fail closed as `CONTENT_IMAGE_UNREADABLE` instead of reaching Word generation. Remote Markdown image URLs must surface as `CONTENT_IMAGE_REMOTE_UNSUPPORTED` with a next step to download the image locally and change the Markdown link to a local relative path. DOCX image extraction failures must also surface as QA errors rather than disappearing from `content.json`.
+- Missing local Markdown images, including images embedded in Markdown table cells, must surface as `CONTENT_IMAGE_MISSING`; unreadable or unsupported local Markdown image files must surface as `CONTENT_IMAGE_UNREADABLE` with a next step to re-export a normal PNG/JPG. Stable local Markdown image formats are `.png`, `.jpg`, and `.jpeg`; GIF/WebP/SVG/no-extension files, extension/actual-format mismatches, and data URI MIME/actual-format mismatches must fail closed as `CONTENT_IMAGE_UNREADABLE` instead of reaching Word generation. Remote Markdown image URLs must surface as `CONTENT_IMAGE_REMOTE_UNSUPPORTED` with a next step to download the image locally and change the Markdown link to a local relative path. DOCX image extraction failures, corrupt relationship image bytes, and unsupported DOCX relationship image formats must surface as `IMAGE_EXTRACT_FAILED` QA errors with a next step to re-export/reinsert the source image as a normal PNG/JPG rather than disappearing from `content.json` or flowing into `figures/`.
 - DOCX table-cell images must be surfaced in the content image stream; header/footer images from the content source are non-body content and must surface as `NON_BODY_IMAGE_UNSUPPORTED` unless product behavior explicitly changes.
 - Chinese text needs `w:eastAsia` set (handled automatically by generator).
 - A4 pagination uses dual cpl: Latin and CJK separately.
@@ -256,7 +253,6 @@ Example: template has no cross-references → generated script has no `B_ref()`.
 run_pipeline.py              ← One-click entry
 memory/                      ← Disk-backed project memory: summaries + JSONL audit streams
 scripts/project_memory.py    ← Memory append/validation helper
-docs/skills/word-paper-pipeline/SKILL.md ← Tracked source copy of the Codex project skill
 Paper_Project/Program/pipeline/
     format_extractor.py       ← Phase 1: template → format JSON
     format_extractor_modules/ ← format_extractor submodules: PDF template parsing, OOXML metrics, style inheritance, style profiles, cover assets/tables

@@ -68,18 +68,6 @@ memory/active_context.md
 `memory/` is private local development state and is ignored by git. Do not require
 it for ordinary users, do not create it for them unless asked, and do not commit it.
 
-### 1.6 Project Skill Source
-
-The tracked source copy of the project skill is:
-
-```text
-docs/skills/word-paper-pipeline/SKILL.md
-```
-
-Claude/Codex may also load a runtime copy from `$CODEX_HOME/skills/word-paper-pipeline/SKILL.md`
-or `%USERPROFILE%\.codex\skills\word-paper-pipeline\SKILL.md`. If that runtime copy is missing,
-read the tracked source file and continue instead of treating the project workflow as unavailable.
-
 ### 2. Check Inputs
 
 Check that the user has files in the local folders:
@@ -360,7 +348,7 @@ When a user wants a document-specific feature:
 - `workflow_mode.json` should only create copyable rerun commands for inputs that can be safely expressed under this project's `Inputs/` or `Templates/`. If an absolute source file is outside those folders, including another same-named external `Inputs` or `Templates` directory, do not collapse it to a misleading basename; omit the fake command and tell the user to move/copy the file into the project source folder, then rerun by file name.
 - PDF templates are best-effort format sources: instruction-style PDFs provide text rules, sparse instruction PDFs must surface missing-rule warnings, visual sample PDFs provide estimated geometry/styles and must surface `PDF_TEMPLATE_VISUAL_APPROXIMATION` for Word/WPS layout review, landscape PDFs must surface `PDF_TEMPLATE_LANDSCAPE_PAGE`, missing Poppler tools must surface `PDF_TEMPLATE_DEPENDENCY_MISSING`, protected/password or copy-restricted PDFs must surface `PDF_TEMPLATE_PROTECTED`, corrupt/unreadable PDFs must surface `PDF_TEMPLATE_READ_FAILED`, and scanned/textless PDFs must surface `PDF_TEMPLATE_UNSUPPORTED`.
 - `--qa-level visual` is the preferred delivery gate for developer/product checks. It requires Word COM for PDF export and Poppler tools (`pdfinfo`, `pdftotext`, `pdftoppm`) for page/text/sample checks. Missing required render tools fail visual QA.
-- Missing local Markdown images, including images embedded in Markdown table cells, must surface as `CONTENT_IMAGE_MISSING`; unreadable or unsupported local Markdown image files must surface as `CONTENT_IMAGE_UNREADABLE` with a next step to re-export a normal PNG/JPG. Stable local Markdown image formats are `.png`, `.jpg`, and `.jpeg`; GIF/WebP/SVG/no-extension files, extension/actual-format mismatches, and data URI MIME/actual-format mismatches must fail closed as `CONTENT_IMAGE_UNREADABLE` instead of reaching Word generation. Remote Markdown image URLs must surface as `CONTENT_IMAGE_REMOTE_UNSUPPORTED` with a next step to download the image locally and change the Markdown link to a local relative path. DOCX image extraction failures must also surface as QA errors rather than disappearing from `content.json`.
+- Missing local Markdown images, including images embedded in Markdown table cells, must surface as `CONTENT_IMAGE_MISSING`; unreadable or unsupported local Markdown image files must surface as `CONTENT_IMAGE_UNREADABLE` with a next step to re-export a normal PNG/JPG. Stable local Markdown image formats are `.png`, `.jpg`, and `.jpeg`; GIF/WebP/SVG/no-extension files, extension/actual-format mismatches, and data URI MIME/actual-format mismatches must fail closed as `CONTENT_IMAGE_UNREADABLE` instead of reaching Word generation. Remote Markdown image URLs must surface as `CONTENT_IMAGE_REMOTE_UNSUPPORTED` with a next step to download the image locally and change the Markdown link to a local relative path. DOCX image extraction failures, corrupt relationship image bytes, and unsupported DOCX relationship image formats must surface as `IMAGE_EXTRACT_FAILED` QA errors with a next step to re-export/reinsert the source image as a normal PNG/JPG rather than disappearing from `content.json` or flowing into `figures/`.
 - DOCX table-cell images must surface in the content image stream.
 - Header/footer images from the content source are non-body content and should surface as `NON_BODY_IMAGE_UNSUPPORTED` unless product behavior explicitly changes.
 - Chinese text needs `w:eastAsia` set; the generator handles this automatically.

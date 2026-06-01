@@ -5,6 +5,11 @@ import hashlib
 import os
 from typing import Any, Dict, List, Optional, Set
 
+from docx.image.image import Image as DocxImage
+
+
+SUPPORTED_DOCX_IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff"}
+
 
 class ImageRegistry:
     """Per-extraction image registry.
@@ -28,13 +33,36 @@ class ImageRegistry:
             return None
         try:
             blob = rel.target_part.blob
+        except Exception as exc:
+            self.failures.append({
+                "target": getattr(rel, "target_ref", ""),
+                "error": f"image relationship blob unavailable: {type(exc).__name__}: {str(exc)[:160]}",
+            })
+            return None
+
+        target = getattr(rel, "target_ref", "")
+        try:
+            detected = DocxImage.from_blob(blob)
+        except Exception as exc:
+            self.failures.append({
+                "target": target,
+                "error": f"unreadable or unsupported image data: {type(exc).__name__}: {str(exc)[:160]}",
+            })
+            return None
+
+        ext = str(getattr(detected, "ext", "") or "").lower()
+        if ext not in SUPPORTED_DOCX_IMAGE_EXTENSIONS:
+            self.failures.append({
+                "target": target,
+                "error": f"unsupported image format detected: {ext or 'unknown'}",
+            })
+            return None
+
+        try:
             digest = hashlib.sha256(blob).hexdigest()[:20]
             if digest in self.by_hash:
                 return self.by_hash[digest]
 
-            ext = rel.target_ref.rsplit(".", 1)[-1].lower()
-            if ext not in ("png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "webp"):
-                ext = "png"
             self.counter += 1
             fname = f"{self.prefix}_{self.counter:03d}.{ext}"
             fpath = os.path.join(self.fig_dir, fname)
@@ -44,8 +72,8 @@ class ImageRegistry:
             return fname
         except Exception as exc:
             self.failures.append({
-                "target": getattr(rel, "target_ref", ""),
-                "error": str(exc)[:200],
+                "target": target,
+                "error": f"image save failed: {type(exc).__name__}: {str(exc)[:160]}",
             })
             return None
 

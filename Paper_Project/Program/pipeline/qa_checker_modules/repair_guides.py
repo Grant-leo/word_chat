@@ -94,9 +94,9 @@ REPAIR_GUIDES = {
     },
     "IMAGE_EXTRACT_FAILED": {
         "title": "DOCX 图片关系读取失败",
-        "why": "源 DOCX 中有图片关系无法读取，通常和损坏图片、特殊嵌入对象或兼容模式有关。",
-        "user_action": "在 Word/WPS 打开原内容文件，将报错附近图片另存后重新插入为普通图片，再保存并重跑。",
-        "developer_action": "检查 `content_parser.py` 的 relationship 读取和异常记录。",
+        "why": "源 DOCX 中有图片关系无法读取或图片真实格式不受支持，通常和损坏图片、扩展名和真实格式不一致、特殊嵌入对象或兼容模式有关。",
+        "user_action": "在 Word/WPS 打开原内容文件，定位报错附近图片，把它重新导出为普通 PNG/JPG，再用“嵌入型图片”重新插入原文，保存后重新运行完整流水线。",
+        "developer_action": "检查 `content_parser_modules/image_extractor.py` 的 relationship 读取、真实图片格式校验和异常记录。",
         "auto_level": "needs_user_file",
     },
     "NON_BODY_IMAGE_UNSUPPORTED": {

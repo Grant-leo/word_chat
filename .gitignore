@@ -30,6 +30,9 @@ TestData/**
 # Local private agent memory
 memory/**
 
+# User-local Codex/agent skills do not belong in the product repository
+docs/skills/**
+
 # Python
 __pycache__/
 *.pyc
