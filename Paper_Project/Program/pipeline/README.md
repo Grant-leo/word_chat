@@ -41,12 +41,13 @@ CLI, output, verification, and QA details in a focused package:
 
 Current baseline as of 2026-06-01:
 
-- Synthetic regression after the strict/visual report issue-code next-action fix: `221 passed, 0 failed`.
+- Synthetic regression after the Markdown local-image URI suffix fix: `222 passed, 0 failed`.
 - Agent-first flow: `--agent-auto` scans local inputs, auto-selects only single candidates, defaults to user auto-repair, and writes `agent_summary.md/json`.
 - Novice interruption coverage: interactive cancellation/EOF, missing preflight inputs, generated-script build failures, QA dependency failures, and auto-repair blockers all route to a next action.
 - Strict/visual report handoff coverage: `conformance_report.md/json` and `visual_report.md/json` top-level `next_action` values name the leading issue code before the beginner-facing repair step, so users can connect codes such as `PLACEHOLDER_TEXT_LEFT`, `PDF_PAGE_COUNT_INVALID`, and `GOLDEN_BASELINE_MISSING` to the next concrete action even without opening `agent_summary.md`.
 - Workflow rerun command hygiene: absolute inputs outside this project's `Inputs/` / `Templates/`, including external same-named folders, do not collapse to misleading basename rerun commands; reports instead tell users to place the file in the correct source folder and rerun by file name.
 - Markdown remote image handoff: remote `http://` / `https://` image URLs surface `CONTENT_IMAGE_REMOTE_UNSUPPORTED`, stop as user-file input blockers, and tell users to download the image locally and update the Markdown relative path before rerunning.
+- Markdown local image path variants: local paths continue resolving `%20` spaces and `<path with spaces>` wrappers, and now strip local `?query` / `#fragment` suffixes copied from Markdown tools before checking the filesystem.
 - Content-summary coverage: `内容提取.md` renders structured `role="image"` items, including table-cell images, as `[图片]` instead of opaque `[结构化内容]`.
 - Output-boundary coverage: standalone/default `format_extractor`, `content_parser`, and `md_parser` outputs stay under `Outputs/_...` instead of beside private source files.
 - Controlled auto-repair loop regression: repairable build-script error, no-improvement stop, rebuild-failure stop, needs-user-file stop, strict/visual dependency failure, WPS page-count/page-size/text-page/sample-image visual blockers, visual option preservation, summary next-action promotion, and sanitized report paths passed.
@@ -109,7 +110,7 @@ while captions keep caption style.
 `md_parser_modules/` owns Markdown-specific helper rules behind `md_parser`:
 YAML/natural-language format extraction, inline/display math tokenization,
 front format-instruction stripping, Markdown image copying/missing-image
-metadata, remote-image blocker metadata, UTF-8 BOM-safe YAML/front-format
+metadata, local image URI-suffix normalization, remote-image blocker metadata, UTF-8 BOM-safe YAML/front-format
 stripping, BOM/H1 and Setext `===` title detection, table parsing, and
 Markdown text cleanup.
 `content_extractor.py` owns Markdown content orchestration. The public

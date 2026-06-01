@@ -178,6 +178,23 @@ def _process_inline_math(text: str) -> List[Tuple[str, bool]]:
     return parts
 
 
+def _is_remote_image_source(src: str) -> bool:
+    return bool(re.match(r'^[a-z][a-z0-9+.-]*://', str(src or ''), re.I))
+
+
+def _local_image_filesystem_source(src: str) -> str:
+    raw = str(src or '').strip()
+    end = len(raw)
+    for marker in ('?', '#'):
+        idx = raw.find(marker)
+        if idx != -1:
+            end = min(end, idx)
+    local = unquote(raw[:end].strip())
+    if os.sep != '\\':
+        local = local.replace('\\', os.sep)
+    return local
+
+
 def _split_image_tokens_from_text(text: str, fig_dir: str, prefix: str, base_dir: str = '') -> Tuple[List[Dict[str, Any]], List[str], List[Dict[str, str]]]:
     """Split Markdown image references into ordered text/image tokens."""
     imgs: List[str] = []
@@ -192,16 +209,17 @@ def _split_image_tokens_from_text(text: str, fig_dir: str, prefix: str, base_dir
         src = m.group(2).strip().strip('"').strip("'")
         if src.startswith("<") and src.endswith(">"):
             src = src[1:-1].strip()
-        src = unquote(src)
-        if re.match(r'^[a-z]+://', src, re.I):
-            missing.append({'source': src, 'alt': alt, 'reason': 'remote'})
-            tokens.append({'type': 'missing_image', 'source': src, 'alt': alt, 'reason': 'remote'})
+        source_for_report = unquote(src)
+        if _is_remote_image_source(src) or _is_remote_image_source(source_for_report):
+            missing.append({'source': source_for_report, 'alt': alt, 'reason': 'remote'})
+            tokens.append({'type': 'missing_image', 'source': source_for_report, 'alt': alt, 'reason': 'remote'})
             pos = m.end()
             continue
-        fname = os.path.basename(src)
+        local_src = _local_image_filesystem_source(src)
+        fname = os.path.basename(local_src)
         if not fname:
-            missing.append({'source': src, 'alt': alt, 'reason': 'empty_filename'})
-            tokens.append({'type': 'missing_image', 'source': src, 'alt': alt, 'reason': 'empty_filename'})
+            missing.append({'source': source_for_report, 'alt': alt, 'reason': 'empty_filename'})
+            tokens.append({'type': 'missing_image', 'source': source_for_report, 'alt': alt, 'reason': 'empty_filename'})
             pos = m.end()
             continue
         name, ext = os.path.splitext(fname)
@@ -210,11 +228,11 @@ def _split_image_tokens_from_text(text: str, fig_dir: str, prefix: str, base_dir
         existing = [f for f in os.listdir(fig_dir) if f.startswith(prefix)]
         seq = len(existing) + 1
         dest = os.path.join(fig_dir, f'{prefix}_{seq:03d}{ext}')
-        candidates = [src]
-        if not os.path.isabs(src):
+        candidates = [local_src]
+        if not os.path.isabs(local_src):
             if base_dir:
-                candidates.insert(0, os.path.join(base_dir, src))
-            candidates.append(os.path.abspath(src))
+                candidates.insert(0, os.path.join(base_dir, local_src))
+            candidates.append(os.path.abspath(local_src))
         src_path = next((p for p in candidates if os.path.exists(p)), None)
         if src_path:
             shutil.copy2(src_path, dest)
@@ -222,8 +240,8 @@ def _split_image_tokens_from_text(text: str, fig_dir: str, prefix: str, base_dir
             imgs.append(copied)
             tokens.append({'type': 'image', 'image': copied})
         else:
-            missing.append({'source': src, 'alt': alt, 'reason': 'not_found'})
-            tokens.append({'type': 'missing_image', 'source': src, 'alt': alt, 'reason': 'not_found'})
+            missing.append({'source': source_for_report, 'alt': alt, 'reason': 'not_found'})
+            tokens.append({'type': 'missing_image', 'source': source_for_report, 'alt': alt, 'reason': 'not_found'})
         pos = m.end()
 
     if pos < len(text):

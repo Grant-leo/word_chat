@@ -252,6 +252,29 @@ def md_image_resolves_wrapped_and_percent_encoded_paths() -> None:
 
 
 @case
+def md_image_resolves_local_uri_suffixes() -> None:
+    work = new_workdir("md_image_uri_suffixes")
+    figures = work / "figures"
+    figures.mkdir()
+    (figures / "panel one.png").write_bytes(PNG_1X1)
+    (figures / "panel two.png").write_bytes(PNG_1X1)
+    md = work / "image_uri_suffixes.md"
+    md.write_text(
+        "# Image URI Suffixes\n\n"
+        "Query ![one](figures/panel%20one.png?raw=true#panel-a)\n\n"
+        "Fragment ![two](figures\\panel%20two.png#caption).",
+        encoding="utf-8",
+    )
+    content = extract_md_content(str(md), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    images = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "image"]
+    missing = content["_meta"].get("missing_images") or []
+    assert_true(content["_meta"]["images_extracted"] == 2, f"local Markdown image URI suffixes were not copied: {content['_meta']}")
+    assert_true(len(images) == 2, f"local Markdown image URI suffixes were not preserved in content stream: {paragraphs}")
+    assert_true(not missing, f"existing local images with URI suffixes were reported missing: {missing}")
+
+
+@case
 def md_missing_images_are_reported_to_qa() -> None:
     work = new_workdir("md_missing_images")
     md = work / "missing_images.md"

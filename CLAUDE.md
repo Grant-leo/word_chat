@@ -356,7 +356,7 @@ When a user wants a document-specific feature:
 - Each pipeline run creates an independent `Outputs/<date>_<content>/` directory; same-day duplicates get `_2`, `_3`, etc.
 - Formulas should render as native OOXML Math. Check the generated docx XML for `<m:oMathPara>` / `<m:oMath>` when formula correctness matters.
 - Markdown `$...$` / `$$...$$` formulas in abstracts and body sections should render as native OOXML Math.
-- Markdown image paths resolve relative to the `.md` file first, then copy into the current output `figures/` folder. Remote `http://` / `https://` image URLs are not downloaded automatically; users should save them locally and update the Markdown path before rerunning.
+- Markdown image paths resolve relative to the `.md` file first, including `%20` spaces, `<path with spaces>` wrappers, and local `?query` / `#fragment` suffixes copied from Markdown tools, then copy into the current output `figures/` folder. Remote `http://` / `https://` image URLs are not downloaded automatically; users should save them locally and update the Markdown path before rerunning.
 - Markdown front format-instruction sections are format-only. They must be stripped from the content stream, including noisy/encoding-damaged headings followed by obvious format rules and a `---` delimiter.
 - `内容提取.md` should summarize images, tables, and formulas by their real roles, avoid duplicate image listings, and never display non-formula structured content as `[公式]`.
 - Caption detection should distinguish true captions from prose references: `图 1 xxx 示意图` can be a caption, while `图 1 展示了...` remains body text.
