@@ -2295,6 +2295,103 @@ def pipeline_qa_contract_checks_fallback_reports() -> None:
 
 
 @case
+def pipeline_qa_contract_checks_crash_fallback_reports() -> None:
+    import pipeline_runner.qa as qa_module
+
+    original_status_fields = qa_module.qa_status_fields
+
+    def missing_status_fields(_passed, _issues):
+        return {}
+
+    def passing_qa(out_dir, mode, output_docx_name):
+        report = {"passed": True, "issues": [], "counts": {}, "mode": mode}
+        report.update(original_status_fields(report["passed"], report["issues"]))
+        return report
+
+    def passing_conformance(out_dir, mode, output_docx_name, project_root):
+        report = {"passed": True, "issues": [], "counts": {}, "mode": mode}
+        report.update(original_status_fields(report["passed"], report["issues"]))
+        return report
+
+    def crash(*_args, **_kwargs):
+        raise RuntimeError("synthetic QA crash")
+
+    try:
+        qa_module.qa_status_fields = missing_status_fields
+
+        structural_work = new_workdir("pipeline_qa_contract_structural_crash_fallback")
+        structural_buffer = io.StringIO()
+        with redirect_stdout(structural_buffer):
+            assert_true(
+                not run_qa_phases(
+                    str(structural_work),
+                    mode="developer",
+                    output_docx_name="最终论文.docx",
+                    qa_level="basic",
+                    project_root=str(structural_work),
+                    deps=QADependencies(
+                        qa_check_and_write=crash,
+                        conformance_check_and_write=None,
+                        visual_check_and_write=None,
+                        optional_import_detail=lambda name: "",
+                    ),
+                ),
+                "structural QA crash should still fail closed",
+            )
+        structural_output = structural_buffer.getvalue()
+        assert_true("[CONTRACT] qa_report.json" in structural_output, f"structural crash fallback contract warning was not printed: {structural_output}")
+        assert_true("QA_REPORT_STATUS_MISSING" in structural_output, f"structural crash fallback missing-status issue was not printed: {structural_output}")
+
+        conformance_work = new_workdir("pipeline_qa_contract_conformance_crash_fallback")
+        conformance_buffer = io.StringIO()
+        with redirect_stdout(conformance_buffer):
+            assert_true(
+                not run_qa_phases(
+                    str(conformance_work),
+                    mode="developer",
+                    output_docx_name="最终论文.docx",
+                    qa_level="strict",
+                    project_root=str(conformance_work),
+                    deps=QADependencies(
+                        qa_check_and_write=passing_qa,
+                        conformance_check_and_write=crash,
+                        visual_check_and_write=None,
+                        optional_import_detail=lambda name: "",
+                    ),
+                ),
+                "conformance QA crash should still fail closed",
+            )
+        conformance_output = conformance_buffer.getvalue()
+        assert_true("[CONTRACT] conformance_report.json" in conformance_output, f"conformance crash fallback contract warning was not printed: {conformance_output}")
+        assert_true("QA_REPORT_STATUS_MISSING" in conformance_output, f"conformance crash fallback missing-status issue was not printed: {conformance_output}")
+
+        visual_work = new_workdir("pipeline_qa_contract_visual_crash_fallback")
+        visual_buffer = io.StringIO()
+        with redirect_stdout(visual_buffer):
+            assert_true(
+                not run_qa_phases(
+                    str(visual_work),
+                    mode="developer",
+                    output_docx_name="最终论文.docx",
+                    qa_level="visual",
+                    project_root=str(visual_work),
+                    deps=QADependencies(
+                        qa_check_and_write=passing_qa,
+                        conformance_check_and_write=passing_conformance,
+                        visual_check_and_write=crash,
+                        optional_import_detail=lambda name: "",
+                    ),
+                ),
+                "visual QA crash should still fail closed",
+            )
+        visual_output = visual_buffer.getvalue()
+        assert_true("[CONTRACT] visual_report.json" in visual_output, f"visual crash fallback contract warning was not printed: {visual_output}")
+        assert_true("QA_REPORT_STATUS_MISSING" in visual_output, f"visual crash fallback missing-status issue was not printed: {visual_output}")
+    finally:
+        qa_module.qa_status_fields = original_status_fields
+
+
+@case
 def pipeline_qa_points_to_conformance_report_when_strict_fails() -> None:
     work = new_workdir("pipeline_qa_conformance_hint")
 
