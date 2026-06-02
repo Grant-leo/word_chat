@@ -39,12 +39,12 @@ CLI, output, verification, and QA details in a focused package:
 
 ## Verification Baseline
 
-Current baseline as of 2026-06-01:
+Current baseline as of 2026-06-02:
 
-- Synthetic regression after crash fallback QA contract coverage: `244 passed, 0 failed`.
+- Synthetic regression after template-instruction cleanup, semantic backmatter heading matching, and public-template visual baseline routing: `253 passed, 0 failed`.
 - Agent-first flow: `--agent-auto` scans local inputs, auto-selects only single candidates, defaults to user auto-repair, and writes `agent_summary.md/json`.
 - Novice interruption coverage: interactive cancellation/EOF, missing preflight inputs, generated-script build failures, QA dependency failures, and auto-repair blockers all route to a next action.
-- Strict/visual report handoff coverage: `conformance_report.md/json` and `visual_report.md/json` top-level `next_action` values name the leading issue code before the beginner-facing repair step, so users can connect codes such as `PLACEHOLDER_TEXT_LEFT`, `PDF_PAGE_COUNT_INVALID`, and `GOLDEN_BASELINE_MISSING` to the next concrete action even without opening `agent_summary.md`.
+- Strict/visual report handoff coverage: `conformance_report.md/json` and `visual_report.md/json` top-level `next_action` values name the leading issue code before the beginner-facing repair step, so users can connect codes such as `PLACEHOLDER_TEXT_LEFT`, `PDF_PAGE_COUNT_INVALID`, and `WPS_SAMPLE_IMAGE_MISMATCH` to the next concrete action even without opening `agent_summary.md`.
 - QA JSON status contract: structural `qa_report.json`, strict `conformance_report.json`, and visual `visual_report.json` now expose `status` (`passed`, `passed_with_warnings`, or `failed`) plus `result_label`; dependency-missing, QA-crash, build-failure, and extraction-failure fallback reports use the same fields. `run_qa_phases()` prints non-blocking contract warnings for structural, strict, and visual QA reports, including dependency-missing and QA-crash fallback reports, when fields are missing or inconsistent, and `agent_summary.json` preserves the same per-report status so UI/Agent consumers do not have to infer warning-only state from `passed`.
 - Workflow rerun command hygiene: absolute inputs outside this project's `Inputs/` / `Templates/`, including external same-named folders, do not collapse to misleading basename rerun commands; reports instead tell users to place the file in the correct source folder and rerun by file name.
 - Markdown remote image handoff: remote `http://` / `https://` image URLs surface `CONTENT_IMAGE_REMOTE_UNSUPPORTED`, stop as user-file input blockers, and tell users to download the image locally and update the Markdown relative path before rerunning.
@@ -56,6 +56,9 @@ Current baseline as of 2026-06-01:
 - DOCX relationship-image fail-closed handoff: corrupt or unsupported image bytes in source DOCX relationships are validated before copying into `figures/`; invalid images are not counted as extracted, do not leak into the content stream, and surface `IMAGE_EXTRACT_FAILED` with a beginner-facing step to re-export/reinsert the source image as a normal PNG/JPG before rerunning.
 - Strict conformance body-start detection: default body paragraphs before the first explicit Markdown heading stay inside strict content checks instead of being skipped as TOC/front matter.
 - Content-summary coverage: `内容提取.md` renders structured `role="image"` items, including table-cell images, as `[图片]` and mentions table-cell image counts in table summaries instead of opaque `[结构化内容]`.
+- Template-instruction cleanup coverage: DOCX template format notes, source-TOC examples, cover field hints, and TOC page-number samples are stripped or ignored before final rendering, so template instructions do not appear in `最终论文.docx`.
+- Semantic heading coverage: structural QA treats common Chinese/English backmatter equivalents such as `Acknowledgements` / `Acknowledgment` / `致谢`, `References` / `参考文献`, and `Appendix` / `附录` as matching headings for `CONTENT_HEADING_MISSING`.
+- Public-template visual baseline routing: `public_template_suite.py --visual` runs render QA without golden comparison by default. Golden comparison is opt-in through `--golden-dir`; `--update-golden` writes/refreshes the default baseline directory when intentionally maintaining golden data.
 - Output-boundary coverage: standalone/default `format_extractor`, `content_parser`, and `md_parser` outputs stay under `Outputs/_...` instead of beside private source files.
 - Controlled auto-repair loop regression: repairable build-script error, no-improvement stop, rebuild-failure stop, needs-user-file stop, strict/visual dependency failure, WPS page-count/page-size/text-page/sample-image visual blockers, visual option preservation, summary next-action promotion, and sanitized report paths passed.
 - PDF template end-to-end strict QA: synthetic instruction PDF template + DOCX content passed.
@@ -155,7 +158,7 @@ stays a thin entrypoint.
 
 `qa_visual_modules/` owns optional render QA helpers behind
 `qa_visual.check_visual`: Word/WPS PDF export, Poppler text/page rendering,
-sample page selection, rendered image statistics, golden-baseline comparison,
+sample page selection, rendered image statistics, opt-in golden-baseline comparison,
 WPS PDF metadata/page-count/page-size/text-page validation, WPS sample-image comparison, separate Word/WPS rendered-text diagnostics, and visual QA report writers. `checks.py` owns render QA orchestration while
 the entrypoint preserves legacy monkeypatch hooks used by regression tests.
 

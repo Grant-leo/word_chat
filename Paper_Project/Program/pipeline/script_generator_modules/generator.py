@@ -43,7 +43,7 @@ def generate(format_json_path: str, content_json_path: str, output_dir: str, out
     page = _extract_page_and_header(fmt)
     front = _front_matter_sections(cnt)
     cover_info = cnt.get('cover_info', {}) or {}
-    title_cn = cover_info.get('paper_title') or cnt.get('title_info', {}).get('title_cn') or ''
+    title_cn = cnt.get('title_info', {}).get('title_cn') or cover_info.get('paper_title') or ''
     rules = _infer_template_rules(fmt)
 
     src_assets = fmt.get('_meta', {}).get('assets_dir') or ''

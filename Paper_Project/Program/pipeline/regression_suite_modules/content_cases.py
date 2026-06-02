@@ -253,6 +253,91 @@ def content_parser_does_not_count_cover_table_as_body_table() -> None:
 
 
 @case
+def content_parser_extracts_cover_paragraph_fields_and_skips_template_notes() -> None:
+    work = new_workdir("parser_cover_paragraph_fields")
+    docx = work / "cover_paragraph_fields.docx"
+    doc = Document()
+    doc.add_paragraph("本科毕业论文（设计）")
+    doc.add_paragraph("年级专业：English Major in Education (2020-2024), Sanming University")
+    doc.add_paragraph("姓    名：Zhang San")
+    doc.add_paragraph("学    号：2020123456")
+    doc.add_paragraph("指导教师：Prof. Li Si")
+    doc.add_paragraph("（完成时间按照答辩时间填写）")
+    doc.add_paragraph("2026年 5月 6日")
+    title = "On Chinese Translation of English Sports News Headlines from the Perspective of Memetics"
+    title_p = doc.add_paragraph(title)
+    for run in title_p.runs:
+        run.bold = True
+        run.font.size = Pt(16)
+    doc.add_paragraph("Zhang San")
+    doc.add_paragraph("English Major in Education (2020-2024), Sanming University, Sanming, Fujian")
+    doc.add_paragraph("Abstract: This is the real abstract paragraph and it should be the first front-matter content.")
+    note = "摘要是论文内容的总结概括，主要概述论题的背景、目的、主要内容及结论。约200词，第三人称，不标注引用编号。"
+    note_p = doc.add_paragraph(note)
+    for run in note_p.runs:
+        run.bold = True
+        run.font.size = Pt(14)
+    doc.add_paragraph("KEY WORDS: memetics; translation")
+    doc.add_paragraph("1. Introduction")
+    doc.add_paragraph("Actual body text should remain.")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    cover_info = content.get("cover_info") or {}
+    assert_true(cover_info.get("class_name", "").startswith("English Major"), f"class/major field missing: {cover_info}")
+    assert_true(cover_info.get("student_name") == "Zhang San", f"name field missing: {cover_info}")
+    assert_true(cover_info.get("student_id") == "2020123456", f"student id missing: {cover_info}")
+    assert_true(cover_info.get("advisor") == "Prof. Li Si", f"advisor missing: {cover_info}")
+    assert_true(cover_info.get("completion_date") == "2026年 5月 6日", f"date missing: {cover_info}")
+    assert_true(cover_info.get("paper_title") == title, f"title missing from cover info: {cover_info}")
+
+    all_text = "\n".join(
+        [str(sec.get("heading") or "") for sec in content.get("sections") or []]
+        + [
+            str(item.get("text") if isinstance(item, dict) else item)
+            for sec in content.get("sections") or []
+            for item in sec.get("paragraphs") or []
+        ]
+    )
+    assert_true("完成时间按照答辩时间填写" not in all_text, f"date instruction leaked into content: {all_text}")
+    assert_true(note not in all_text, f"abstract format instruction leaked into content: {all_text}")
+    assert_true("Actual body text should remain." in all_text, f"real body text was lost: {all_text}")
+
+
+@case
+def content_parser_recovers_late_chinese_abstract_from_references() -> None:
+    work = new_workdir("parser_late_cn_front_matter")
+    docx = work / "late_cn_front_matter.docx"
+    doc = Document()
+    doc.add_paragraph("English Thesis Title")
+    doc.add_paragraph("Abstract: English abstract body.")
+    doc.add_paragraph("key words: translation; memetics")
+    doc.add_paragraph("1. Introduction")
+    doc.add_paragraph("Actual body text should remain.")
+    doc.add_paragraph("References")
+    doc.add_paragraph("[1] Blackmore, S. The Meme Machine [M]. Oxford: Oxford University Press, 1999.")
+    cn_title = "模因论视角下的英语体育新闻标题汉译研究"
+    cn_abs = "随着中国的发展，体育新闻标题翻译具有重要意义。"
+    cn_kw = "模因论；体育新闻标题；翻译策略"
+    doc.add_paragraph(cn_title)
+    doc.add_paragraph(f"【摘要】{cn_abs}")
+    doc.add_paragraph(f"【关键词】{cn_kw}")
+    doc.add_paragraph("Acknowledgements")
+    doc.add_paragraph("Thanks.")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    refs = content.get("references") or []
+    assert_true(len(refs) == 1 and refs[0].startswith("[1]"), f"late Chinese front matter leaked into references: {refs}")
+    assert_true(content.get("title_info", {}).get("title_cn") == cn_title, f"late Chinese title not recovered: {content.get('title_info')}")
+    roles = [sec.get("role") for sec in content.get("sections") or []]
+    assert_true("cn_abstract" in roles and "cn_keywords" in roles, f"late Chinese front matter sections missing: {roles}")
+    cn_sections = {sec.get("role"): sec for sec in content.get("sections") or []}
+    assert_true(cn_abs in "\n".join(cn_sections["cn_abstract"].get("paragraphs") or []), "Chinese abstract body missing")
+    assert_true(cn_kw in "\n".join(cn_sections["cn_keywords"].get("paragraphs") or []), "Chinese keywords missing")
+
+
+@case
 def low_res_image_fragment_is_reported_and_not_upscaled() -> None:
     img_src = new_workdir("tiny_image_src")
     write_sample_png(img_src / "tiny.png", width=76, height=18)

@@ -131,6 +131,9 @@ Pass criteria:
 - User-file problems are routed to input/template repair, not blind generated-script editing.
 - Developer engine problems name the owning module.
 - Format-instruction paragraphs must not leak into `content.json`, `内容提取.md`, or strict conformance expected-content checks.
+- DOCX template-only notes, source-TOC examples, cover field hints, and TOC page-number samples must not leak into the final DOCX.
+- Common backmatter heading equivalents such as `Acknowledgements` / `Acknowledgment` / `致谢`, `References` / `参考文献`, and `Appendix` / `附录` must not create false `CONTENT_HEADING_MISSING` warnings.
+- Public-template visual smoke should run without golden comparison by default; compare golden baselines only when `--golden-dir` or `--update-golden` is explicitly selected.
 
 For parser/QA/release-candidate changes, also run the high-risk matrix that covers pure Markdown strict, missing Markdown images, header/footer image boundaries, user auto-repair, DOCX/PDF visual smoke, and dense media/math strict content. The expected release gate is that every case either passes or fails closed with the intended QA code and next-step guidance.
 

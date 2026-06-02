@@ -9,6 +9,32 @@ def _text_blob(fmt: Dict[str, Any]) -> str:
     return "\n".join(str(p.get("text") or "") for p in fmt.get("paragraphs") or [])
 
 
+def _is_template_instruction_fragment(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if not compact:
+        return False
+    if "完成时间按照答辩时间填写" in compact:
+        return True
+    font_signal = bool(re.search(r"TimesNewRoman|宋体|黑体|楷体|仿宋|华文|字号|[一二三四五六七八九十小]+号", compact, re.I))
+    layout_signal = bool(re.search(r"居中|加粗|行距|倍行距|段前|段后|缩进|对齐|表格行高|固定值|页边距", compact))
+    subject_signal = bool(re.search(r"英文题目|中文题目|目录内容|一级标题|二级标题|三级标题|图表题注|参考文献|页眉|页脚|新罗马字体", compact))
+    return bool((font_signal and layout_signal) or (subject_signal and (font_signal or layout_signal)))
+
+
+def _strip_template_instruction_fragments(text: str) -> str:
+    value = str(text or "")
+
+    def replace(match: re.Match[str]) -> str:
+        inner = match.group(0)[1:-1]
+        return "" if _is_template_instruction_fragment(inner) else match.group(0)
+
+    previous = None
+    while previous != value:
+        previous = value
+        value = re.sub(r"[（(][^（）()]{1,120}[）)]", replace, value)
+    return re.sub(r"\s{2,}", " ", value).strip()
+
+
 def _extract_page_and_header(fmt: Dict[str, Any]) -> Dict[str, Any]:
     sections = fmt.get("sections") or []
     s0 = sections[0] if sections else {}
@@ -23,12 +49,19 @@ def _extract_page_and_header(fmt: Dict[str, Any]) -> Dict[str, Any]:
     }
     for sec in sections:
         for h in sec.get("header", []) or []:
-            text = (h.get("text") or "").strip()
+            text = _strip_template_instruction_fragments(h.get("text") or "")
             if not text:
                 continue
+            clean_runs = []
+            for r in h.get("runs", []) or []:
+                rt = _strip_template_instruction_fragments(r.get("text") or "")
+                if rt:
+                    nr = dict(r)
+                    nr["text"] = rt
+                    clean_runs.append(nr)
             run = next(
-                (r for r in h.get("runs", []) if str(r.get("text", "")).strip()),
-                next((r for r in h.get("runs", []) if r.get("size_pt")), {}),
+                (r for r in clean_runs if str(r.get("text", "")).strip()),
+                next((r for r in clean_runs if r.get("size_pt")), {}),
             )
             page["header"] = {
                 "text": text,

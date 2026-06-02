@@ -175,7 +175,7 @@ def _indent_from_text(text: str, size_pt: Optional[float] = None, default: Optio
     return default
 
 
-def _profile_from_instruction(text: str, base: Dict[str, Any], **defaults: Any) -> Dict[str, Any]:
+def _profile_from_instruction(text: str, base: Dict[str, Any], allow_bold: bool = True, **defaults: Any) -> Dict[str, Any]:
     prof = dict(base)
     prof.update(defaults)
     font = _font_from_text(text)
@@ -187,10 +187,11 @@ def _profile_from_instruction(text: str, base: Dict[str, Any], **defaults: Any) 
         prof["size"] = size
     if align:
         prof["align"] = align
-    if "加粗" in text:
-        prof["bold"] = True
-    if "不加粗" in text:
-        prof["bold"] = False
+    if allow_bold:
+        if "不加粗" in text:
+            prof["bold"] = False
+        elif "加粗" in text:
+            prof["bold"] = True
     prof.update(_line_spacing_from_text(text))
     line_pt = prof.get("line_spacing_fixed_pt") or (float(prof.get("size") or 12) * float(prof.get("line_spacing_val") or 1.5))
     prof.update(_spacing_before_after_from_text(text, line_pt))
@@ -198,6 +199,58 @@ def _profile_from_instruction(text: str, base: Dict[str, Any], **defaults: Any) 
     if ind is not None:
         prof["first_indent_cm"] = ind
     return _normalize_profile(prof, base)
+
+
+def _find_body_rule(texts: str) -> str:
+    candidates = [
+        _find_regex_instruction(texts, r"摘要内容为([^。；;\n]*)"),
+        _find_regex_instruction(texts, r"论文正文[^。；;\n]*?(宋体[^。；;\n]*?(?:固定值|行距)[^。；;\n]*)"),
+        _find_instruction(texts, "论文正文", "行距"),
+        _find_instruction(texts, "正文从", "行距"),
+        _find_instruction(texts, "正文", "首行缩进", "两端对齐"),
+    ]
+    for rule in candidates:
+        if not rule:
+            continue
+        if ("目录" in rule and "正文从" not in rule and "论文正文" not in rule) or "正文的一级标题" in rule or "正文其他层次标题" in rule:
+            continue
+        if _has_format_instruction(rule) or "行距" in rule or "首行缩进" in rule:
+            return rule
+    return ""
+
+
+def _find_reference_rule(texts: str) -> str:
+    candidates = [
+        _find_regex_instruction(texts, r"参考文献中中文使用([^。；;\n]*)"),
+        _find_instruction(texts, "参考文献格式要求"),
+        _find_instruction(texts, "参考文献", "宋体", "小四"),
+    ]
+    for rule in candidates:
+        if not rule:
+            continue
+        if any(marker in rule for marker in ("目录", "一级标题", "正文的", "正文其他层次标题")):
+            continue
+        if _has_format_instruction(rule):
+            return rule
+    return ""
+
+
+def _reference_sample_profile(paras: list[Dict[str, Any]], body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    for p in paras:
+        txt = (p.get("text") or "").strip()
+        if not re.match(r"^\[\d+\]\s+\S", txt):
+            continue
+        if _has_format_instruction(txt):
+            continue
+        prof = _profile_from_para_first_text(p, body)
+        prof["font"] = "宋体"
+        prof["bold"] = False
+        prof["align"] = "LEFT" if prof.get("align") in ("CENTER", "RIGHT") else (prof.get("align") or "LEFT")
+        prof["first_indent_cm"] = 0.0
+        prof["space_before_pt"] = 0.0
+        prof["space_after_pt"] = 0.0
+        return _normalize_profile(prof, body)
+    return None
 
 
 def _first_run(p: Dict[str, Any]) -> Dict[str, Any]:
@@ -404,17 +457,50 @@ def _infer_style_profiles(fmt: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             if level == 1:
                 profiles[role]["align"] = "CENTER"
 
-    body_cands = []
-    for p in paras:
+    def body_sample_score(p: Dict[str, Any]) -> Optional[float]:
         txt = (p.get("text") or "").strip()
         if len(txt) < 80:
-            continue
-        if any(k in txt[:80] for k in ["本人郑重声明", "本人在导师", "原创性声明", "版权使用", "格式要求", "字体要求", "行距：", "字号", "页眉页脚"]):
-            continue
-        if _is_cjk(txt):
-            body_cands.append(p)
+            return None
+        style = str(p.get("style") or "").lower()
+        if "toc" in style or "table of figures" in style:
+            return None
+        note_markers = ("本模板", "格式", "格式要求", "设置为", "目录采用", "正文中", "建议", "字体要求", "页眉页脚")
+        if any(marker in txt[:120] for marker in note_markers):
+            return None
+        if "\t" in txt or re.search(r"\s(?:[ivxlcdm]+|\d+)$", txt, re.I):
+            return None
+        if txt[:1] in ("(", "（") and _has_format_instruction(txt):
+            return None
+        r = _first_text_run(p)
+        try:
+            size = float(r.get("size_pt") or 0)
+        except Exception:
+            size = 0.0
+        if size and size > 13.5:
+            return None
+        score = 0.0
+        ar = _ascii_ratio(txt[:240])
+        if ar > 0.55 and len(txt) >= 120:
+            score += 80.0
+        elif _is_cjk(txt):
+            score += 50.0
+        else:
+            return None
+        if not bool(r.get("bold", False)):
+            score += 20.0
+        if size:
+            score += max(0.0, 12.0 - abs(size - 12.0))
+        if (p.get("alignment") or p.get("align")) in ("JUSTIFY", "BOTH"):
+            score += 4.0
+        return score
+
+    body_cands = []
+    for p in paras:
+        score = body_sample_score(p)
+        if score is not None:
+            body_cands.append((score, p))
     if body_cands:
-        put("body", body_cands[0])
+        profiles["body"] = _profile_from_para(max(body_cands, key=lambda item: item[0])[1])
 
     body = _normalize_profile(profiles.get("body") or {"font": "宋体", "size": 12, "align": "JUSTIFY", "line_spacing_fixed_pt": 28, "first_indent_cm": 0.74})
     profiles["body"] = body
@@ -460,17 +546,14 @@ def _infer_style_profiles(fmt: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
 def _apply_template_text_rules(fmt: Dict[str, Any], profiles: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     """Apply prose rules found in the template, without school-specific constants."""
     texts = _text_blob(fmt)
+    paras = fmt.get("paragraphs") or []
     body = _normalize_profile(profiles.get("body") or {})
-    body_rule = (
-        _find_regex_instruction(texts, r"摘要内容为([^。；;\n]*)")
-        or _find_regex_instruction(texts, r"论文正文[^。；;\n]*?(宋体[^。；;\n]*?(?:固定值|行距)[^。；;\n]*)")
-        or _find_instruction(texts, "正文")
-    )
+    body_rule = _find_body_rule(texts)
     if body_rule:
-        body = _profile_from_instruction(body_rule, body, align="JUSTIFY")
+        body = _profile_from_instruction(body_rule, body, allow_bold=False, align="JUSTIFY")
     abstract_body_rule = _find_regex_instruction(texts, r"摘要内容为([^。；;\n]*)") or _find_instruction(texts, "摘要内容")
     if abstract_body_rule and ("宋体" in abstract_body_rule or "小四" in abstract_body_rule):
-        body = _profile_from_instruction(abstract_body_rule, body, align="JUSTIFY")
+        body = _profile_from_instruction(abstract_body_rule, body, allow_bold=False, align="JUSTIFY")
     body.setdefault("font", "宋体")
     body.setdefault("size", 12.0)
     body.setdefault("align", "JUSTIFY")
@@ -488,17 +571,49 @@ def _apply_template_text_rules(fmt: Dict[str, Any], profiles: Dict[str, Dict[str
         _find_regex_instruction(texts, r"(?:毕业)?论文(?:（设计）)?题目为([^。；;\n]*黑体[^。；;\n]*)")
         or _find_instruction(texts, "毕业论文", "题目", "黑体")
         or _find_instruction(texts, "论文题目", "黑体", "居中")
+        or _find_instruction(texts, "宋体小三号", "加粗", "居中")
     )
     if cn_title_rule:
         profiles["cn_title"] = _profile_from_instruction(cn_title_rule, body, first_indent_cm=0.0)
-    cn_abs_head_rule = _find_regex_instruction(texts, r'[“"]?摘要[”"]?为([^。；;\n]*)') or _find_instruction(texts, "摘要", "居中")
+    cn_abs_head_rule = (
+        _find_regex_instruction(texts, r'[“"]?摘要[”"]?二字([^。；;\n]*宋体[^。；;\n]*)')
+        or _find_regex_instruction(texts, r'[“"]?摘要[”"]?为([^。；;\n]*)')
+        or _find_instruction(texts, "摘要", "宋体", "四号", "加粗")
+        or _find_instruction(texts, "摘要", "居中")
+    )
     if cn_abs_head_rule:
-        profiles["cn_abstract_heading"] = _profile_from_instruction(cn_abs_head_rule, body, first_indent_cm=0.0)
+        profiles["cn_abstract_heading"] = _profile_from_instruction(cn_abs_head_rule, body, align="CENTER", first_indent_cm=0.0)
     if abstract_body_rule:
-        profiles["cn_abstract_body"] = _profile_from_instruction(abstract_body_rule, body, first_indent_cm=_indent_from_text(abstract_body_rule, 12.0, body.get("first_indent_cm")))
-    kw_rule = _find_instruction(texts, "关键词")
-    if kw_rule:
-        profiles["cn_keywords"] = _profile_from_instruction(kw_rule, body, align="LEFT", first_indent_cm=0.0)
+        cn_abs_base = profiles.get("cn_abstract_body") or body
+        profiles["cn_abstract_body"] = _profile_from_instruction(
+            abstract_body_rule,
+            cn_abs_base,
+            allow_bold=False,
+            first_indent_cm=_indent_from_text(abstract_body_rule, 12.0, body.get("first_indent_cm")),
+        )
+    kw_rule = (
+        _find_regex_instruction(texts, r"([“\"]?关键词[^。；;\n]*宋体[^。；;\n]*四号[^。；;\n]*)")
+        or _find_instruction(texts, "关键词三字", "宋体", "四号")
+        or _find_instruction(texts, "关键词", "宋体", "四号", "加粗")
+    )
+    kw_content_rule = _find_instruction(texts, "摘要和关键词内容", "小四")
+    if kw_rule or kw_content_rule:
+        kw_content_rule = kw_content_rule or kw_rule
+        kw_base = profiles.get("cn_abstract_body") or body
+        profiles["cn_keywords"] = _profile_from_instruction(
+            kw_content_rule,
+            kw_base,
+            allow_bold=False,
+            align="LEFT",
+            first_indent_cm=0.0,
+        )
+        if kw_rule:
+            profiles["cn_keywords_label"] = _profile_from_instruction(
+                kw_rule,
+                profiles["cn_keywords"],
+                align="LEFT",
+                first_indent_cm=0.0,
+            )
 
     en_rule = _find_regex_instruction(texts, r"英文标题和摘要([^。；;\n]*)") or _find_instruction(texts, "英文标题", "摘要") or _find_instruction(texts, "英文题目", "摘要")
     en_title_rule = _find_regex_instruction(texts, r"论文题目为([^。；;\n]*Times\s*New\s*Roman[^。；;\n]*)") or _find_instruction(texts, "英文题目") or en_rule
@@ -513,6 +628,25 @@ def _apply_template_text_rules(fmt: Dict[str, Any], profiles: Dict[str, Dict[str
         profiles["en_abstract_body"] = en_body
         profiles["en_abstract_heading"] = _normalize_profile({"font": "Times New Roman", "size": profiles.get("en_title", en_body).get("size", 16), "bold": False, "align": "CENTER", "first_indent_cm": 0.0, **en_spacing}, en_body)
         profiles["en_keywords"] = _normalize_profile({"font": "Times New Roman", "size": body.get("size", 12), "bold": False, "align": "LEFT", "first_indent_cm": 0.0, **en_spacing}, en_body)
+    en_kw_rule = _find_instruction(texts, "Key words") or _find_instruction(texts, "KEY WORD")
+    if en_kw_rule:
+        profiles["en_keywords"] = _profile_from_instruction(
+            en_kw_rule,
+            _normalize_profile({"font": "Times New Roman", "size": body.get("size", 12), "bold": False, "align": "LEFT", "first_indent_cm": 0.0}, body),
+            allow_bold=False,
+            font="Times New Roman",
+            size=body.get("size", 12),
+            bold=False,
+            align="LEFT",
+            first_indent_cm=0.0,
+        )
+        profiles["en_keywords_label"] = _profile_from_instruction(
+            en_kw_rule,
+            profiles["en_keywords"],
+            font="Times New Roman",
+            align="LEFT",
+            first_indent_cm=0.0,
+        )
 
     toc_title_rule = _find_instruction(texts, "目录", "黑体") or _find_instruction(texts, "【目录】")
     if toc_title_rule:
@@ -551,9 +685,23 @@ def _apply_template_text_rules(fmt: Dict[str, Any], profiles: Dict[str, Dict[str
         profiles["table_body"] = _normalize_profile(table_body, body)
         profiles["table_header"] = _normalize_profile({"bold": True}, profiles["table_body"])
 
-    ref_rule = _find_regex_instruction(texts, r"参考文献中中文使用([^。；;\n]*)") or _find_instruction(texts, "参考文献", "小四") or _find_instruction(texts, "参考文献格式要求")
+    reference_sample = _reference_sample_profile(paras, body)
+    if reference_sample:
+        profiles["reference"] = reference_sample
+    ref_rule = _find_reference_rule(texts)
     if ref_rule:
-        reference = _profile_from_instruction(ref_rule, body, font="宋体", size=12.0, bold=False, align="JUSTIFY", first_indent_cm=0.0, space_before_pt=0.0, space_after_pt=0.0)
+        reference = _profile_from_instruction(
+            ref_rule,
+            profiles.get("reference", body),
+            allow_bold=False,
+            font="宋体",
+            size=12.0,
+            bold=False,
+            align="JUSTIFY",
+            first_indent_cm=0.0,
+            space_before_pt=0.0,
+            space_after_pt=0.0,
+        )
         reference["font"] = "宋体"
         profiles["reference"] = reference
     if _find_instruction(texts, "英文参考文献", "左对齐"):

@@ -8,6 +8,7 @@ try:
     )
     from content_parser_modules.placeholders import (
         extract_labeled_title,
+        is_template_instruction_text,
         is_unfilled_placeholder_text,
     )
     from content_parser_modules.style import heading_level_from_style
@@ -18,6 +19,7 @@ except ImportError:  # pragma: no cover - package-style imports
     )
     from .placeholders import (
         extract_labeled_title,
+        is_template_instruction_text,
         is_unfilled_placeholder_text,
     )
     from .style import heading_level_from_style
@@ -34,12 +36,19 @@ _COVER_LABEL_MAP = {
     '\u5b66\u4f4d\u7f16\u7801': 'degree_code',
     '\u8bba\u6587\u9898\u76ee': 'paper_title',
     '\u5b66\u751f\u59d3\u540d': 'student_name',
+    '\u59d3\u540d': 'student_name',
     '\u5b66\u53f7': 'student_id',
     '\u5b66    \u53f7': 'student_id',
     '\u6240\u5c5e\u5b66\u9662': 'college',
+    '\u5b66\u9662': 'college',
     '\u4e13\u4e1a\u73ed\u7ea7': 'class_name',
+    '\u5e74\u7ea7\u4e13\u4e1a': 'class_name',
+    '\u4e13\u4e1a': 'class_name',
     '\u6307\u5bfc\u8001\u5e08': 'advisor',
     '\u6307\u5bfc\u6559\u5e08': 'advisor',
+    '\u65e5\u671f': 'completion_date',
+    '\u5b8c\u6210\u65f6\u95f4': 'completion_date',
+    '\u7b54\u8fa9\u65f6\u95f4': 'completion_date',
 }
 
 
@@ -55,6 +64,49 @@ def _max_run_font_size_pt(paragraph):
     return max_size
 
 
+def _normalize_cover_label(text):
+    return re.sub(r'[\s\uff1a:]+', '', str(text or ''))
+
+
+def _cover_key_for_label(label):
+    label_norm = _normalize_cover_label(label)
+    if not label_norm:
+        return ''
+    for keyword, key in _COVER_LABEL_MAP.items():
+        keyword_norm = _normalize_cover_label(keyword)
+        if keyword_norm and (keyword_norm in label_norm or label_norm in keyword_norm):
+            return key
+    return ''
+
+
+def _valid_cover_value(value):
+    text = _default_clean_text(value)
+    if not text:
+        return ''
+    if is_unfilled_placeholder_text(text) or is_template_instruction_text(text):
+        return ''
+    return text
+
+
+def _extract_cover_info_from_labeled_text(text):
+    raw = str(text or '').strip()
+    if not raw:
+        return '', ''
+    match = re.match(r'^\s*(.{1,16}?)\s*[\uff1a:]\s*(.+?)\s*$', raw)
+    if not match:
+        return '', ''
+    key = _cover_key_for_label(match.group(1))
+    value = _valid_cover_value(match.group(2))
+    if not key or not value:
+        return '', ''
+    return key, value
+
+
+def _looks_like_completion_date(text):
+    clean = re.sub(r'\s+', '', str(text or ''))
+    return bool(re.match(r'^\d{4}年\d{1,2}月\d{1,2}日$', clean))
+
+
 def _extract_cover_info_from_tables(tables):
     cover_info = {}
     for table in tables[:5]:
@@ -62,15 +114,12 @@ def _extract_cover_info_from_tables(tables):
             if len(row.cells) < 2:
                 continue
             label = row.cells[0].text.strip()
-            value = row.cells[1].text.strip()
+            value = _valid_cover_value(row.cells[1].text)
             if not label or not value:
                 continue
-            if is_unfilled_placeholder_text(value):
-                continue
-            for keyword, key in _COVER_LABEL_MAP.items():
-                if keyword in label:
-                    cover_info[key] = value
-                    break
+            key = _cover_key_for_label(label)
+            if key:
+                cover_info[key] = value
     return cover_info
 
 
@@ -136,9 +185,34 @@ def extract_front_matter(doc, clean_text_func=None):
     best_title = ('', 0, 0)  # (text, size, paragraph index)
     plain_title = ('', 0)  # (text, paragraph index)
     saw_front_marker = False
+    waiting_for_completion_date = False
     for index, paragraph in enumerate(doc.paragraphs[:30]):
         text = paragraph.text.strip()
         if not text:
+            continue
+        if is_template_instruction_text(text):
+            if '\u5b8c\u6210\u65f6\u95f4' in text and '\u7b54\u8fa9\u65f6\u95f4' in text:
+                waiting_for_completion_date = True
+                text_start = max(text_start, index + 1)
+            continue
+        labeled_key, labeled_value = _extract_cover_info_from_labeled_text(text)
+        if labeled_key and labeled_value:
+            cover_info[labeled_key] = labeled_value
+            if labeled_key == 'paper_title':
+                title_info.setdefault('title_cn', labeled_value)
+                if ascii_alpha_ratio(labeled_value) > 0.55:
+                    title_info.setdefault('title_en', labeled_value)
+            text_start = max(text_start, index + 1)
+            waiting_for_completion_date = False
+            continue
+        if waiting_for_completion_date and _looks_like_completion_date(text):
+            cover_info['completion_date'] = _default_clean_text(text)
+            text_start = max(text_start, index + 1)
+            waiting_for_completion_date = False
+            continue
+        if not cover_info.get('completion_date') and _looks_like_completion_date(text):
+            cover_info['completion_date'] = _default_clean_text(text)
+            text_start = max(text_start, index + 1)
             continue
         if classify_section_role(text, 1) in {'cn_abstract', 'cn_keywords', 'en_abstract', 'en_keywords'}:
             saw_front_marker = True
@@ -169,7 +243,11 @@ def extract_front_matter(doc, clean_text_func=None):
         best_title = (plain_title[0], 1, plain_title[1])
 
     if best_title[0]:
-        title_info['title_cn'] = best_title[0]
+        if ascii_alpha_ratio(best_title[0]) > 0.55:
+            title_info['title_en'] = best_title[0]
+        else:
+            title_info['title_cn'] = best_title[0]
+        cover_info.setdefault('paper_title', best_title[0])
         text_start = best_title[2] + 1
         end = min(text_start + 6, len(doc.paragraphs))
         for index, paragraph in enumerate(doc.paragraphs[text_start:end], start=text_start):
@@ -180,7 +258,7 @@ def extract_front_matter(doc, clean_text_func=None):
                 break
             if classify_section_role(text, 1) in {'references', 'acknowledgement', 'appendix'}:
                 continue
-            if ascii_alpha_ratio(text) > 0.55 and not re.match(r'^\d+(?:\.\d+)*\s+', text):
+            if not title_info.get('title_en') and len(text) >= 24 and ascii_alpha_ratio(text) > 0.55 and not re.match(r'^\d+(?:\.\d+)*\s+', text):
                 title_info['title_en'] = text
                 text_start = index + 1
                 break
@@ -190,7 +268,7 @@ def extract_front_matter(doc, clean_text_func=None):
         cover_info.update(table_cover_info)
 
     # Cover tables are the most reliable source for the paper title.
-    if cover_info.get('paper_title'):
+    if cover_info.get('paper_title') and not title_info.get('title_cn') and ascii_alpha_ratio(cover_info['paper_title']) <= 0.55:
         title_info['title_cn'] = cover_info['paper_title']
 
     result = {

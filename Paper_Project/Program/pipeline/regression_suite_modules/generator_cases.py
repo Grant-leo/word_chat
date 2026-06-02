@@ -7,7 +7,7 @@ from docx import Document
 from qa_conformance import check_conformance
 from qa_conformance_modules.requirements import build_requirements
 from regression_suite_modules.generated_docx import run_generated_case
-from regression_suite_modules.harness import PNG_1X1, assert_true, base_content, base_format, case, new_workdir, write_json
+from regression_suite_modules.harness import PNG_1X1, assert_true, base_content, base_format, case, new_workdir, write_json, write_sample_png
 from script_generator import (
     RUNTIME_TEMPLATE,
     _extract_page_and_header,
@@ -143,6 +143,271 @@ def script_generator_keeps_figure_reference_prose_as_body() -> None:
 
 
 @case
+def script_generator_cover_removes_template_instructions_and_fills_fields() -> None:
+    def run(text: str) -> Dict[str, Any]:
+        return {"t": text, "fn": "Times New Roman", "fe": "宋体", "sz": 12, "b": False}
+
+    def para(text: str) -> Dict[str, Any]:
+        return {"al": "center", "r": [run(text)]}
+
+    def cell(*paragraphs: str) -> Dict[str, Any]:
+        return {"p": [para(text) for text in paragraphs]}
+
+    fmt = base_format()
+    fmt["cover"] = [
+        {"type": "para", "al": "center", "r": [run("（完成时间按照答辩时间填写）")]},
+        {"type": "para", "al": "center", "r": [run("  年  月  日")]},
+        {
+            "type": "table",
+            "role": "cover_info_table",
+            "rows": [
+                [
+                    cell("题    目："),
+                    cell(
+                        "Sample English Title",
+                        "示例中文题目",
+                        "英文题目(Times new Roman)/中文题目(宋体),三号加粗，1.5倍行距",
+                    ),
+                ],
+                [cell("年级专业："), cell("表格行高0.9cm")],
+                [cell("姓    名："), cell("楷体四号居中，1.5倍行距")],
+                [cell("学    号："), cell("")],
+                [cell("指导教师："), cell("")],
+            ],
+        },
+        {"type": "para", "al": "left", "r": [run("2. An Overview of English Sports News Headlines   1")]},
+    ]
+    content = base_content(["Actual body paragraph."])
+    content["cover_info"] = {
+        "paper_title": "Real Thesis Title",
+        "class_name": "English Major in Education (2020-2024)",
+        "student_name": "Zhang San",
+        "student_id": "2020123456",
+        "advisor": "Prof. Li Si",
+        "completion_date": "2026年 5月 6日",
+    }
+
+    result = run_generated_case("cover_template_instruction_cleanup", content, fmt=fmt)
+    doc = Document(str(result["work"] / "out.docx"))
+    text = "\n".join(
+        [p.text for p in doc.paragraphs]
+        + [cell.text for table in doc.tables for row in table.rows for cell in row.cells]
+    )
+    assert_true("Real Thesis Title" in text, f"real title was not rendered on cover: {text}")
+    assert_true("English Major in Education" in text, f"class/major was not rendered on cover: {text}")
+    assert_true("Zhang San" in text and "2020123456" in text and "Prof. Li Si" in text, f"cover fields missing: {text}")
+    assert_true("2026年 5月 6日" in text, f"completion date was not rendered: {text}")
+    for leaked in ["完成时间按照答辩时间填写", "英文题目(Times new Roman)", "表格行高0.9cm", "楷体四号居中", "An Overview of English Sports News Headlines"]:
+        assert_true(leaked not in text, f"template instruction leaked into generated cover: {leaked} in {text}")
+    assert_true("Sample English Title" not in text and "示例中文题目" not in text, f"sample template title leaked: {text}")
+    field_runs = {}
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for para in cell.paragraphs:
+                    for run in para.runs:
+                        if run.text.strip() in {"English Major in Education (2020-2024)", "Zhang San", "2020123456", "Prof. Li Si"}:
+                            field_runs[run.text.strip()] = run
+    for value in ["English Major in Education (2020-2024)", "2020123456", "Prof. Li Si"]:
+        run = field_runs.get(value)
+        assert_true(run is not None, f"cover field run missing: {value}")
+        size = run.font.size.pt if run.font.size else 0
+        min_size = 10.5 if value.startswith("English Major") else 13.5
+        assert_true(size >= min_size, f"cover field inherited placeholder row-height style instead of value style: {value} size={size}")
+
+
+@case
+def script_generator_strips_template_instruction_from_header() -> None:
+    fmt = base_format()
+    fmt["sections"][0]["header"] = [
+        {
+            "text": "B. A. Thesis of English Major in Education (2022-2026)（新罗马字体，五号加粗居中）",
+            "alignment": "CENTER",
+            "runs": [
+                {"text": "B. A. Thesis of English Major in Education (2022-2026)", "font": "Times New Roman", "size_pt": 10.5, "bold": True},
+                {"text": "（新罗马字体，五号加粗居中）", "font": "Times New Roman", "size_pt": 9, "bold": True},
+            ],
+        }
+    ]
+    page = _extract_page_and_header(fmt)
+    header = page.get("header") or {}
+    assert_true(header.get("text") == "B. A. Thesis of English Major in Education (2022-2026)", f"header instruction was not stripped: {header}")
+
+
+@case
+def script_generator_infers_non_bold_english_body_sample() -> None:
+    fmt = base_format()
+    fmt["paragraphs"] = [
+        {
+            "text": "（正文从引言到参考文献不空行，不另起一页，1.5倍行距；段落首行缩进，两端对齐书写）",
+            "runs": [{"font": "Times New Roman", "size_pt": 14, "bold": True}],
+            "align": "LEFT",
+        },
+        {
+            "text": "This template body sample is deliberately long enough to be selected as the body style source. It should stay non-bold, twelve point, and justified instead of inheriting a heading or instruction style.",
+            "runs": [{"font": "Times New Roman", "size_pt": 12, "bold": False}],
+            "align": "JUSTIFY",
+        },
+    ]
+    profiles = _infer_style_profiles(fmt)
+    body = profiles.get("body") or {}
+    assert_true(body.get("font") == "Times New Roman", f"body font came from the wrong sample: {body}")
+    assert_true(abs(float(body.get("size") or 0) - 12.0) < 0.01, f"body size came from the wrong sample: {body}")
+    assert_true(body.get("bold") is False, f"body bold came from instruction/heading sample: {body}")
+
+
+@case
+def script_generator_ignores_toc_note_for_body_and_reference_bold() -> None:
+    body_text = (
+        "This is a real template body paragraph long enough to be selected as the body sample. "
+        "It uses Times New Roman twelve point text and must remain non-bold even when nearby "
+        "directory notes mention bold headings and references."
+    )
+    fmt = base_format()
+    fmt["style_profiles"] = {
+        "body": {"font": "Times New Roman", "size": 14.0, "bold": True, "align": "CENTER"},
+        "reference": {"font": "宋体", "size": 15.0, "bold": True, "align": "CENTER"},
+    }
+    fmt["paragraphs"] = [
+        {
+            "text": "（备注：目录按1～2级标题编写，“正文的一级标题、参考文献、摘要、关键词”采用四号加粗书写，正文其他层次标题均采用Times New Roman体小四号书写。）",
+            "runs": [{"font": "宋体", "size_pt": 12, "bold": False}],
+            "align": "JUSTIFY",
+        },
+        {
+            "text": "（正文从引言到参考文献不空行，不另起一页，1.5倍行距；段落首行缩进2字符，两端对齐书写。）",
+            "runs": [{"font": "Times New Roman", "size_pt": 12, "bold": False}],
+            "align": "LEFT",
+            "indent": 0.85,
+        },
+        {
+            "text": body_text,
+            "runs": [{"font": "Times New Roman", "size_pt": 12, "bold": False}],
+            "align": "JUSTIFY",
+            "indent": 0.85,
+        },
+        {
+            "text": "[1] Schiff, James A. John Updike Revisited [M]. New York: Twayne Publishers, 1998.",
+            "runs": [{"font": "Times New Roman", "size_pt": 12, "bold": False}],
+            "align": "LEFT",
+        },
+    ]
+    profiles = _infer_style_profiles(fmt)
+    body = profiles.get("body") or {}
+    reference = profiles.get("reference") or {}
+    assert_true(body.get("bold") is False, f"body inherited bold from TOC note: {body}")
+    assert_true(body.get("align") == "JUSTIFY", f"body did not keep body alignment: {body}")
+    assert_true(abs(float(body.get("size") or 0) - 12.0) < 0.01, f"body size came from TOC note: {body}")
+    assert_true(reference.get("bold") is False, f"reference inherited bold from heading note: {reference}")
+    assert_true(abs(float(reference.get("size") or 0) - 12.0) < 0.01, f"reference size came from heading note: {reference}")
+    assert_true(reference.get("align") != "CENTER", f"reference entries should not inherit centered heading style: {reference}")
+
+
+@case
+def script_generator_keeps_chinese_front_matter_styles_from_template_rules() -> None:
+    fmt = base_format()
+    fmt["style_profiles"] = {
+        "cn_title": {"font": "Arial", "size": 12.0, "bold": False, "align": "JUSTIFY"},
+        "cn_abstract_body": {"font": "宋体", "size": 12.0, "bold": False, "align": "LEFT", "first_indent_cm": 0.85},
+        "cn_keywords": {"font": "Times New Roman", "size": 14.0, "bold": True, "align": "LEFT"},
+    }
+    fmt["paragraphs"] = [
+        {
+            "text": "（备注：目录按1～2级标题编写，“正文的一级标题、参考文献、摘要、关键词”采用四号加粗书写，正文其他层次标题均采用Times New Roman体小四号书写。）",
+            "runs": [{"font": "宋体", "size_pt": 12, "bold": False}],
+            "align": "JUSTIFY",
+        },
+        {
+            "text": "模因论视角下的英语体育新闻标题汉译研究",
+            "runs": [{"font": "Times New Roman", "size_pt": 15, "bold": True}],
+            "align": "CENTER",
+        },
+        {
+            "text": "（宋体小三号，加粗，居中；单独成页）",
+            "runs": [{"font": "宋体", "size_pt": 12, "bold": False}],
+            "align": "CENTER",
+        },
+        {
+            "text": "【摘要】（“摘要”二字宋体四号，加粗）摘要正文样本用于确认中文摘要内容不继承英文正文样式。",
+            "runs": [
+                {"text": "【", "font": "宋体", "size_pt": 14, "bold": False},
+                {"text": "摘要", "font": "宋体", "size_pt": 14, "bold": True},
+                {"text": "】", "font": "宋体", "size_pt": 14, "bold": False},
+                {"text": "摘要正文样本用于确认中文摘要内容不继承英文正文样式。", "font": "宋体", "size_pt": 12, "bold": False},
+            ],
+            "align": "LEFT",
+        },
+        {
+            "text": "【关键词】（“关键词三字”宋体四号加粗）模因论；体育新闻标题",
+            "runs": [
+                {"text": "【", "font": "宋体", "size_pt": 14, "bold": False},
+                {"text": "关键词", "font": "宋体", "size_pt": 14, "bold": True},
+                {"text": "】", "font": "宋体", "size_pt": 14, "bold": False},
+                {"text": "模因论；体育新闻标题", "font": "宋体", "size_pt": 12, "bold": False},
+            ],
+            "align": "LEFT",
+        },
+        {
+            "text": "（中文摘要内容必须与英文摘要完全对应。摘要和关键词内容小四号，1.5倍行距；关键词3-5个，关键词间用分号隔开）",
+            "runs": [{"font": "Times New Roman", "size_pt": 12, "bold": False}],
+            "align": "LEFT",
+        },
+        {
+            "text": "This real English body sample is long enough to set the normal body style without taking over Chinese front matter roles.",
+            "runs": [{"font": "Times New Roman", "size_pt": 12, "bold": False}],
+            "align": "JUSTIFY",
+        },
+    ]
+    profiles = _infer_style_profiles(fmt)
+    assert_true(profiles["cn_title"]["font"] == "宋体" and profiles["cn_title"]["bold"] is True, f"cn title rule not applied: {profiles['cn_title']}")
+    assert_true(abs(float(profiles["cn_title"]["size"]) - 15.0) < 0.01, f"cn title size wrong: {profiles['cn_title']}")
+    assert_true(profiles["cn_abstract_body"]["font"] == "宋体" and profiles["cn_abstract_body"]["bold"] is False, f"cn abstract body inherited English style: {profiles['cn_abstract_body']}")
+    assert_true(profiles["cn_keywords"]["font"] == "宋体" and profiles["cn_keywords"]["bold"] is False, f"cn keyword value style wrong: {profiles['cn_keywords']}")
+    assert_true(profiles["cn_keywords_label"]["bold"] is True and profiles["cn_keywords_label"]["size"] >= 14, f"cn keyword label style wrong: {profiles['cn_keywords_label']}")
+
+
+@case
+def script_generator_renders_english_figure_caption_with_caption_style() -> None:
+    img_src = new_workdir("english_caption_image_src")
+    write_sample_png(img_src / "figure.png", width=480, height=260)
+    fmt = base_format()
+    fmt["style_profiles"] = {
+        "body": {
+            "font": "Times New Roman",
+            "size": 12.0,
+            "bold": False,
+            "align": "JUSTIFY",
+            "line_spacing_val": 1.5,
+            "first_indent_cm": 0.0,
+            "space_before_pt": 0.0,
+            "space_after_pt": 0.0,
+        },
+        "figure_caption": {
+            "font": "宋体",
+            "size": 10.5,
+            "bold": False,
+            "align": "CENTER",
+            "line_spacing_fixed_pt": 28.0,
+            "first_indent_cm": 0.0,
+            "space_before_pt": 6.0,
+            "space_after_pt": 6.0,
+        },
+    }
+    content = base_content([
+        {"role": "image", "image": "figure.png"},
+        "Figure 1. Distribution of meme types identified in the corpus.",
+        "Body paragraph after the figure.",
+    ])
+    content["_meta"]["images_dir"] = str(img_src)
+    content["_meta"]["images_extracted"] = 1
+    content["sections"][0]["images"] = ["figure.png"]
+    result = run_generated_case("english_figure_caption_style", content, fmt=fmt)
+    conf = check_conformance(str(result["work"]), mode="developer", output_docx_name="out.docx")
+    codes = [item["code"] for item in conf["issues"]]
+    assert_true("STYLE_MISMATCH" not in codes, f"English Figure caption was rendered with body style: {conf['issues']}")
+
+
+@case
 def script_generator_honors_body_page_break_before() -> None:
     content = base_content([])
     content["sections"] = [
@@ -180,7 +445,7 @@ def script_generator_renders_chinese_backmatter_headings() -> None:
             "images": [],
         },
         {
-            "heading": "\u81f4\u8c22",
+            "heading": "Acknowledgements",
             "level": 1,
             "role": "acknowledgement",
             "paragraphs": ["Thanks paragraph."],

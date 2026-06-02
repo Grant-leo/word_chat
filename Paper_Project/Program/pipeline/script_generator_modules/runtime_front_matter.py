@@ -14,10 +14,11 @@ def section_text(sec):
 
 def add_keywords(label, value, role):
     prof = profile(role)
+    label_prof = DATA['profiles'].get(role + '_label') or prof
     p = doc.add_paragraph()
     apply_paragraph_profile(p, prof, first_indent_override=0)
     r1 = p.add_run(label)
-    p_bold = dict(prof); p_bold['bold'] = True
+    p_bold = dict(label_prof); p_bold['bold'] = True
     apply_run_profile(r1, p_bold, label)
     r2 = p.add_run(value)
     p_norm = dict(prof); p_norm['bold'] = False

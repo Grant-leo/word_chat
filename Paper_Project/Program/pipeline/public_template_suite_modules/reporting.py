@@ -69,6 +69,8 @@ def write_readme(results: List[Dict[str, Any]]) -> None:
             "python Paper_Project/Program/pipeline/public_template_suite.py --visual",
             "```",
             "",
+            "Golden comparison is opt-in; plain `--visual` checks Word/WPS/PDF rendering without comparing old baselines.",
+            "",
             "Golden-baseline hashes can be updated during visual runs:",
             "",
             "```bash",

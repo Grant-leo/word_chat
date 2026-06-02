@@ -41,7 +41,7 @@ def is_figure_caption(text):
         return False
     return bool(
         re.match(r'^\u56fe\s*\d+(?:[.-]\d+)?\s*[^\d\s]', text)
-        or re.match(r'(?i)^(?:fig\.?|figure)\s*\d+(?:[.-]\d+)?\s+[^\d\s]', text)
+        or re.match(r'(?i)^(?:fig\.?|figure)\s*\d+(?:[.-]\d+)?[.:：．]?\s+[^\d\s]', text)
     )
 
 
@@ -53,7 +53,7 @@ def is_table_caption(text):
         return False
     return bool(
         re.match(r'^\u8868\s*\d+(?:[.-]\d+)?\s*[^\d\s]', text)
-        or re.match(r'(?i)^table\s*\d+(?:[.-]\d+)?\s+[^\d\s]', text)
+        or re.match(r'(?i)^table\s*\d+(?:[.-]\d+)?[.:：．]?\s+[^\d\s]', text)
     )
 
 

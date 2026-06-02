@@ -42,6 +42,7 @@ try:
         paragraph_stream_items,
     )
     from content_parser_modules.placeholders import is_unfilled_placeholder_text
+    from content_parser_modules.placeholders import is_template_instruction_text
     from content_parser_modules.reference_collector import ReferenceCollector
     from content_parser_modules.section_builder import make_body_section
     from content_parser_modules.source_toc import (
@@ -78,6 +79,7 @@ except ImportError:  # pragma: no cover - package-style imports
     from .image_extractor import image_items_from_ooxml
     from .paragraph_stream import append_stream_run_group, paragraph_stream_items
     from .placeholders import is_unfilled_placeholder_text
+    from .placeholders import is_template_instruction_text
     from .reference_collector import ReferenceCollector
     from .section_builder import make_body_section
     from .source_toc import is_source_toc_title, source_toc_skip_count_after_title
@@ -108,7 +110,7 @@ def append_text_or_code(section: Dict[str, Any], text: str, in_appendix: bool = 
     text = clean_text_artifacts(text)
     if not text:
         return
-    if is_unfilled_placeholder_text(text):
+    if is_unfilled_placeholder_text(text) or is_template_instruction_text(text):
         return
     if is_figure_caption(text):
         section["paragraphs"].append({"role": "figure_caption", "text": normalize_caption_spacing(text)})
@@ -145,7 +147,7 @@ def append_text_or_code(section: Dict[str, Any], text: str, in_appendix: bool = 
 
 def _section_from_heading(text: str, level: int) -> Dict[str, Any]:
     clean_heading = text.split("（")[0].strip()
-    if is_unfilled_placeholder_text(clean_heading):
+    if is_unfilled_placeholder_text(clean_heading) or is_template_instruction_text(text):
         return {}
     if not clean_heading:
         return {}
@@ -241,7 +243,7 @@ def parse_body_sections(doc: Any, text_start: int, image_registry: Any) -> BodyD
             text = paragraph.text.strip()
             level = detect_heading_level(paragraph)
 
-            if is_unfilled_placeholder_text(text):
+            if is_unfilled_placeholder_text(text) or is_template_instruction_text(text):
                 placeholders_removed += 1
                 continue
 

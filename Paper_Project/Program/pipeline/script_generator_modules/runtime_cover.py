@@ -6,6 +6,18 @@ def normalize_label(text):
     return re.sub(r'[\s：:]+', '', str(text or ''))
 
 
+def strip_template_instruction_fragments(text):
+    value = str(text or '')
+    def replace(match):
+        inner = match.group(0)[1:-1]
+        return '' if is_template_placeholder_text(inner) else match.group(0)
+    previous = None
+    while previous != value:
+        previous = value
+        value = re.sub(r'[（(][^（）()]{1,120}[）)]', replace, value)
+    return re.sub(r'\s{2,}', ' ', value).strip()
+
+
 def para_text_from_cover_el(el):
     if el.get('type') in ('para', 'empty', 'image'):
         return ''.join(r.get('t', '') for r in el.get('r', []))
@@ -23,6 +35,24 @@ def is_template_placeholder_text(text):
     compact = re.sub(r'\s+', ' ', str(text or '')).strip()
     if not compact:
         return False
+    compact_no_space = re.sub(r'\s+', '', compact)
+    if re.fullmatch(r'[（(]?空[一二两三四五六七八九十\d]+行[）)]?', compact_no_space):
+        return True
+    if re.fullmatch(r'年\s*月\s*日', compact_no_space):
+        return True
+    if '完成时间按照答辩时间填写' in compact_no_space:
+        return True
+    if '表格行高' in compact_no_space:
+        return True
+    if '摘要是论文内容的总结概括' in compact_no_space and ('约200词' in compact_no_space or '第三人称' in compact_no_space):
+        return True
+    font_signal = bool(re.search(r'Times\s*new\s*Roman|宋体|黑体|楷体|仿宋|华文|字号|[一二三四五六七八九十小]+号', compact_no_space, re.I))
+    layout_signal = bool(re.search(r'居中|加粗|行距|倍行距|段前|段后|缩进|对齐|表格行高|固定值|页边距', compact_no_space))
+    subject_signal = bool(re.search(r'英文题目|中文题目|目录内容|一级标题|二级标题|三级标题|图表题注|参考文献|页眉|页脚', compact_no_space))
+    if font_signal and layout_signal:
+        return True
+    if subject_signal and (font_signal or layout_signal):
+        return True
     placeholder_patterns = [
         r'^\(Insert\b.*\)$',
         r'^\(E\.g\.\s*X{2,}(?:\s+X{2,})*,?\s*PhD\)$',
@@ -33,6 +63,21 @@ def is_template_placeholder_text(text):
         r'X{3,}(?:\s+X{3,})+',
     ]
     return any(re.search(pat, compact, re.I) for pat in placeholder_patterns)
+
+
+def is_cover_toc_sample_text(text):
+    compact = re.sub(r'\s+', ' ', str(text or '')).strip()
+    if not compact or len(compact) > 180:
+        return False
+    if re.match(r'^\d+(?:\.\d+)*\.?\s+.+\s+\d+$', compact):
+        return True
+    if re.match(r'^\d+(?:\.\d+)*\.?\s+.+\D\d+$', compact):
+        return True
+    return bool(re.match(r'^(?:第?[一二三四五六七八九十\d]+章|\d+(?:\.\d+)*)\s+.+\s+(?:[ivxlcdm]+|\d+)$', compact, re.I))
+
+
+def is_cover_date_placeholder_text(text):
+    return bool(re.fullmatch(r'年\s*月\s*日', re.sub(r'\s+', '', str(text or ''))))
 
 
 def apply_cover_run(run, rd):
@@ -49,6 +94,10 @@ def apply_cover_paragraph_format(p, el):
     am = {'left': 'LEFT', 'center': 'CENTER', 'right': 'RIGHT', 'both': 'JUSTIFY', 'distribute': 'DISTRIBUTE'}
     if el.get('al'):
         p.alignment = ALIGN.get(am.get(el.get('al'), 'LEFT'), WD_ALIGN_PARAGRAPH.LEFT)
+    text = para_text_from_cover_el(el)
+    max_size = max([float(r.get('sz') or 0) for r in el.get('r', [])] or [0])
+    if max_size >= 28 and re.search(r'毕业论文|Thesis', text, re.I):
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     pf = p.paragraph_format
     line = el.get('ls_val')
     rule = el.get('ls_rule')
@@ -126,9 +175,27 @@ def add_asset_picture(run, rd, default_inches=1.2):
 def render_cover_para(el):
     p = doc.add_paragraph()
     apply_cover_paragraph_format(p, el)
+    text = para_text_from_cover_el(el)
+    title_like = bool(re.search(r'毕业论文|Thesis', text, re.I))
     for rd in el.get('r', []):
-        rr = p.add_run(rd.get('t', ''))
-        apply_cover_run(rr, rd)
+        rd_use = dict(rd)
+        if title_like and rd_use.get('sz'):
+            try:
+                if float(rd_use.get('sz') or 0) > 36:
+                    rd_use['sz'] = 36
+            except Exception:
+                pass
+        rr = p.add_run(rd_use.get('t', ''))
+        apply_cover_run(rr, rd_use)
+    return p
+
+
+def render_cover_para_text(el, text):
+    p = doc.add_paragraph()
+    apply_cover_paragraph_format(p, el)
+    rd = (el.get('r') or [{}])[0]
+    rr = p.add_run(text)
+    apply_cover_run(rr, rd)
     return p
 
 
@@ -352,6 +419,107 @@ def cover_table_value_cell(row):
     return row[1]
 
 
+def cover_cell_plain_text(cell_data):
+    return ''.join(r.get('t', '') for pp in (cell_data.get('p') or []) for r in (pp.get('r') or []))
+
+
+def cover_value_template_paragraph(paras, fallback=None):
+    paras = paras or [{'r': [{}]}]
+    instruction_text = ' '.join(''.join(r.get('t', '') for r in pp.get('r', [])) for pp in paras)
+    for pp in paras:
+        text = ''.join(r.get('t', '') for r in pp.get('r', []))
+        if text.strip() and not is_template_placeholder_text(text):
+            return pp
+    for pp in paras:
+        text = ''.join(r.get('t', '') for r in pp.get('r', []))
+        if not text.strip():
+            clone = dict(pp)
+            clone['r'] = [dict((pp.get('r') or [{}])[0] if pp.get('r') else {})]
+            break
+    else:
+        clone = dict(fallback or paras[0])
+        clone['r'] = [dict(((fallback or paras[0]).get('r') or [{}])[0])]
+    local_style_hint = bool(re.search(r'楷体|宋体|黑体|仿宋|Times\s*New\s*Roman|三号|小三|四号|小四|五号|小五', instruction_text, re.I))
+    if fallback and (
+        not local_style_hint
+        or not clone.get('r')
+        or not clone['r'][0].get('sz')
+        or float(clone['r'][0].get('sz') or 0) < 10.5
+    ):
+        clone = dict(fallback)
+        clone['r'] = [dict((fallback.get('r') or [{}])[0])]
+    clone['al'] = clone.get('al') or 'center'
+    clone['ls_val'] = clone.get('ls_val') or '360'
+    clone['ls_rule'] = clone.get('ls_rule') or 'auto'
+    rd = clone['r'][0]
+    if re.search(r'楷体', instruction_text):
+        rd['fn'] = rd.get('fn') or '楷体'
+        rd['fe'] = rd.get('fe') or '楷体'
+    if re.search(r'四号', instruction_text):
+        rd['sz'] = 14
+    elif not rd.get('sz') or float(rd.get('sz') or 0) < 10.5:
+        rd['sz'] = 10.5
+    rd['b'] = bool(rd.get('b', False))
+    return clone
+
+
+def cover_table_value_style_hint(el):
+    for row in el.get('rows') or []:
+        if len(row) < 2:
+            continue
+        label = normalize_label(first_cell_label(row))
+        if label.endswith('题目') or label.endswith('论文题目'):
+            continue
+        paras = row[1].get('p') or []
+        text = ' '.join(''.join(r.get('t', '') for r in pp.get('r', [])) for pp in paras)
+        if not text.strip():
+            continue
+        if '表格行高' in text and not re.search(r'楷体|宋体|黑体|仿宋|Times\s*New\s*Roman|四号|小四', text, re.I):
+            continue
+        if re.search(r'楷体|宋体|黑体|仿宋|Times\s*New\s*Roman|四号|小四|居中|行距', text, re.I):
+            return cover_value_template_paragraph(paras)
+    return None
+
+
+def cover_cell_width_dxa(cell_data):
+    try:
+        width = int(cell_data.get('w') or 0)
+    except Exception:
+        width = 0
+    try:
+        tcw = (cell_data.get('tcPr') or {}).get('tcW') or {}
+        width = max(width, int(tcw.get('w') or 0))
+    except Exception:
+        pass
+    return width
+
+
+def fit_cover_value_paragraph(text, pp, cell_data, row_key):
+    if row_key.endswith('题目') or row_key.endswith('论文题目'):
+        return pp
+    rd = (pp.get('r') or [{}])[0]
+    try:
+        size = float(rd.get('sz') or 12)
+    except Exception:
+        size = 12.0
+    width_dxa = cover_cell_width_dxa(cell_data)
+    if width_dxa <= 0 or size <= 0:
+        return pp
+    width_pt = width_dxa / 20.0
+    units = cover_text_units(text)
+    if units <= 0:
+        return pp
+    projected_width = units * size
+    long_value = projected_width > width_pt * 1.05 or len(str(text or '')) > 36
+    if long_value and size > 10.5:
+        rd['sz'] = 10.5
+        # Long cover fields often sit in exact-height rows.  Single spacing
+        # keeps wrapped values visible instead of clipping the second line.
+        pp['ls_val'] = '240'
+        pp['ls_rule'] = 'auto'
+    return pp
+
+
 def cover_text_units(text):
     units = 0.0
     for ch in str(text or ''):
@@ -507,19 +675,28 @@ def render_cover_table(el):
         table.alignment = WD_TABLE_ALIGNMENT.LEFT if code_like_table else WD_TABLE_ALIGNMENT.CENTER
     if code_like_table and not (el.get('tblPr') or {}).get('tblInd'):
         set_table_indent(table, 0)
+    value_style_hint = cover_table_value_style_hint(el)
     cover_info = DATA.get('cover_info') or {}
     label_map = {
         '学校编码': cover_info.get('school_code', '') or cover_info.get('degree_code', ''),
         '学位编码': cover_info.get('degree_code', '') or cover_info.get('school_code', ''),
-        '论文题目': cover_info.get('paper_title', ''),
+        '论文题目': cover_info.get('paper_title', '') or DATA.get('title_cn', ''),
+        '题目': cover_info.get('paper_title', '') or DATA.get('title_cn', ''),
         '学生姓名': cover_info.get('student_name', ''),
+        '姓名': cover_info.get('student_name', ''),
         '学号': cover_info.get('student_id', ''),
         '所属学院': cover_info.get('college', ''),
+        '学院': cover_info.get('college', ''),
         '专业班级': cover_info.get('class_name', ''),
+        '年级专业': cover_info.get('class_name', ''),
+        '专业': cover_info.get('class_name', ''),
         '指导老师': cover_info.get('advisor', ''),
         '指导教师': cover_info.get('advisor', ''),
+        '日期': cover_info.get('completion_date', ''),
+        '完成时间': cover_info.get('completion_date', ''),
     }
     norm_map = {normalize_label(k): v for k, v in label_map.items() if v}
+    known_label_keys = {normalize_label(k) for k in label_map}
     row_props = (el.get('tblPr') or {}).get('rows') or []
     for ri, row in enumerate(rows):
         if ri < len(table.rows):
@@ -533,6 +710,7 @@ def render_cover_table(el):
             for k, v in norm_map.items():
                 if k and (k in row_key or row_key in k):
                     row_value = v; break
+        known_value_row = bool(row_key) and any(k and (k in row_key or row_key in k) for k in known_label_keys)
         force_left = code_like_table or row_key.endswith('编码')
         for ci in range(ncols):
             cell = table.rows[ri].cells[ci]
@@ -545,7 +723,24 @@ def render_cover_table(el):
                 try: cell.width = Cm(float(cell_data.get('w')) / 567.0)
                 except Exception: pass
             paras = cell_data.get('p') or [{'r': []}]
+            if ci == 1 and known_value_row:
+                if row_value:
+                    pp = cover_value_template_paragraph(paras, value_style_hint)
+                    pp = fit_cover_value_paragraph(row_value, pp, cell_data, row_key)
+                    p = cell.paragraphs[0]
+                    apply_cover_paragraph_format(p, pp)
+                    if force_left:
+                        p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                    rd = (pp.get('r') or [{}])[0]
+                    rr = p.add_run(row_value)
+                    apply_cover_run(rr, rd)
+                    if code_like_table and not rd.get('sz'):
+                        rr.font.size = Pt(10.5)
+                continue
             for pi, pp in enumerate(paras):
+                paragraph_text = ''.join(r.get('t', '') for r in pp.get('r', []))
+                if is_template_placeholder_text(paragraph_text):
+                    continue
                 p = cell.paragraphs[0] if pi == 0 else cell.add_paragraph()
                 apply_cover_paragraph_format(p, pp)
                 if force_left:
@@ -584,7 +779,13 @@ def render_cover_and_declarations():
         # be rendered as a blank page. Treat it as a structural marker.
         if idx in skip_indices:
             continue
-        if not el.get('section_break_after') and is_template_placeholder_text(para_text_from_cover_el(el)):
+        cover_text = para_text_from_cover_el(el)
+        if el.get('type') in ('para', 'empty') and is_cover_date_placeholder_text(cover_text):
+            completion_date = str((DATA.get('cover_info') or {}).get('completion_date') or '').strip()
+            if completion_date and not el.get('section_break_after'):
+                render_cover_para_text(el, completion_date)
+            continue
+        if el.get('type') != 'table' and not el.get('section_break_after') and (is_template_placeholder_text(cover_text) or is_cover_toc_sample_text(cover_text)):
             continue
         should_render = not cover_element_is_empty_section_marker(el)
         if should_render:

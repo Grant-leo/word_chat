@@ -645,6 +645,20 @@ def public_template_download_requires_https_and_verifies_sha256() -> None:
 
 
 @case
+def public_template_visual_golden_baseline_is_opt_in() -> None:
+    from public_template_suite import DEFAULT_GOLDEN_DIR, resolve_golden_dir
+
+    assert_true(resolve_golden_dir(None, update_golden=False) is None, "--visual should not compare golden baselines by default")
+    assert_true(resolve_golden_dir("", update_golden=False) is None, "empty golden-dir should disable golden comparison")
+    assert_true(
+        resolve_golden_dir(None, update_golden=True) == DEFAULT_GOLDEN_DIR,
+        "--update-golden without explicit dir should use the default baseline directory",
+    )
+    custom = new_workdir("public_template_custom_golden") / "Golden"
+    assert_true(resolve_golden_dir(str(custom), update_golden=False) == custom, "explicit golden-dir should be preserved")
+
+
+@case
 def qa_checker_cli_failure_returns_nonzero() -> None:
     work = new_workdir("qa_cli_nonzero")
     content = base_content([])

@@ -38,6 +38,18 @@ from public_template_suite_modules.storage import (
     write_json,
 )
 
+
+DEFAULT_GOLDEN_DIR = ROOT / "TestData" / "GoldenBaselines"
+
+
+def resolve_golden_dir(golden_dir_arg: str | None, update_golden: bool) -> Path | None:
+    if golden_dir_arg:
+        return Path(golden_dir_arg)
+    if update_golden:
+        return DEFAULT_GOLDEN_DIR
+    return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run public template compatibility checks.")
     parser.add_argument("--download", action="store_true", help="Download missing public templates before running.")
@@ -45,12 +57,12 @@ def main() -> None:
     parser.add_argument("--template", help="Run only one template id.")
     parser.add_argument("--scenario", help="Run only one scenario id.")
     parser.add_argument("--visual", action="store_true", help="Also run PDF/PNG visual QA for each generated DOCX.")
-    parser.add_argument("--golden-dir", default=str(ROOT / "TestData" / "GoldenBaselines"), help="Directory for visual golden baseline JSON records.")
+    parser.add_argument("--golden-dir", default=None, help="Opt-in directory for visual golden baseline JSON records.")
     parser.add_argument("--update-golden", action="store_true", help="Create or refresh visual golden baseline JSON records during visual QA.")
     args = parser.parse_args()
 
     TEST_ROOT.mkdir(parents=True, exist_ok=True)
-    golden_dir = Path(args.golden_dir) if args.golden_dir else None
+    golden_dir = resolve_golden_dir(args.golden_dir, update_golden=bool(args.update_golden))
     manifest = read_manifest()
     templates = manifest.get("templates") or DEFAULT_TEMPLATES
     filtered_run = bool(args.template or args.scenario)

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 
 from docx import Document
 
@@ -73,6 +74,62 @@ def _count_structured_body_tables(sections):
     return total
 
 
+def _reference_text(item):
+    if isinstance(item, str):
+        return item.strip()
+    if isinstance(item, dict):
+        return str(item.get("text") or item.get("code") or "").strip()
+    return str(item or "").strip()
+
+
+def _looks_like_reference_entry(text):
+    value = str(text or "").strip()
+    return bool(re.match(r"^\s*(?:\[\d+\]|\d+[\].、．])\s+", value))
+
+
+def _strip_cn_front_label(text, label):
+    value = str(text or "").strip()
+    return re.sub(rf"^\s*[【\[]?\s*{label}\s*[】\]]?\s*[:：]?\s*", "", value).strip()
+
+
+def _split_late_front_matter_from_references(references):
+    """Recover Chinese abstract blocks that were placed after references."""
+    refs = list(references or [])
+    if not refs:
+        return refs, [], ""
+    split_at = None
+    for idx, item in enumerate(refs):
+        text = _reference_text(item)
+        if _looks_like_reference_entry(text):
+            continue
+        window = "\n".join(_reference_text(x) for x in refs[idx : idx + 4])
+        if re.search(r"[【\[]?\s*摘要\s*[】\]]?\s*[:：]?", window) and re.search(r"[【\[]?\s*关键词\s*[】\]]?\s*[:：]?", window):
+            split_at = idx
+            break
+    if split_at is None:
+        return refs, [], ""
+
+    tail = [_reference_text(x) for x in refs[split_at:]]
+    title = ""
+    cn_abs = ""
+    cn_kw = ""
+    for text in tail:
+        if not text:
+            continue
+        if re.match(r"^\s*[【\[]?\s*摘要\s*[】\]]?\s*[:：]?", text):
+            cn_abs = _strip_cn_front_label(text, "摘要")
+        elif re.match(r"^\s*[【\[]?\s*关键词\s*[】\]]?\s*[:：]?", text):
+            cn_kw = _strip_cn_front_label(text, "关键词")
+        elif not title and not _looks_like_reference_entry(text):
+            title = text
+    front_sections = []
+    if cn_abs:
+        front_sections.append({"heading": "摘要", "level": 1, "role": "cn_abstract", "paragraphs": [cn_abs], "images": []})
+    if cn_kw:
+        front_sections.append({"heading": "关键词", "level": 1, "role": "cn_keywords", "paragraphs": [cn_kw], "images": []})
+    return refs[:split_at], front_sections, title
+
+
 def _default_output_dir():
     return os.path.abspath(os.path.join(os.getcwd(), 'Outputs', '_content_parser_extract'))
 
@@ -115,7 +172,14 @@ def extract(docx_path, output_dir=None):
     body_result = parse_body_sections(doc, text_start, image_registry)
     content['sections'] = filter_content_sections(body_result.sections)
     if body_result.references:
-        content['references'] = body_result.references
+        references, late_front_sections, late_cn_title = _split_late_front_matter_from_references(body_result.references)
+        content['references'] = references
+        if late_cn_title:
+            content['title_info']['title_cn'] = late_cn_title
+            content['_meta']['late_front_matter_recovered'] = True
+        if late_front_sections:
+            content['sections'] = late_front_sections + content['sections']
+            content['_meta']['late_front_matter_recovered'] = True
 
     mark_first_body_page_break(content['sections'])
     postprocess_section_paragraphs(content['sections'])

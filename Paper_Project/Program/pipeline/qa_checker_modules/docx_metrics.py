@@ -74,6 +74,34 @@ def _compact_text(text: str) -> str:
     return re.sub(r"\s+", "", str(text or "")).lower()
 
 
+def _semantic_heading_role(sec: Dict[str, Any]) -> str:
+    role = str(sec.get("role") or "").strip().lower()
+    if role in {"references", "acknowledgement", "appendix"}:
+        return role
+    heading = str(sec.get("heading") or "").strip()
+    compact = _compact_text(heading)
+    if re.match(r"^references?$", heading, flags=re.I) or compact.startswith("\u53c2\u8003\u6587\u732e"):
+        return "references"
+    if re.match(r"(?i)^acknowledg(?:e)?ments?\b|^acknowledgment\b", heading) or re.search(r"\u81f4\s*\u8c22", heading):
+        return "acknowledgement"
+    if re.match(r"(?i)^append(?:ix|ices)\b", heading) or re.search(r"\u9644\s*\u5f55", heading):
+        return "appendix"
+    return ""
+
+
+def _heading_equivalent_samples(sec: Dict[str, Any]) -> List[str]:
+    heading = str(sec.get("heading") or "").strip()
+    samples = [heading] if heading else []
+    role = _semantic_heading_role(sec)
+    if role == "references":
+        samples.extend(["\u53c2\u8003\u6587\u732e", "References", "Reference"])
+    elif role == "acknowledgement":
+        samples.extend(["\u81f4\u8c22", "Acknowledgements", "Acknowledgments", "Acknowledgement", "Acknowledgment"])
+    elif role == "appendix":
+        samples.extend(["\u9644\u5f55", "Appendix", "Appendices"])
+    return samples
+
+
 def _missing_heading_samples(content: Dict[str, Any], plain_text: str, limit: int = 6) -> List[str]:
     compact = _compact_text(plain_text)
     missing: List[str] = []
@@ -84,8 +112,8 @@ def _missing_heading_samples(content: Dict[str, Any], plain_text: str, limit: in
         heading = str(sec.get("heading") or "").strip()
         if not heading or heading == "正文" or len(heading) > 80:
             continue
-        sample = _compact_text(heading)
-        if sample and sample not in compact:
+        samples = [_compact_text(sample) for sample in _heading_equivalent_samples(sec)]
+        if samples and not any(sample and sample in compact for sample in samples):
             missing.append(heading)
         if len(missing) >= limit:
             break

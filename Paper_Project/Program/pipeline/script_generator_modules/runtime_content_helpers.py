@@ -38,31 +38,44 @@ def caption_tail(text, label_pattern):
 
 
 def is_referential_caption_prose(tail):
-    tail = str(tail or '').strip()
+    tail = str(tail or '').strip().lower()
     return tail.startswith((
         '展示', '显示', '给出', '给出了', '说明', '表明', '反映', '描述',
         '列出', '汇总', '呈现', '可见', '所示', '为', '是',
+        'shows', 'show', 'illustrates', 'illustrate', 'presents', 'present',
+        'describes', 'describe', 'summarizes', 'summary', 'lists', 'reports',
+        'indicates', 'demonstrates',
     ))
 
 
 def is_figure_caption_text(text):
     text = str(text or '').strip()
-    tail = caption_tail(text, r'^图\s*\d+(?:[.-]\d+)?')
-    if is_referential_caption_prose(tail):
+    cn_tail = caption_tail(text, r'^图\s*\d+(?:[.-]\d+)?')
+    en_tail = caption_tail(text, r'^(?:fig\.?|figure)\s*\d+(?:[.-]\d+)?')
+    if is_referential_caption_prose(cn_tail) or is_referential_caption_prose(en_tail):
         return False
-    return bool(re.match(r'^图\s*\d+(?:[.-]\d+)?\s*[^\d\s]', text))
+    return bool(
+        re.match(r'^图\s*\d+(?:[.-]\d+)?\s*[^\d\s]', text)
+        or re.match(r'(?i)^(?:fig\.?|figure)\s*\d+(?:[.-]\d+)?[.:：．]?\s+[^\d\s]', text)
+    )
 
 
 def is_table_caption_text(text):
     text = str(text or '').strip()
-    tail = caption_tail(text, r'^表\s*\d+(?:[.-]\d+)?')
-    if is_referential_caption_prose(tail):
+    cn_tail = caption_tail(text, r'^表\s*\d+(?:[.-]\d+)?')
+    en_tail = caption_tail(text, r'^table\s*\d+(?:[.-]\d+)?')
+    if is_referential_caption_prose(cn_tail) or is_referential_caption_prose(en_tail):
         return False
-    return bool(re.match(r'^表\s*\d+(?:[.-]\d+)?\s*[^\d\s]', text))
+    return bool(
+        re.match(r'^表\s*\d+(?:[.-]\d+)?\s*[^\d\s]', text)
+        or re.match(r'(?i)^table\s*\d+(?:[.-]\d+)?[.:：．]?\s+[^\d\s]', text)
+    )
 
 
 def normalize_caption(text):
     t = str(text or '').strip()
+    t = re.sub(r'(?i)^(fig\.?|figure)\s*(\d+(?:[.-]\d+)?)\s*', r'Fig. \2 ', t)
+    t = re.sub(r'(?i)^table\s*(\d+(?:[.-]\d+)?)\s*', r'Table \1 ', t)
     space = (DATA.get('rules') or {}).get('caption_number_space')
     if space is True:
         t = re.sub(r'^(图|表)\s*(\d+(?:[.-]\d+)?)\s*', r'\1 \2 ', t)
