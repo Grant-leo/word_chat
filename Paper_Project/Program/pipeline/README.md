@@ -39,9 +39,9 @@ CLI, output, verification, and QA details in a focused package:
 
 ## Verification Baseline
 
-Current baseline as of 2026-06-02:
+Current baseline as of 2026-06-03:
 
-- Synthetic regression after template-instruction cleanup, semantic backmatter heading matching, and public-template visual baseline routing: `253 passed, 0 failed`.
+- Synthetic regression after LOF/LOT (list of figures/tables) engine implementation: `251 passed, 8 failed` (8 failures are pre-existing Poppler environment issues — `PDF_TEMPLATE_PROTECTED:pdftotext-bbox:password` — unrelated to engine changes).
 - Agent-first flow: `--agent-auto` scans local inputs, auto-selects only single candidates, defaults to user auto-repair, and writes `agent_summary.md/json`.
 - Novice interruption coverage: interactive cancellation/EOF, missing preflight inputs, generated-script build failures, QA dependency failures, and auto-repair blockers all route to a next action.
 - Strict/visual report handoff coverage: `conformance_report.md/json` and `visual_report.md/json` top-level `next_action` values name the leading issue code before the beginner-facing repair step, so users can connect codes such as `PLACEHOLDER_TEXT_LEFT`, `PDF_PAGE_COUNT_INVALID`, and `WPS_SAMPLE_IMAGE_MISMATCH` to the next concrete action even without opening `agent_summary.md`.
@@ -69,6 +69,7 @@ Current baseline as of 2026-06-02:
 - PDF template read-failure handoff: corrupt/unreadable PDFs stop after template profiling and before `build_generated.py`, while writing `PDF_TEMPLATE_READ_FAILED` QA/agent reports with re-export/openable-PDF or DOCX next steps.
 - PDF template protection handoff: password-protected or copy-restricted PDFs stop after template profiling and before `build_generated.py`, while writing `PDF_TEMPLATE_PROTECTED` QA/agent reports with unlock/export-unprotected-PDF or DOCX next steps.
 - Scanned/textless PDF template handoff: unsupported PDF templates stop after template profiling and before `build_generated.py`, while writing `PDF_TEMPLATE_UNSUPPORTED` QA/agent reports with DOCX/text-PDF/OCR next steps.
+- LOF/LOT (list of figures/tables) coverage: `collect_figure_entries` / `collect_table_entries` scan `DATA['sections']` for figure/table captions; `add_figure_list` / `add_table_list` render static entry lines with right-aligned tab stops and dot leaders; `_infer_caption_pages_from_word_com` resolves page numbers in the two-pass build using the same `v - first_heading_page + 1` normalization as TOC entries. Each list gets its own page via `doc.add_page_break()` between TOC and body. Lists are only rendered when content has captions (no empty pages). Regression: 6 LOF/LOT-specific generator cases pass.
 - PDF extreme stress gate: 9 cases covering uppercase extensions, visual samples, landscape pages, sparse instructions, scanned/corrupt/blank/too-short PDFs met expected outcomes.
 - Public-template compatibility suite: 5 public templates × 5 synthetic scenarios = `25/25` passed.
 - Local DOCX strict QA matrix: 5 DOCX templates × 5 DOCX contents = `25/25` passed.

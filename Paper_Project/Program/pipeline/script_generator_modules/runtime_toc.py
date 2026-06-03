@@ -93,6 +93,212 @@ def add_wps_toc_field():
     append_run_with(end)
 
 
+def collect_figure_entries():
+    """Collect figure captions from sections for List of Figures.
+
+    Covers three sources:
+    1. Paired figure items  (role='figure' with 'caption' key)
+    2. Unpaired captions    (role='figure_caption')
+    3. Legacy fallback path (heading is a caption and section has images --
+       see render_body's sec['images'] fallback)
+    """
+    entries = []
+    for i, sec in enumerate(DATA.get('sections') or []):
+        if is_front_section_index(i):
+            continue
+        # Source 1 & 2: paragraph items
+        for para in sec.get('paragraphs') or []:
+            if not isinstance(para, dict):
+                continue
+            role = para.get('role') or ''
+            if role == 'figure':
+                cap = (para.get('caption') or '').strip()
+                if cap:
+                    entries.append({'text': normalize_caption(cap)})
+            elif role == 'figure_caption':
+                text = (para.get('text') or '').strip()
+                if text:
+                    entries.append({'text': normalize_caption(text)})
+        # Source 3: Legacy fallback -- images rendered from sec['images']
+        # with caption taken from section heading.  See render_body() for
+        # the matching legacy path.
+        has_inline_figures = any(
+            isinstance(p, dict) and (
+                p.get('role') in ('figure', 'image')
+                or p.get('image')
+            )
+            for p in (sec.get('paragraphs') or [])
+        )
+        if not has_inline_figures and (sec.get('images') or []):
+            h = (sec.get('heading') or '').strip()
+            if is_figure_caption_text(h):
+                entries.append({'text': normalize_caption(h)})
+    return entries
+
+
+def collect_table_entries():
+    """Collect table captions from sections for List of Tables."""
+    entries = []
+    for i, sec in enumerate(DATA.get('sections') or []):
+        if is_front_section_index(i):
+            continue
+        # Source 1: paragraph items with role='table_caption'
+        for para in sec.get('paragraphs') or []:
+            if not isinstance(para, dict):
+                continue
+            if para.get('role') == 'table_caption':
+                text = (para.get('text') or '').strip()
+                if text:
+                    entries.append({'text': normalize_caption(text)})
+        # Source 2: Legacy fallback -- section heading is a table caption
+        # and section has table items.  Mirror of the collect_figure_entries
+        # legacy path but for tables.
+        has_inline_table_caption = any(
+            isinstance(p, dict) and p.get('role') == 'table_caption'
+            for p in (sec.get('paragraphs') or [])
+        )
+        if not has_inline_table_caption:
+            h = (sec.get('heading') or '').strip()
+            if is_table_caption_text(h):
+                entries.append({'text': normalize_caption(h)})
+    return entries
+
+
+def add_list_entry(text, page_text, entry_role='lof_entry'):
+    """Render a single LOF/LOT line with right-aligned tab stop and dot leader."""
+    prof = profile(entry_role)
+    p = doc.add_paragraph()
+    apply_paragraph_profile(p, prof, first_indent_override=0)
+    tabs = p.paragraph_format.tab_stops
+    tabs.add_tab_stop(Cm(max(1.0, text_width_cm() - 0.15)),
+                      WD_TAB_ALIGNMENT.RIGHT, WD_TAB_LEADER.DOTS)
+    r = p.add_run(text)
+    apply_run_profile(r, prof, text)
+    p.add_run('\t')
+    r2 = p.add_run(str(page_text))
+    page_prof = dict(prof)
+    apply_run_profile(r2, page_prof, str(page_text))
+    return p
+
+
+def add_figure_list():
+    add_text('图  清  单', role='lof_heading', first_indent=False)
+    entries = collect_figure_entries()
+    for ent in entries:
+        key = _norm_for_pdf_match(ent.get('text') or '')
+        add_list_entry(ent.get('text') or '',
+                       CAPTION_PAGE_MAP.get(key, ''), 'lof_entry')
+
+
+def add_table_list():
+    add_text('表  清  单', role='lot_heading', first_indent=False)
+    entries = collect_table_entries()
+    for ent in entries:
+        key = _norm_for_pdf_match(ent.get('text') or '')
+        add_list_entry(ent.get('text') or '',
+                       CAPTION_PAGE_MAP.get(key, ''), 'lot_entry')
+
+
+def _infer_caption_pages_from_word_com(docx_path=None):
+    """Resolve figure/table caption page numbers via Word COM.
+
+    Uses the same normalization as _infer_heading_pages_from_word_com():
+    the first body heading defines Arabic page 1, and all caption pages
+    are offset relative to it so the LOF/LOT uses the same numbering as
+    the TOC.
+    """
+    try:
+        import win32com.client
+    except Exception:
+        return {}
+    word = None
+    doc_obj = None
+    try:
+        entries = collect_figure_entries() + collect_table_entries()
+        if not entries:
+            return {}
+        wanted = {}
+        for e in entries:
+            key = _norm_for_pdf_match(e.get('text') or '')
+            if key:
+                wanted[key] = e.get('text', '')
+        if not wanted:
+            return {}
+
+        # Also collect heading entries to find the body-start page
+        heading_entries = collect_toc_entries()
+        heading_wanted = {}
+        for e in heading_entries:
+            key = _norm_for_pdf_match(e.get('text') or '')
+            if key:
+                heading_wanted[key] = e.get('text', '')
+
+        found = {}
+        first_heading_page = None
+        word = win32com.client.DispatchEx('Word.Application')
+        word.Visible = False
+        doc_obj = word.Documents.Open(os.path.abspath(docx_path or OUT), ReadOnly=True)
+        try:
+            doc_obj.Repaginate()
+        except Exception:
+            pass
+
+        # Single pass: find both first heading page and caption pages
+        for para in doc_obj.Paragraphs:
+            raw = str(para.Range.Text or '').replace('\r', '').replace('\x07', '')
+            # Skip LOF/LOT listing lines (they contain \t before page number).
+            # Must check BEFORE .strip() because trailing tabs are stripped away,
+            # making empty-page LOF/LOT entries indistinguishable from body captions.
+            if '\t' in raw:
+                continue
+            text = raw.strip()
+            if not text:
+                continue
+            key = _norm_for_pdf_match(text)
+
+            # Check if this paragraph is a body heading (for offset reference)
+            if first_heading_page is None and key in heading_wanted:
+                try:
+                    ol = int(para.OutlineLevel)
+                    if ol in (1, 2, 3):
+                        first_heading_page = int(para.Range.Information(3))
+                except Exception:
+                    pass
+
+            # Check if this paragraph is a wanted caption
+            if key in wanted and key not in found:
+                try:
+                    found[key] = int(para.Range.Information(3))
+                except Exception:
+                    pass
+
+            # Early exit: both found
+            if first_heading_page is not None and len(found) >= len(wanted):
+                break
+
+        if not found:
+            return {}
+        # Normalize absolute pages to match TOC numbering
+        if first_heading_page is not None:
+            return {k: max(1, v - first_heading_page + 1) for k, v in found.items()}
+        # Fallback: if no heading found, infer from the smallest caption page
+        min_page = min(found.values())
+        return {k: max(1, v - min_page + 1) for k, v in found.items()}
+    except Exception:
+        return {}
+    finally:
+        try:
+            if doc_obj is not None:
+                doc_obj.Close(False)
+        except Exception:
+            pass
+        try:
+            if word is not None:
+                word.Quit()
+        except Exception:
+            pass
+
+
 def add_toc():
     enable_update_fields_on_open()
     configure_global_styles()

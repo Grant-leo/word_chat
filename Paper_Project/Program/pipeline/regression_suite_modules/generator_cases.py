@@ -831,3 +831,107 @@ def script_generator_runtime_body_fragment_is_injected() -> None:
         "body renderer should be defined before document build orchestration",
     )
 
+
+@case
+def lof_generated_when_figure_captions_present() -> None:
+    img_dir = new_workdir("lof_fig_dir")
+    write_sample_png(img_dir / "fig1.png")
+    content = base_content([
+        {"role": "figure", "image": "fig1.png", "caption": "Fig. 1 Test figure caption"},
+        "Body paragraph after figure.",
+    ])
+    content["_meta"]["images_dir"] = str(img_dir)
+    content["_meta"]["images_extracted"] = 1
+    content["sections"][0]["images"] = ["fig1.png"]
+    result = run_generated_case("lof_figures", content)
+    xml = result["xml"]
+    assert_true("Fig. 1 Test figure caption" in xml, "Figure caption should appear in LOF entry")
+    # Verify LOF uses tab stops for page number alignment
+    assert_true("<w:tab" in xml, "Tab stops should be present for page number alignment")
+
+
+@case
+def lot_generated_when_table_captions_present() -> None:
+    content = base_content([
+        {"role": "table_caption", "text": "Table 2 Test table caption"},
+        {"role": "table", "table_rows": [["A", "B"], ["1", "2"]]},
+    ])
+    content["_meta"]["tables_count"] = 1
+    result = run_generated_case("lot_tables", content)
+    xml = result["xml"]
+    # The heading uses 2-char-width spaces between characters like TOC heading.
+    # Verify both characters appear in the same paragraph context.
+    assert_true("表" in xml and "清" in xml and "单" in xml,
+               "LOT heading characters should appear in output XML")
+    assert_true("Table 2 Test table caption" in xml, "Table caption should appear in LOT entry")
+
+
+@case
+def no_lof_lot_when_no_captions() -> None:
+    content = base_content(["Plain body paragraph with no figures or tables."])
+    result = run_generated_case("no_lof_lot", content)
+    xml = result["xml"]
+    lof_heading = "图  清  单"
+    lot_heading = "表  清  单"
+    assert_true(lof_heading not in xml, f"LOF heading should not appear without figure captions")
+    assert_true(lot_heading not in xml, f"LOT heading should not appear without table captions")
+
+
+@case
+def lof_lot_both_generated_when_both_present() -> None:
+    img_dir = new_workdir("lof_lot_both_dir")
+    write_sample_png(img_dir / "fig1.png")
+    content = base_content([
+        {"role": "figure", "image": "fig1.png", "caption": "Fig. 1 Test figure caption"},
+        {"role": "table_caption", "text": "Table 2 Test table caption"},
+        {"role": "table", "table_rows": [["A", "B"]]},
+    ])
+    content["_meta"]["images_dir"] = str(img_dir)
+    content["_meta"]["images_extracted"] = 1
+    content["_meta"]["tables_count"] = 1
+    content["sections"][0]["images"] = ["fig1.png"]
+    result = run_generated_case("lof_lot_both", content)
+    xml = result["xml"]
+    assert_true("Fig. 1 Test figure caption" in xml, "Figure caption in LOF")
+    assert_true("Table 2 Test table caption" in xml, "Table caption in LOT")
+    # LOF should appear before LOT in document order
+    fig_pos = xml.find("Fig. 1 Test figure caption")
+    tbl_pos = xml.find("Table 2 Test table caption")
+    assert_true(fig_pos < tbl_pos, f"LOF should appear before LOT (fig={fig_pos}, tbl={tbl_pos})")
+    # Verify tab elements exist for LOF/LOT entries (right-aligned page numbers)
+    assert_true("<w:tab" in xml, "Tab stops should be present in LOF/LOT entries")
+
+
+@case
+def lof_lot_profile_defaults_injected_into_runtime() -> None:
+    assert_true("def add_figure_list" in RUNTIME_TEMPLATE, "add_figure_list runtime fragment was not injected")
+    assert_true("def add_table_list" in RUNTIME_TEMPLATE, "add_table_list runtime fragment was not injected")
+    assert_true("def collect_figure_entries" in RUNTIME_TEMPLATE, "collect_figure_entries runtime fragment was not injected")
+    assert_true("def collect_table_entries" in RUNTIME_TEMPLATE, "collect_table_entries runtime fragment was not injected")
+    assert_true("def add_list_entry" in RUNTIME_TEMPLATE, "add_list_entry runtime fragment was not injected")
+    assert_true("def _infer_caption_pages_from_word_com" in RUNTIME_TEMPLATE,
+                "_infer_caption_pages_from_word_com runtime fragment was not injected")
+    assert_true("CAPTION_PAGE_MAP" in RUNTIME_TEMPLATE, "CAPTION_PAGE_MAP global was not injected")
+    assert_true(
+        RUNTIME_TEMPLATE.index("def add_figure_list") < RUNTIME_TEMPLATE.index("def render_front_matter"),
+        "LOF/LOT helpers should be defined before front matter renderer uses them",
+    )
+
+
+@case
+def lof_lot_paragraphs_excluded_from_conformance() -> None:
+    img_dir = new_workdir("lof_conformance_dir")
+    write_sample_png(img_dir / "fig_cap.png")
+    content = base_content([
+        {"role": "figure", "image": "fig_cap.png", "caption": "Fig. 9 Conformance caption test"},
+        "Body paragraph.",
+    ])
+    content["_meta"]["images_dir"] = str(img_dir)
+    content["_meta"]["images_extracted"] = 1
+    content["sections"][0]["images"] = ["fig_cap.png"]
+    result = run_generated_case("lof_conformance", content)
+    conf = check_conformance(str(result["work"]), mode="developer", output_docx_name="out.docx")
+    codes = [item["code"] for item in conf.get("issues", [])]
+    assert_true("STYLE_MISMATCH" not in codes,
+                f"conformance should not flag LOF lines as style mismatches: {conf.get('issues', [])}")
+

@@ -92,6 +92,11 @@ def _find_para_by_text(paragraphs: List[ET.Element], text: str, used: Optional[s
             continue
         actual = _compact(_text_of_para(p))
         if any(target in actual for target in targets):
+            # Avoid matching LOF/LOT listing lines that contain caption text
+            # plus a tab-separated page number.  Real captions rendered by
+            # add_caption() do not contain \t.
+            if '\t' in _text_of_para(p):
+                continue
             if used is not None:
                 used.add(id(p))
             return p

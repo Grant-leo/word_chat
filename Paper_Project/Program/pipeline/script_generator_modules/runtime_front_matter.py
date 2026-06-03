@@ -83,4 +83,12 @@ def render_front_matter():
             add_keywords('KEY WORDS: ', val, 'en_keywords')
     add_section_with_header('upperRoman', None)
     add_toc()
+    figure_entries = collect_figure_entries()
+    if figure_entries:
+        doc.add_page_break()
+        add_figure_list()
+    table_entries = collect_table_entries()
+    if table_entries:
+        doc.add_page_break()
+        add_table_list()
 '''

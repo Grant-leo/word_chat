@@ -24,10 +24,11 @@ def write_build_manifest():
         json.dump({'schema_version': 1, 'counts': BUILD_STATS}, f, ensure_ascii=False, indent=2)
 
 
-def build_document(toc_page_map=None, native_toc=True):
+def build_document(toc_page_map=None, caption_page_map=None, native_toc=True):
     """Build the whole DOCX once, optionally with resolved static TOC pages."""
-    global doc, TOC_PAGE_MAP, USE_NATIVE_TOC, FORMULA_COUNTERS, TABLE_COUNTERS
+    global doc, TOC_PAGE_MAP, CAPTION_PAGE_MAP, USE_NATIVE_TOC, FORMULA_COUNTERS, TABLE_COUNTERS
     TOC_PAGE_MAP = dict(toc_page_map or {})
+    CAPTION_PAGE_MAP = dict(caption_page_map or {})
     USE_NATIVE_TOC = bool(native_toc)
     FORMULA_COUNTERS = {}
     TABLE_COUNTERS = {}
@@ -45,13 +46,19 @@ def build_document(toc_page_map=None, native_toc=True):
 
 
 def main():
-    build_document({}, native_toc=False)
+    build_document({}, {}, native_toc=False)
     page_map = _infer_heading_pages_from_word_com()
-    if page_map:
-        build_document(page_map, native_toc=False)
+    cap_page_map = _infer_caption_pages_from_word_com()
+    if page_map or cap_page_map:
+        build_document(page_map, cap_page_map, native_toc=False)
     write_build_manifest()
-    suffix = '目录页码已由 Word COM 解析' if page_map else '已生成静态目录行，页码未由 Word COM 解析'
-    print(f'已保存: {os.path.basename(OUT)}  ({suffix})')
+    parts = []
+    if page_map:
+        parts.append('目录页码')
+    if cap_page_map:
+        parts.append('图表页码')
+    detail = ('、'.join(parts) + ' 已由 Word COM 解析') if parts else '已生成静态目录行，页码未由 Word COM 解析'
+    print(f'已保存: {os.path.basename(OUT)}  ({detail})')
 
 
 if __name__ == '__main__':

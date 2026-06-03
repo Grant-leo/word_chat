@@ -270,7 +270,7 @@ python run_pipeline.py --mode developer --qa-level visual --template <模板文�
 - `template_profiler.py`: stable template capability/risk profile entry point.
 - `template_profiler_modules/`: template profile construction and report writing.
 - `script_generator.py`: stable public script generation entrypoint.
-- `script_generator_modules/`: generator planning and generated-script runtime fragments: generator orchestration, runtime template assembly, sections, template rules, style profiles, base runtime, cover/front matter/body rendering, formula text conversion, formula rendering, media/tables/code, references/backmatter, TOC, and build manifest orchestration.
+- `script_generator_modules/`: generator planning and generated-script runtime fragments: generator orchestration, runtime template assembly, sections, template rules, style profiles, base runtime, cover/front matter/body rendering, formula text conversion, formula rendering, media/tables/code, references/backmatter, TOC, list-of-figures/tables (LOF/LOT), and build manifest orchestration.
 - `latex_omath.py`: LaTeX/text formula to native Word OOXML Math conversion.
 - `latex_omath_modules/`: formula converter tokenizer, parser, API helpers, symbol registries, and OOXML builders copied with generated build scripts.
 - `qa_checker.py`: structural QA report, issue routing, repair-plan output.
@@ -325,6 +325,7 @@ Look up implementation details in `Paper_Project/基础操作.md`.
 | 加脚注 | Word 脚注 |
 | 分页不对 | A4 自动分页 |
 | 加批注 | 批注（Comment） |
+| 图清单/表清单 | 图清单与表清单 |
 
 ### Adding Features Not In The Template
 
@@ -368,6 +369,7 @@ When a user wants a document-specific feature:
 - OOXML math runs need `m:rPr` for WPS compatibility.
 - TOC defaults to static visible TOC lines; Word COM can resolve heading page numbers automatically when available.
 - Formula numbering supports `\tag{1.1}`, `\begin{equation}`, and `\begin{align}`. Appendix-style labels such as `A.1` should be preserved.
+- List of Figures (图清单) and List of Tables (表清单) are generated after TOC and before body when content has figure/table captions. Each list gets its own page via `doc.add_page_break()`, continuing the Roman numeral pagination from TOC. Caption entries use the same static-line pattern as TOC: right-aligned tab stops with dot leaders. Page numbers are resolved in the two-pass build via `_infer_caption_pages_from_word_com()`, normalized with the same `v - first_heading_page + 1` offset as TOC entries. The critical `.strip()`-before-`\t`-check bug (Bug 29 in memory) must not be reintroduced: always check for `\t` on the raw Word COM text before stripping.
 
 ---
 

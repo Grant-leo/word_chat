@@ -36,6 +36,7 @@ OUT = os.path.join(BASE, __OUT_DOCX__)
 
 doc = Document()
 TOC_PAGE_MAP = {}
+CAPTION_PAGE_MAP = {}
 USE_NATIVE_TOC = False
 BUILD_STATS = {}
 

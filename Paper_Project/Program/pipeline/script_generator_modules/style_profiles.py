@@ -407,6 +407,18 @@ def _infer_style_profiles(fmt: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             profiles.setdefault("en_keywords", _profile_from_para_first_text(p))
         if compact in ("目录", "目目录") or compact.startswith("目录"):
             put("toc_title", p)
+        # LOF/LOT heading detection -- must run BEFORE style_sample_candidate
+        # because these headings may use Word's "Table of Figures" style,
+        # which style_sample_candidate currently excludes.
+        if compact in ("图清单", "图目录", "插图索引", "附图索引"):
+            put("lof_heading", p)
+        if compact in ("表清单", "表目录", "表格索引", "附表索引"):
+            put("lot_heading", p)
+        # English variants
+        if re.match(r"^(?:List\s+of\s+Figures?|Figure\s+Index)$", txt, re.I):
+            put("lof_heading", p)
+        if re.match(r"^(?:List\s+of\s+Tables?|Table\s+Index)$", txt, re.I):
+            put("lot_heading", p)
         if ("一级标题" in txt or re.match(r"^第[一二三四五六七八九十\d]+章\s+", txt)) and len(txt) < 100 and style_sample_candidate(p, txt):
             put("h1", p)
         if ("二级标题" in txt or re.match(r"^\d+\.\d+\s+", txt)) and len(txt) < 100 and style_sample_candidate(p, txt):
@@ -518,6 +530,14 @@ def _infer_style_profiles(fmt: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     profiles.setdefault("toc_title", profiles["h1"])
     profiles.setdefault("figure_caption", _normalize_profile({"font": "宋体", "size": 10.5, "align": "CENTER", "first_indent_cm": 0, "space_before_pt": 6, "space_after_pt": 6, "line_spacing_fixed_pt": 28}, body))
     profiles.setdefault("table_caption", dict(profiles["figure_caption"]))
+    # lof_heading / lot_heading: inherit from toc_title (guaranteed to exist)
+    profiles.setdefault("lof_heading", dict(profiles["toc_title"]))
+    profiles.setdefault("lot_heading", dict(profiles["toc_title"]))
+    # lof_entry / lot_entry: prefer toc1, fall back safely.
+    # toc1 only exists when the template has TOC instruction text.
+    _entry_base = profiles.get("toc1") or profiles.get("toc2") or profiles["body"]
+    profiles.setdefault("lof_entry", dict(_entry_base))
+    profiles.setdefault("lot_entry", dict(_entry_base))
     profiles.setdefault("table_body", _normalize_profile({"font": "宋体", "size": 10.5, "align": "CENTER", "first_indent_cm": 0, "line_spacing_fixed_pt": None, "line_spacing_val": 1.0}, body))
     profiles.setdefault("table_header", _normalize_profile({"bold": True}, profiles["table_body"]))
     profiles.setdefault("formula", _normalize_profile({"align": "CENTER", "first_indent_cm": 0}, body))
@@ -677,6 +697,14 @@ def _apply_template_text_rules(fmt: Dict[str, Any], profiles: Dict[str, Dict[str
         profiles["figure_caption"] = _profile_from_instruction(fig_rule, body, font="宋体", size=10.5, bold=False, align="CENTER", first_indent_cm=0.0)
     if tab_rule and _has_format_instruction(tab_rule):
         profiles["table_caption"] = _profile_from_instruction(tab_rule, body, font="宋体", size=10.5, bold=False, align="CENTER", first_indent_cm=0.0)
+    lof_rule = (_find_instruction(texts, "图清单") or _find_instruction(texts, "图目录")
+                or _find_instruction(texts, "插图索引"))
+    if lof_rule and _has_format_instruction(lof_rule):
+        profiles["lof_heading"] = _profile_from_instruction(lof_rule, body, first_indent_cm=0.0)
+    lot_rule = (_find_instruction(texts, "表清单") or _find_instruction(texts, "表目录")
+                or _find_instruction(texts, "表格索引"))
+    if lot_rule and _has_format_instruction(lot_rule):
+        profiles["lot_heading"] = _profile_from_instruction(lot_rule, body, first_indent_cm=0.0)
     if table_detail_rule and _has_format_instruction(table_detail_rule):
         table_body = _profile_from_instruction(table_detail_rule, body, font="宋体", size=10.5, align="CENTER", first_indent_cm=0.0)
         table_body["font"] = "宋体"
