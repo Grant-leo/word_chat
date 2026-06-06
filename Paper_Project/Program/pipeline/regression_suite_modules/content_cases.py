@@ -6,6 +6,7 @@ import re
 import zipfile
 from pathlib import Path
 from typing import Any, Dict, List
+from xml.etree import ElementTree as ET
 
 from docx import Document
 from docx.enum.section import WD_SECTION
@@ -55,6 +56,33 @@ from regression_suite_modules.harness import (
     write_json,
     write_sample_png,
 )
+
+
+def _rewrite_docx_part(docx_path: Path, part_name: str, transform) -> None:
+    original = docx_path.with_suffix(docx_path.suffix + ".src")
+    docx_path.replace(original)
+    with zipfile.ZipFile(original, "r") as zin, zipfile.ZipFile(docx_path, "w") as zout:
+        for info in zin.infolist():
+            data = zin.read(info.filename)
+            if info.filename == part_name:
+                text = data.decode("utf-8")
+                data = transform(text).encode("utf-8")
+            zout.writestr(info, data)
+    original.unlink()
+
+
+def _content_plain_text(content: Dict[str, Any]) -> str:
+    pieces: List[str] = []
+    for sec in content.get("sections") or []:
+        if sec.get("heading"):
+            pieces.append(str(sec.get("heading") or ""))
+        for item in sec.get("paragraphs") or []:
+            if isinstance(item, str):
+                pieces.append(item)
+            elif isinstance(item, dict):
+                pieces.append(str(item.get("text") or item.get("code") or ""))
+    return "\n".join(pieces)
+
 
 @case
 def caption_flow_pairs_images_with_nearby_captions() -> None:
@@ -227,6 +255,361 @@ def content_parser_preserves_table_at_start_of_body() -> None:
         any(isinstance(item, dict) and item.get("table_rows") for item in only_items),
         f"table-only document became empty content: {table_only}",
     )
+
+
+@case
+def content_parser_preserves_merged_table_cells() -> None:
+    work = new_workdir("parser_merged_table")
+    docx = work / "merged_table.docx"
+    doc = Document()
+    table = doc.add_table(rows=3, cols=3)
+    table.cell(0, 0).merge(table.cell(0, 1)).text = "Merged header"
+    table.cell(0, 2).text = "Score"
+    table.cell(1, 0).merge(table.cell(2, 0)).text = "Group A"
+    table.cell(1, 1).text = "Alpha"
+    table.cell(1, 2).text = "1"
+    table.cell(2, 1).text = "Beta"
+    table.cell(2, 2).text = "2"
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"merged table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(table_item["table_rows"][0] == ["Merged header", "", "Score"], f"horizontal span did not expand to a stable grid: {table_item}")
+    assert_true(table_item["table_rows"][2][0] == "", f"vertical continuation cell should be an empty grid placeholder: {table_item}")
+    merges = table_item.get("table_merges") or []
+    assert_true(
+        {"row": 0, "col": 0, "rowspan": 1, "colspan": 2} in merges,
+        f"horizontal merge was not captured: {merges}",
+    )
+    assert_true(
+        {"row": 1, "col": 0, "rowspan": 2, "colspan": 1} in merges,
+        f"vertical merge was not captured: {merges}",
+    )
+
+
+@case
+def content_parser_preserves_grid_before_vmerge_cells() -> None:
+    work = new_workdir("parser_grid_before_vmerge")
+    docx = work / "grid_before_vmerge.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Left"
+    table.cell(0, 1).text = "Vertical start"
+    table.cell(1, 1).text = "Vertical continue"
+    doc.save(docx)
+
+    def rewrite(xml: str) -> str:
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + w_ns + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(w_ns + "tr")
+        assert_true(len(rows) == 2, "test rows missing")
+        first_row_cells = rows[0].findall(w_ns + "tc")
+        second_row_cells = rows[1].findall(w_ns + "tc")
+        assert_true(len(first_row_cells) == 2 and len(second_row_cells) == 2, "test cell grid changed")
+
+        def ensure_tc_pr(cell):
+            tc_pr = cell.find(w_ns + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(w_ns + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        restart = ET.SubElement(ensure_tc_pr(first_row_cells[1]), w_ns + "vMerge")
+        restart.set(w_ns + "val", "restart")
+        rows[1].remove(second_row_cells[0])
+        tr_pr = ET.Element(w_ns + "trPr")
+        grid_before = ET.SubElement(tr_pr, w_ns + "gridBefore")
+        grid_before.set(w_ns + "val", "1")
+        rows[1].insert(0, tr_pr)
+        ET.SubElement(ensure_tc_pr(second_row_cells[1]), w_ns + "vMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", rewrite)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"gridBefore table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [["Left", "Vertical start"], ["", ""]],
+        f"gridBefore row offset was not preserved: {table_item}",
+    )
+    assert_true(
+        {"row": 0, "col": 1, "rowspan": 2, "colspan": 1} in (table_item.get("table_merges") or []),
+        f"gridBefore vertical merge was not captured: {table_item}",
+    )
+
+
+@case
+def content_parser_preserves_table_column_widths() -> None:
+    work = new_workdir("parser_table_widths")
+    docx = work / "table_widths.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=3)
+    table.cell(0, 0).text = "Metric"
+    table.cell(0, 1).text = "Description"
+    table.cell(0, 2).text = "Value"
+    table.cell(1, 0).text = "A"
+    table.cell(1, 1).text = "Longer explanatory text"
+    table.cell(1, 2).text = "1"
+    doc.save(docx)
+
+    def inject_widths(xml: str) -> str:
+        grid = '<w:tblGrid><w:gridCol w:w="1200"/><w:gridCol w:w="2800"/><w:gridCol w:w="1600"/></w:tblGrid>'
+        return re.sub(r"<w:tblGrid>.*?</w:tblGrid>", grid, xml, count=1, flags=re.S)
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_widths)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"table with widths was not preserved as a table: {items}")
+    assert_true(
+        table_items[0].get("table_col_widths_twips") == [1200, 2800, 1600],
+        f"table column widths were not extracted: {table_items[0]}",
+    )
+
+
+@case
+def content_parser_preserves_table_layout_details() -> None:
+    work = new_workdir("parser_table_layout_details")
+    docx = work / "table_layout_details.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Header A"
+    table.cell(0, 1).text = "Header B"
+    table.cell(1, 0).text = "Body A"
+    table.cell(1, 1).text = "Body B"
+    doc.save(docx)
+
+    def inject_layout(xml: str) -> str:
+        xml = re.sub(
+            r"(<w:tblPr>)",
+            (
+                r"\1<w:tblCellMar>"
+                r'<w:top w:w="80" w:type="dxa"/>'
+                r'<w:left w:w="120" w:type="dxa"/>'
+                r'<w:bottom w:w="90" w:type="dxa"/>'
+                r'<w:right w:w="140" w:type="dxa"/>'
+                r"</w:tblCellMar>"
+            ),
+            xml,
+            count=1,
+        )
+        row_index = 0
+
+        def inject_row(match: re.Match[str]) -> str:
+            nonlocal row_index
+            row_index += 1
+            if row_index == 1:
+                props = '<w:trPr><w:trHeight w:val="480" w:hRule="exact"/><w:tblHeader w:val="true"/></w:trPr>'
+            elif row_index == 2:
+                props = '<w:trPr><w:trHeight w:val="360" w:hRule="atLeast"/></w:trPr>'
+            else:
+                props = ""
+            return match.group(0) + props
+
+        xml = re.sub(r"<w:tr(?:\s[^>]*)?>", inject_row, xml, count=2)
+        xml = re.sub(
+            r"(<w:tcPr>)",
+            (
+                r'\1<w:vAlign w:val="top"/>'
+                r"<w:tcMar>"
+                r'<w:top w:w="40" w:type="dxa"/>'
+                r'<w:left w:w="60" w:type="dxa"/>'
+                r'<w:bottom w:w="40" w:type="dxa"/>'
+                r'<w:right w:w="60" w:type="dxa"/>'
+                r"</w:tcMar>"
+            ),
+            xml,
+            count=1,
+        )
+        return xml
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_layout)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"layout-rich table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_row_heights_twips") == [{"val": 480, "rule": "exact"}, {"val": 360, "rule": "atLeast"}],
+        f"table row heights were not extracted: {table_item}",
+    )
+    assert_true(table_item.get("table_repeat_header_rows") == 1, f"repeat header rows were not extracted: {table_item}")
+    assert_true(
+        table_item.get("table_cell_margins_twips") == {"top": 80, "left": 120, "bottom": 90, "right": 140},
+        f"table default cell margins were not extracted: {table_item}",
+    )
+    overrides = table_item.get("table_cell_overrides") or []
+    assert_true(
+        {
+            "row": 0,
+            "col": 0,
+            "v_align": "top",
+            "margins_twips": {"top": 40, "left": 60, "bottom": 40, "right": 60},
+        }
+        in overrides,
+        f"cell-specific layout override was not extracted: {overrides}",
+    )
+
+
+@case
+def content_parser_preserves_table_border_details() -> None:
+    work = new_workdir("parser_table_border_details")
+    docx = work / "table_border_details.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Header A"
+    table.cell(0, 1).text = "Header B"
+    table.cell(1, 0).text = "Body A"
+    table.cell(1, 1).text = "Body B"
+    doc.save(docx)
+
+    def inject_borders(xml: str) -> str:
+        xml = re.sub(
+            r"(<w:tblPr>)",
+            (
+                r"\1<w:tblBorders>"
+                r'<w:top w:val="double" w:sz="12" w:color="4472C4" w:space="0"/>'
+                r'<w:insideH w:val="single" w:sz="4" w:color="808080" w:space="0"/>'
+                r"</w:tblBorders>"
+            ),
+            xml,
+            count=1,
+        )
+        return re.sub(
+            r"(<w:tcPr>)",
+            (
+                r"\1<w:tcBorders>"
+                r'<w:bottom w:val="dashed" w:sz="6" w:color="C00000" w:space="0"/>'
+                r'<w:right w:val="nil" w:sz="0" w:color="000000" w:space="0"/>'
+                r"</w:tcBorders>"
+            ),
+            xml,
+            count=1,
+        )
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_borders)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"border-rich table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    table_borders = table_item.get("table_borders") or {}
+    assert_true(
+        table_borders.get("top") == {"val": "double", "sz": "12", "color": "4472C4", "space": "0"},
+        f"table top border was not extracted: {table_item}",
+    )
+    assert_true(
+        table_borders.get("insideH") == {"val": "single", "sz": "4", "color": "808080", "space": "0"},
+        f"table insideH border was not extracted: {table_item}",
+    )
+    overrides = table_item.get("table_cell_overrides") or []
+    first_cell = next((entry for entry in overrides if entry.get("row") == 0 and entry.get("col") == 0), {})
+    assert_true(
+        first_cell.get("borders", {}).get("bottom") == {"val": "dashed", "sz": "6", "color": "C00000", "space": "0"},
+        f"cell bottom border was not extracted: {overrides}",
+    )
+    assert_true(
+        first_cell.get("borders", {}).get("right") == {"val": "nil", "sz": "0", "color": "000000", "space": "0"},
+        f"cell nil right border was not extracted: {overrides}",
+    )
+
+
+@case
+def content_parser_preserves_two_level_nested_tables_in_cells() -> None:
+    work = new_workdir("parser_two_level_nested_table_cell")
+    img = work / "nested_image.png"
+    img.write_bytes(PNG_1X1)
+    docx = work / "nested_table_cell.docx"
+    doc = Document()
+    outer = doc.add_table(rows=2, cols=2)
+    outer.cell(0, 0).text = "Outer A"
+    outer.cell(0, 1).text = "Outer B"
+    nested_host = outer.cell(1, 0)
+    nested_host.text = "Nested before"
+    outer.cell(1, 1).text = "Outer D"
+    nested = nested_host.add_table(rows=2, cols=2)
+    nested.cell(0, 0).text = "Nested A"
+    nested.cell(0, 1).text = "Nested B"
+    nested.cell(1, 0).text = "Nested C"
+    nested.cell(1, 1).text = "Nested D"
+    deeper = nested.cell(1, 1).add_table(rows=1, cols=2)
+    deeper.cell(0, 0).text = "Deeper A"
+    deeper.cell(0, 1).text = "Deeper B"
+    deeper.cell(0, 1).paragraphs[0].add_run().add_picture(str(img))
+    nested_host.add_paragraph("Nested after")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    assert_true(content.get("_meta", {}).get("tables_count") == 3, f"nested table count missing: {content.get('_meta')}")
+    assert_true(content.get("_meta", {}).get("images_extracted") == 1, f"nested table image count missing: {content.get('_meta')}")
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"nested table should stay inside the outer table cell: {items}")
+    outer_item = table_items[0]
+    assert_true(
+        outer_item.get("table_rows", [])[1][0] == "Nested before\nNested after",
+        f"nested host text should preserve before/after paragraphs: {outer_item}",
+    )
+    cell_items = outer_item.get("table_cell_items") or []
+    nested_cell = next((entry for entry in cell_items if entry.get("row") == 1 and entry.get("col") == 0), {})
+    nested_items = [entry for entry in nested_cell.get("items") or [] if isinstance(entry, dict) and entry.get("role") == "table"]
+    assert_true(nested_items, f"nested table was not attached to the parent cell: {outer_item}")
+    nested_item = nested_items[0]
+    assert_true(nested_item.get("location") == "nested_table_cell", f"nested table location missing: {nested_item}")
+    assert_true(nested_item.get("after_paragraph_index") == 1, f"nested table insertion position missing: {nested_item}")
+    assert_true(
+        nested_item.get("table_rows") == [["Nested A", "Nested B"], ["Nested C", "Nested D"]],
+        f"nested table rows changed: {nested_item}",
+    )
+    deeper_cell_items = nested_item.get("table_cell_items") or []
+    deeper_cell = next((entry for entry in deeper_cell_items if entry.get("row") == 1 and entry.get("col") == 1), {})
+    deeper_items = [entry for entry in deeper_cell.get("items") or [] if isinstance(entry, dict) and entry.get("role") == "table"]
+    assert_true(deeper_items, f"second-level nested table was not attached to the nested cell: {nested_item}")
+    assert_true(
+        deeper_items[0].get("table_rows") == [["Deeper A", "Deeper B"]],
+        f"second-level nested table rows changed: {deeper_items[0]}",
+    )
+    deeper_image_items = [
+        item
+        for entry in deeper_items[0].get("table_cell_items") or []
+        for item in entry.get("items") or []
+        if isinstance(item, dict) and item.get("role") == "image"
+    ]
+    assert_true(deeper_image_items, f"nested table-cell image was not attached to the nested cell: {deeper_items[0]}")
+    assert_true(
+        deeper_image_items[0].get("location") == "table_cell",
+        f"nested table-cell image should keep table-cell origin: {deeper_image_items}",
+    )
+    top_level_table_images = [
+        item
+        for item in items
+        if isinstance(item, dict) and item.get("role") == "image" and item.get("location") == "table_cell"
+    ]
+    assert_true(not top_level_table_images, f"nested table-cell image leaked out as a body image: {items}")
+
+    result = run_generated_case("parser_two_level_nested_table_cell_generated", content, base_format())
+    assert_true(result["xml"].count("<w:drawing>") == 1, "extracted nested table-cell image should render exactly once")
+    table_xmls = re.findall(r"<w:tbl\b.*?</w:tbl>", result["xml"], flags=re.S)
+    assert_true(
+        sum(table_xml.count("<w:drawing>") for table_xml in table_xmls) >= 1,
+        "extracted nested table-cell image rendered outside generated Word tables",
+    )
+    assert_true(
+        result["manifest"]["counts"]["content_images_rendered"] == 1,
+        f"extracted nested table-cell image render count changed: {result['manifest']}",
+    )
+    assert_true(result["report"]["passed"] is True, f"extracted nested table-cell image should pass QA: {result['report']}")
 
 
 @case
@@ -479,6 +862,147 @@ def content_parser_extracts_vml_pictures() -> None:
     content = extract_docx_content(str(vml_docx), output_dir=str(work))
     paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
     assert_true(any(isinstance(p, dict) and p.get("role") == "image" for p in paragraphs), "VML picture was not extracted")
+
+
+@case
+def content_parser_recovers_textbox_and_content_control_text() -> None:
+    work = new_workdir("parser_boxed_text")
+    docx = work / "boxed_text.docx"
+    doc = Document()
+    doc.add_paragraph("1 Introduction")
+    doc.add_paragraph("Normal paragraph before boxed content.")
+    doc.save(docx)
+
+    textbox_text = "Recovered floating textbox paragraph."
+    control_text = "Recovered content control paragraph."
+
+    def inject_boxed_content(xml: str) -> str:
+        block = (
+            '<w:p><w:r><w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml">'
+            "<v:textbox><w:txbxContent>"
+            f"<w:p><w:r><w:t>{textbox_text}</w:t></w:r></w:p>"
+            "</w:txbxContent></v:textbox></v:shape></w:pict></w:r></w:p>"
+            "<w:sdt><w:sdtPr><w:tag w:val=\"control\"/></w:sdtPr><w:sdtContent>"
+            f"<w:p><w:r><w:t>{control_text}</w:t></w:r></w:p>"
+            "</w:sdtContent></w:sdt>"
+        )
+        return xml.replace("</w:body>", block + "</w:body>")
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_boxed_content)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    body_text = _content_plain_text(content)
+    meta = content.get("_meta") or {}
+    issues = (meta.get("source_audit") or {}).get("issues") or []
+    textbox_issue = next((issue for issue in issues if issue.get("code") == "SOURCE_TEXTBOX_UNSUPPORTED"), {})
+
+    assert_true(textbox_text in body_text, f"textbox body text was not recovered: {body_text}")
+    assert_true(control_text in body_text, f"content-control body text was not recovered: {body_text}")
+    assert_true(meta.get("recovered_textbox_paragraphs") == 1, f"textbox recovery count missing: {meta}")
+    assert_true(meta.get("recovered_content_control_paragraphs") == 1, f"content-control recovery count missing: {meta}")
+    assert_true(textbox_issue.get("severity") == "warning", f"recoverable textbox should require review, not block: {issues}")
+
+
+@case
+def content_parser_extracts_footnote_references_and_text() -> None:
+    work = new_workdir("parser_footnotes")
+    docx = work / "footnote_source.docx"
+    doc = Document()
+    doc.add_paragraph("1 Introduction")
+    doc.add_paragraph("The method uses a calibrated dataset.")
+    doc.save(docx)
+
+    footnote_text = "Synthetic footnote text that must stay attached to the paragraph."
+
+    def inject_reference(xml: str) -> str:
+        return xml.replace(
+            "<w:t>The method uses a calibrated dataset.</w:t></w:r></w:p>",
+            '<w:t>The method uses a calibrated dataset.</w:t></w:r><w:r><w:footnoteReference w:id="2"/></w:r></w:p>',
+        )
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_reference)
+    with zipfile.ZipFile(docx, "a") as zf:
+        zf.writestr(
+            "word/footnotes.xml",
+            (
+                '<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                '<w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>'
+                '<w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>'
+                f'<w:footnote w:id="2"><w:p><w:r><w:t>{footnote_text}</w:t></w:r></w:p></w:footnote>'
+                "</w:footnotes>"
+            ),
+        )
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    rich = next((p for p in paragraphs if isinstance(p, dict) and p.get("role") == "rich_text"), {})
+    note_runs = [run for run in rich.get("runs") or [] if run.get("type") == "note_ref"]
+    meta = content.get("_meta") or {}
+    issues = (meta.get("source_audit") or {}).get("issues") or []
+    footnote_issue = next((issue for issue in issues if issue.get("code") == "SOURCE_FOOTNOTE_UNSUPPORTED"), {})
+
+    assert_true(note_runs, f"footnote reference did not stay in rich text runs: {paragraphs}")
+    assert_true(note_runs[0].get("text") == footnote_text, f"footnote text not attached to reference: {note_runs}")
+    assert_true(meta.get("footnote_references_extracted") == 1, f"footnote reference count missing: {meta}")
+    assert_true(meta.get("footnote_definitions_extracted") == 1, f"footnote definition count missing: {meta}")
+    assert_true(footnote_issue.get("severity") == "warning", f"extractable footnotes should require review, not block: {issues}")
+
+
+@case
+def content_parser_preserves_table_cell_footnote_reference() -> None:
+    work = new_workdir("parser_table_cell_footnote")
+    docx = work / "table_cell_footnote.docx"
+    doc = Document()
+    doc.add_paragraph("1 Table footnote")
+    table = doc.add_table(rows=1, cols=1)
+    table.cell(0, 0).paragraphs[0].add_run("Metric value")
+    doc.save(docx)
+
+    footnote_text = "Table-cell footnote text must stay attached to the cell reference."
+
+    def inject_reference(xml: str) -> str:
+        return xml.replace(
+            "<w:t>Metric value</w:t></w:r></w:p>",
+            '<w:t>Metric value</w:t></w:r><w:r><w:footnoteReference w:id="3"/></w:r></w:p>',
+        )
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_reference)
+    with zipfile.ZipFile(docx, "a") as zf:
+        zf.writestr(
+            "word/footnotes.xml",
+            (
+                '<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                '<w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>'
+                '<w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>'
+                f'<w:footnote w:id="3"><w:p><w:r><w:t>{footnote_text}</w:t></w:r></w:p></w:footnote>'
+                "</w:footnotes>"
+            ),
+        )
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    table_items = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "table"]
+    assert_true(table_items, f"table with footnote cell was not preserved: {paragraphs}")
+    table_item = table_items[0]
+    cell_items = table_item.get("table_cell_items") or []
+    rich_item = next(
+        (
+            item
+            for entry in cell_items
+            if entry.get("row") == 0 and entry.get("col") == 0
+            for item in entry.get("items") or []
+            if isinstance(item, dict) and item.get("role") == "rich_text"
+        ),
+        None,
+    )
+    note_runs = [run for run in (rich_item or {}).get("runs") or [] if run.get("type") == "note_ref"]
+    assert_true(note_runs, f"table-cell footnote reference did not stay in rich text runs: {table_item}")
+    assert_true(note_runs[0].get("text") == footnote_text, f"table-cell footnote text not attached: {note_runs}")
+
+    result = run_generated_case("table_cell_footnote_render", content, base_format())
+    assert_true("<w:footnoteReference" in result["xml"], "table-cell footnote did not render as native reference")
+    assert_true(result["manifest"]["counts"].get("footnote_references_rendered") == 1, f"footnote count missing: {result['manifest']}")
+    assert_true(result["report"]["passed"] is True, f"table-cell footnote render should pass QA: {result['report']}")
 
 
 @case
@@ -737,8 +1261,22 @@ def content_parser_extracts_table_cell_images_and_flags_header_images() -> None:
 
     content = extract_docx_content(str(docx), output_dir=str(work))
     paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
-    table_images = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "image" and p.get("location") == "table_cell"]
-    assert_true(table_images, "table-cell image was not promoted into the content image stream")
+    table_items = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "table"]
+    assert_true(table_items, f"table with image cell was not preserved: {paragraphs}")
+    cell_items = table_items[0].get("table_cell_items") or []
+    cell_images = [
+        item
+        for entry in cell_items
+        if entry.get("row") == 0 and entry.get("col") == 0
+        for item in entry.get("items") or []
+        if isinstance(item, dict) and item.get("role") == "image"
+    ]
+    assert_true(cell_images, f"table-cell image was not attached to its source cell: {table_items[0]}")
+    assert_true(cell_images[0].get("location") == "table_cell", f"table-cell image origin missing: {cell_images}")
+    top_level_table_images = [
+        p for p in paragraphs if isinstance(p, dict) and p.get("role") == "image" and p.get("location") == "table_cell"
+    ]
+    assert_true(not top_level_table_images, f"table-cell image leaked out as a body image: {paragraphs}")
     assert_true(content["_meta"]["images_extracted"] == 1, "header image should not be counted as a body image")
     non_body_locations = {item.get("location") for item in content["_meta"].get("non_body_images") or []}
     assert_true(any("header" in str(x) for x in non_body_locations), f"header image was not recorded as a non-body image: {non_body_locations}")
@@ -747,7 +1285,119 @@ def content_parser_extracts_table_cell_images_and_flags_header_images() -> None:
     result = run_generated_case("table_cell_footer_image_render", content, base_format())
     codes = [item["code"] for item in result["report"]["issues"]]
     assert_true(result["manifest"]["counts"]["content_images_rendered"] == 1, f"table-cell body image was not rendered once: {result['manifest']}")
+    table_xmls = re.findall(r"<w:tbl\b.*?</w:tbl>", result["xml"], flags=re.S)
+    table_drawings = sum(xml.count("<w:drawing>") for xml in table_xmls)
+    total_drawings = result["xml"].count("<w:drawing>")
+    assert_true(total_drawings == 1, f"expected one rendered body drawing, saw {total_drawings}")
+    assert_true(table_drawings == 1, "DOCX table-cell image rendered outside the generated Word table")
     assert_true("NON_BODY_IMAGE_UNSUPPORTED" in codes, f"non-body header/footer image did not block with a clear code: {codes}")
+
+
+@case
+def content_parser_preserves_table_cell_image_run_order() -> None:
+    work = new_workdir("parser_table_cell_image_order")
+    img_before = work / "before.png"
+    img_after = work / "after.png"
+    write_sample_png(img_before, width=120, height=90)
+    write_sample_png(img_after, width=140, height=80)
+    docx = work / "table_cell_image_order.docx"
+    doc = Document()
+    doc.add_paragraph("1 Image order")
+    table = doc.add_table(rows=1, cols=2)
+    left = table.cell(0, 0).paragraphs[0]
+    left.add_run().add_picture(str(img_before))
+    left.add_run("Image before text")
+    right = table.cell(0, 1).paragraphs[0]
+    right.add_run("Text before image")
+    right.add_run().add_picture(str(img_after))
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    table_items = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "table"]
+    assert_true(table_items, f"table with ordered image cells was not preserved: {paragraphs}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [["Image before text", "Text before image"]],
+        f"table text changed during image order extraction: {table_item}",
+    )
+    cell_items = table_item.get("table_cell_items") or []
+    left_image = next(
+        (
+            item
+            for entry in cell_items
+            if entry.get("row") == 0 and entry.get("col") == 0
+            for item in entry.get("items") or []
+            if isinstance(item, dict) and item.get("role") == "image"
+        ),
+        None,
+    )
+    right_image = next(
+        (
+            item
+            for entry in cell_items
+            if entry.get("row") == 0 and entry.get("col") == 1
+            for item in entry.get("items") or []
+            if isinstance(item, dict) and item.get("role") == "image"
+        ),
+        None,
+    )
+    assert_true(left_image and left_image.get("after_paragraph_index") == 0, f"image-before-text position lost: {cell_items}")
+    assert_true(right_image and right_image.get("after_paragraph_index") == 1, f"text-before-image position lost: {cell_items}")
+
+    result = run_generated_case("table_cell_image_order_render", content, base_format())
+    xml = result["xml"]
+    assert_true(xml.count("<w:drawing>") == 2, f"expected two rendered cell images: {result['manifest']}")
+    assert_true(
+        xml.find("<w:drawing>") < xml.find("Image before text"),
+        "image-before-text cell rendered text before its image",
+    )
+    assert_true(
+        xml.find("Text before image") < xml.rfind("<w:drawing>"),
+        "text-before-image cell rendered image before its text",
+    )
+    assert_true(result["report"]["passed"] is True, f"table-cell image order render should pass QA: {result['report']}")
+
+
+@case
+def content_parser_preserves_table_cell_inline_omml_formula() -> None:
+    work = new_workdir("parser_table_cell_inline_omml")
+    docx = work / "table_cell_inline_omml.docx"
+    doc = Document()
+    doc.add_paragraph("1 Table formula")
+    table = doc.add_table(rows=1, cols=1)
+    cell_para = table.cell(0, 0).paragraphs[0]
+    cell_para.add_run("Energy ")
+    cell_para._element.append(etree.fromstring(latex_to_omath(r"E=mc^2", display=False).encode("utf-8")))
+    cell_para.add_run(" model")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    table_items = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "table"]
+    assert_true(table_items, f"table with inline OMML cell was not preserved: {paragraphs}")
+    table_item = table_items[0]
+    cell_items = table_item.get("table_cell_items") or []
+    rich_item = next(
+        (
+            item
+            for entry in cell_items
+            if entry.get("row") == 0 and entry.get("col") == 0
+            for item in entry.get("items") or []
+            if isinstance(item, dict) and item.get("role") == "rich_text"
+        ),
+        None,
+    )
+    assert_true(rich_item, f"table-cell inline OMML was not preserved as structured rich text: {table_item}")
+    assert_true(
+        [run.get("type") for run in rich_item.get("runs") or []] == ["text", "math", "text"],
+        f"table-cell inline OMML run order changed: {rich_item}",
+    )
+
+    result = run_generated_case("table_cell_inline_omml_render", content, base_format())
+    assert_true(omath_count(result["xml"]) >= 1, "table-cell inline OMML rendered as plain text instead of native math")
+    assert_true(result["manifest"]["counts"].get("inline_formulas_rendered", 0) >= 1, f"inline formula count missing: {result['manifest']}")
+    assert_true(result["report"]["passed"] is True, f"table-cell inline OMML render should pass QA: {result['report']}")
 
 
 @case

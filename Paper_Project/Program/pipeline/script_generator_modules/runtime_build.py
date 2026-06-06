@@ -20,6 +20,10 @@ def reset_build_stats():
 
 def write_build_manifest():
     path = os.path.join(BASE, 'build_manifest.json')
+    BUILD_STATS['footnote_references_rendered'] = NOTE_REF_COUNTS.get('footnote', 0)
+    BUILD_STATS['endnote_references_rendered'] = NOTE_REF_COUNTS.get('endnote', 0)
+    BUILD_STATS['footnote_definitions_rendered'] = len(NOTE_DEFS.get('footnote') or {})
+    BUILD_STATS['endnote_definitions_rendered'] = len(NOTE_DEFS.get('endnote') or {})
     with open(path, 'w', encoding='utf-8') as f:
         json.dump({'schema_version': 1, 'counts': BUILD_STATS}, f, ensure_ascii=False, indent=2)
 
@@ -33,6 +37,7 @@ def build_document(toc_page_map=None, caption_page_map=None, native_toc=True):
     FORMULA_COUNTERS = {}
     TABLE_COUNTERS = {}
     reset_build_stats()
+    reset_note_state()
     doc = Document()
     configure_global_styles()
     setup_section(doc.sections[0])
@@ -43,6 +48,7 @@ def build_document(toc_page_map=None, caption_page_map=None, native_toc=True):
     render_body()
     force_cover_headerless()
     doc.save(OUT)
+    apply_note_parts_to_docx(OUT)
 
 
 def main():

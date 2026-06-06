@@ -64,11 +64,23 @@ def _table_border_issues(table: ET.Element, index: int) -> List[str]:
 
 
 def _content_tables(content: Dict[str, Any]) -> List[List[List[str]]]:
+    def collect_item(item: Any) -> List[List[List[str]]]:
+        if not isinstance(item, dict):
+            return []
+        tables: List[List[List[str]]] = []
+        if item.get("table_rows") and item.get("role") != "code":
+            tables.append([[str(cell or "") for cell in row] for row in item.get("table_rows") or []])
+        for cell in item.get("table_cell_items") or []:
+            if not isinstance(cell, dict):
+                continue
+            for nested in cell.get("items") or []:
+                tables.extend(collect_item(nested))
+        return tables
+
     tables: List[List[List[str]]] = []
     for sec in content.get("sections") or []:
         for item in sec.get("paragraphs") or []:
-            if _is_table_item(item):
-                tables.append([[str(cell or "") for cell in row] for row in item.get("table_rows") or []])
+            tables.extend(collect_item(item))
     return tables
 
 

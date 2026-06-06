@@ -69,10 +69,14 @@ def _compare_or_update_golden(
     record = _golden_record(out_dir, counts, pages_text, image_stats)
     path = os.path.join(golden_dir, record["key"] + ".json")
     result.update({"status": "missing", "path": path, "key": record["key"], "issues": []})
-    if update_golden or not os.path.exists(path):
+    if update_golden:
+        existed = os.path.exists(path)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(record, f, ensure_ascii=False, indent=2)
-        result["status"] = "updated" if update_golden else "created"
+        result["status"] = "updated" if existed else "created"
+        return result
+    if not os.path.exists(path):
+        result["issues"] = ["baseline missing; rerun with --update-golden only after manual approval"]
         return result
     baseline = _load_json(path)
     issues: List[str] = []
@@ -92,4 +96,3 @@ def _compare_or_update_golden(
     result["status"] = "matched" if not issues else "mismatch"
     result["issues"] = issues
     return result
-

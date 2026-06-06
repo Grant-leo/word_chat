@@ -23,13 +23,23 @@ def _count_content_formulas(content: Dict[str, Any]) -> int:
 
 
 def _count_content_tables(content: Dict[str, Any]) -> int:
+    def count_item(item: Any) -> int:
+        if not isinstance(item, dict):
+            return 0
+        total = 1 if item.get("table_rows") and item.get("role") != "code" else 0
+        for cell in item.get("table_cell_items") or []:
+            if not isinstance(cell, dict):
+                continue
+            for nested in cell.get("items") or []:
+                total += count_item(nested)
+        return total
+
     total = 0
     saw_table_rows = False
     for item in _iter_paragraph_items(content):
         if isinstance(item, dict) and item.get("table_rows"):
             saw_table_rows = True
-            if item.get("role") != "code":
-                total += 1
+        total += count_item(item)
     if saw_table_rows:
         return total
     return int((content.get("_meta") or {}).get("tables_count") or 0)
@@ -52,9 +62,7 @@ def _image_names_from_item(item: Dict[str, Any]) -> List[str]:
             continue
         for nested in cell.get("items") or []:
             if isinstance(nested, dict):
-                name = _image_name_from_item(nested)
-                if name:
-                    names.append(name)
+                names.extend(_image_names_from_item(nested))
     return names
 
 

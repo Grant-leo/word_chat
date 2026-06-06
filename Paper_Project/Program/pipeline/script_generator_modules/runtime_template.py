@@ -11,6 +11,7 @@ from .runtime_formula_render import FORMULA_RENDER_RUNTIME
 from .runtime_formula_text import FORMULA_TEXT_RUNTIME
 from .runtime_front_matter import FRONT_MATTER_RUNTIME
 from .runtime_media_tables import MEDIA_TABLE_RUNTIME
+from .runtime_notes import NOTES_RUNTIME
 from .runtime_references import REFERENCES_RUNTIME
 from .runtime_toc import TOC_RUNTIME
 
@@ -18,6 +19,8 @@ RUNTIME_TEMPLATE = r'''
 __BASE_RUNTIME__
 
 __COVER_RUNTIME__
+
+__NOTES_RUNTIME__
 
 __FORMULA_RUNTIME__
 
@@ -44,6 +47,7 @@ RUNTIME_TEMPLATE = (
     RUNTIME_TEMPLATE
     .replace('__BASE_RUNTIME__', BASE_RUNTIME)
     .replace('__COVER_RUNTIME__', COVER_RUNTIME)
+    .replace('__NOTES_RUNTIME__', NOTES_RUNTIME)
     .replace('__FORMULA_RUNTIME__', FORMULA_RUNTIME)
     .replace('__CONTENT_HELPERS_RUNTIME__', CONTENT_HELPERS_RUNTIME)
     .replace('__FORMULA_TEXT_RUNTIME__', FORMULA_TEXT_RUNTIME)

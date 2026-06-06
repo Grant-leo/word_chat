@@ -12,10 +12,72 @@ tracked engine.
 - `template_profiler.py` builds template capability/risk profiles.
 - `script_generator.py` writes `Outputs/<run>/build_generated.py`.
 - `qa_checker.py`, `qa_conformance.py`, and `qa_visual.py` verify generated output.
+- `private_corpus_audit.py` scans a local private corpus, classifies files by
+  structural features only, and writes ignored reports under
+  `Outputs/_private_realdata_audit/`.
+- `comparison_assessment.py` aggregates structural/strict/visual/golden/reference
+  evidence into an auditable decision for each run.
 - `regression_suite.py` is the synthetic engine regression gate.
 - `RELEASE_VALIDATION.md` is the publish-before-release validation checklist.
 - Standalone extractor CLIs write debug artifacts under `Outputs/_...` by default so `Inputs/` and `Templates/` remain source-only.
 - Interactive cancellation/EOF and QA/dependency interruptions must always surface a concrete next step for ordinary users.
+- Explicit unsupported input formats (`.doc`, `.wps`, archives, shortcuts,
+  spreadsheets, and similar non-paper files) must stop in preflight with an
+  issue code and a next action instead of reaching extraction or throwing a raw
+  traceback.
+
+## Private Real-Data Audit
+
+Real documents used for product hardening stay local and ignored. The first
+stage is inventory, not formatting:
+
+```powershell
+python Paper_Project/Program/pipeline/private_corpus_audit.py Templates/20261
+```
+
+The audit writes:
+
+- `Outputs/_private_realdata_audit/inventory.json`
+- `Outputs/_private_realdata_audit/inventory.md`
+- `Outputs/_private_realdata_audit/review_queue.json`
+
+The classifier uses only structural features such as extension, DOCX/PDF
+readability, paragraph/table/image/formula counts, sections, headers/footers,
+fields, comments/revisions, footnotes/endnotes, textboxes, content controls,
+embedded objects, landscape pages, PDF page counts, and PDF text density. It
+must not store body text. Classifications are fixed to:
+
+- `template_candidate`
+- `content_candidate`
+- `reference_candidate`
+- `attachment_or_nonpaper`
+- `unsupported_or_conversion_needed`
+
+`Templates/20261/` is treated as a private real-data pool and is not part of the
+ordinary recursive `--agent-auto` file choice path. `.doc` / `.wps` files are
+blocked by default and should be manually saved as DOCX before joining an E2E
+matrix.
+
+## Comparison Assessment
+
+Every QA-enabled pipeline run writes `comparison_assessment.json/md` after QA
+or after an auto-repair stop. The assessment reads available
+`qa_report.json`, `conformance_report.json`, `visual_report.json`,
+`reference_compare_report.json`, and golden-baseline artifacts, then emits:
+
+- `decision`: `BLOCKED_UNJUDGEABLE`, `FAILED_AUTOMATIC`,
+  `PASSED_WITH_REVIEW`, `PASSED_MACHINE`, or `APPROVED_DELIVERY`
+- `confidence`
+- `baseline_type`
+- `manual_review_required`
+- `review_pages`
+- `approved_deviations`
+- `blocking_issue_codes`
+
+Warning-only runs are classified as `PASSED_WITH_REVIEW`; they are never counted
+as perfect machine passes until the manual review/approval trail is recorded.
+Golden baselines are compare-only unless `--update-golden` is explicitly used
+after human approval.
 
 ## Runner Helpers
 
@@ -39,9 +101,20 @@ CLI, output, verification, and QA details in a focused package:
 
 ## Verification Baseline
 
-Current baseline as of 2026-06-03:
+Current baseline as of 2026-06-05:
 
-- Synthetic regression after LOF/LOT (list of figures/tables) engine implementation: `251 passed, 8 failed` (8 failures are pre-existing Poppler environment issues — `PDF_TEMPLATE_PROTECTED:pdftotext-bbox:password` — unrelated to engine changes).
+- Synthetic regression after private real-data audit/source-audit/comparison-assessment hardening, boxed-content recovery, native note rendering, merged-table preservation, `gridBefore` vertical-merge round-trip preservation, table-column-width preservation, table layout-detail preservation, explicit table/cell border preservation, border/layout property-order hardening, source-order two-level nested table preservation, DOCX table-cell and nested-table image in-cell preservation, table-cell image/text run-order preservation, table-cell inline OMML formula preservation, table-cell footnote reference preservation, irregular merge-grid audit, and section-scoped/de-duplicated wide-table risk counts: `297 passed, 0 failed`.
+- DOCX textbox/content-control recovery: visible text inside `w:txbxContent`
+  and `w:sdtContent` is now recovered into the body stream, deduplicated, and
+  reported in content metadata; textbox position fidelity remains a warning
+  requiring Word/WPS review.
+- DOCX footnote/endnote coverage: paragraph-level note anchors and visible note
+  text are extracted, rendered as native Word footnotes/endnotes, and protected
+  by manifest count mismatch QA.
+- DOCX body table fidelity: basic merged cells, column widths, row heights,
+  repeated header rows, default cell margins, cell-level margins, and vertical
+  alignment now round-trip through `content.json` and generated DOCX XML.
+- Private real-data inventory smoke on `Templates/20261/`: 418 local files scanned; 44 `template_candidate`, 126 `content_candidate`, 157 `reference_candidate`, 10 `attachment_or_nonpaper`, and 81 `unsupported_or_conversion_needed`. Reports stay local under `Outputs/_private_realdata_audit/` and are not committed.
 - Agent-first flow: `--agent-auto` scans local inputs, auto-selects only single candidates, defaults to user auto-repair, and writes `agent_summary.md/json`.
 - Novice interruption coverage: interactive cancellation/EOF, missing preflight inputs, generated-script build failures, QA dependency failures, and auto-repair blockers all route to a next action.
 - Strict/visual report handoff coverage: `conformance_report.md/json` and `visual_report.md/json` top-level `next_action` values name the leading issue code before the beginner-facing repair step, so users can connect codes such as `PLACEHOLDER_TEXT_LEFT`, `PDF_PAGE_COUNT_INVALID`, and `WPS_SAMPLE_IMAGE_MISMATCH` to the next concrete action even without opening `agent_summary.md`.
@@ -53,6 +126,9 @@ Current baseline as of 2026-06-03:
 - Markdown reference-style images: `![alt][id]` plus `[id]: path` and shortcut reference images `![alt]` plus `[alt]: path` now copy local images into the content stream; optional title continuation lines after reference definitions are stripped with the definition; undefined image references become `CONTENT_IMAGE_MISSING` instead of staying as ordinary body text, and reference-definition-like lines inside fenced code blocks stay in code.
 - Markdown HTML images: `<img src="path" alt="...">`, lazy `data-src` / `data-original`, the first `srcset` candidate, and PNG/JPG data URI images use the same image routing as Markdown image syntax; malformed/unsupported data URI images and data URI MIME/actual-format mismatches surface as `CONTENT_IMAGE_UNREADABLE`, and raw tags or inline payloads must not leak into generated DOCX text or QA metadata.
 - Markdown table-cell images: images embedded inside GitHub-style Markdown table cells are attached to `table_cell_items`, keep `location="markdown_table_cell"`, and render inside generated Word table cells; missing table-cell images remain QA-visible `CONTENT_IMAGE_MISSING` blockers instead of being stripped by table text cleanup.
+- DOCX table-cell images: images inside DOCX body table cells are attached to the source cell's `table_cell_items` instead of being appended after the table; same-paragraph image-before-text and text-before-image ordering is preserved from OOXML run order; images inside supported two-level nested tables stay inside the nested cell, and structural/strict image counts recurse through nested `table_cell_items`.
+- DOCX table-cell inline OMML formulas: formula-bearing cell paragraphs are attached as replaceable `rich_text` cell items and rendered back as native inline Word math inside the generated table cell instead of being flattened into plain text.
+- DOCX table-cell footnote references: note references in table-cell paragraphs are attached to the same `rich_text` cell item, carry extracted note text, render as native Word footnote references inside the generated table cell, and participate in recursive note-count QA.
 - DOCX relationship-image fail-closed handoff: corrupt or unsupported image bytes in source DOCX relationships are validated before copying into `figures/`; invalid images are not counted as extracted, do not leak into the content stream, and surface `IMAGE_EXTRACT_FAILED` with a beginner-facing step to re-export/reinsert the source image as a normal PNG/JPG before rerunning.
 - Strict conformance body-start detection: default body paragraphs before the first explicit Markdown heading stay inside strict content checks instead of being skipped as TOC/front matter.
 - Content-summary coverage: `内容提取.md` renders structured `role="image"` items, including table-cell images, as `[图片]` and mentions table-cell image counts in table summaries instead of opaque `[结构化内容]`.
@@ -69,7 +145,7 @@ Current baseline as of 2026-06-03:
 - PDF template read-failure handoff: corrupt/unreadable PDFs stop after template profiling and before `build_generated.py`, while writing `PDF_TEMPLATE_READ_FAILED` QA/agent reports with re-export/openable-PDF or DOCX next steps.
 - PDF template protection handoff: password-protected or copy-restricted PDFs stop after template profiling and before `build_generated.py`, while writing `PDF_TEMPLATE_PROTECTED` QA/agent reports with unlock/export-unprotected-PDF or DOCX next steps.
 - Scanned/textless PDF template handoff: unsupported PDF templates stop after template profiling and before `build_generated.py`, while writing `PDF_TEMPLATE_UNSUPPORTED` QA/agent reports with DOCX/text-PDF/OCR next steps.
-- LOF/LOT (list of figures/tables) coverage: `collect_figure_entries` / `collect_table_entries` scan `DATA['sections']` for figure/table captions; `add_figure_list` / `add_table_list` render static entry lines with right-aligned tab stops and dot leaders; `_infer_caption_pages_from_word_com` resolves page numbers in the two-pass build using the same `v - first_heading_page + 1` normalization as TOC entries. Each list gets its own page via `doc.add_page_break()` between TOC and body. Lists are only rendered when content has captions (no empty pages). Regression: 6 LOF/LOT-specific generator cases pass.
+- LOF/LOT (list of figures/tables) coverage: `collect_figure_entries` / `collect_table_entries` scan `DATA['sections']` for figure/table captions; `add_figure_list` / `add_table_list` render static entry lines with right-aligned tab stops and dot leaders; `_infer_caption_pages_from_word_com` resolves page numbers in the two-pass build using the same `v - first_heading_page + 1` normalization as TOC entries. Each list gets its own page via `doc.add_page_break()` between TOC and body. Lists are only rendered when content has captions (no empty pages), table-list legacy fallback requires a real table object, and strict conformance skips LOF/LOT tabbed listing lines when matching expected body content. Regression: 8 LOF/LOT-focused cases pass.
 - PDF extreme stress gate: 9 cases covering uppercase extensions, visual samples, landscape pages, sparse instructions, scanned/corrupt/blank/too-short PDFs met expected outcomes.
 - Public-template compatibility suite: 5 public templates × 5 synthetic scenarios = `25/25` passed.
 - Local DOCX strict QA matrix: 5 DOCX templates × 5 DOCX contents = `25/25` passed.
@@ -113,6 +189,79 @@ formulas, headings, references, body dispatch, and section post-processing.
 The formula path is split into label cleanup, source OMML extraction, text
 formula item creation, and split-layout repair strategies. `extractor.py` owns
 DOCX content extraction orchestration.
+
+`content_parser_modules/source_audit.py` performs a privacy-safe DOCX
+pre-extraction structure audit and stores counts/issue codes in
+`content.json` `_meta.source_audit`. Structural QA promotes these issues into
+normal reports. P0 fail-closed / review codes include:
+
+- `SOURCE_FORMAT_UNSUPPORTED`
+- `LEGACY_DOC_UNSUPPORTED`
+- `SOURCE_TEXTBOX_UNSUPPORTED`
+- `SOURCE_FOOTNOTE_UNSUPPORTED`
+- `SOURCE_ENDNOTE_UNSUPPORTED`
+- `TRACKED_CHANGES_PRESENT`
+- `COMMENTS_PRESENT`
+- `CONTENT_CONTROL_UNSUPPORTED`
+- `SOURCE_EMBEDDED_OBJECT_UNSUPPORTED`
+- `SOURCE_LANDSCAPE_SECTION_UNSUPPORTED`
+- `CONTENT_IMAGE_FORMAT_UNSUPPORTED`
+- `COMPLEX_TABLE_UNSUPPORTED`
+- `TABLE_MERGE_UNSUPPORTED`
+
+`content_parser_modules/boxed_content.py` provides the first P1 fallback for
+real DOCX structures that python-docx skips: visible text inside textboxes and
+content controls is recovered into the normal body stream, deduplicated against
+already extracted content, and counted in `_meta.recovered_textbox_paragraphs`
+and `_meta.recovered_content_control_paragraphs`. Textbox QA remains a warning
+because the floating anchor/position still needs Word/WPS visual review, but
+ordinary users should no longer be asked to copy visible textbox text into
+regular paragraphs before rerunning.
+
+`content_parser_modules/notes.py` extracts visible `footnotes.xml` /
+`endnotes.xml` note bodies and preserves `footnoteReference` /
+`endnoteReference` anchors as ordered `note_ref` runs in `rich_text` items.
+`script_generator_modules/runtime_notes.py` renders those runs back as native
+Word footnotes/endnotes and writes the required OOXML package parts after DOCX
+save. Structural QA compares extracted note references with
+`build_manifest.json` rendered counts and blocks
+`FOOTNOTE_RENDER_COUNT_MISMATCH` / `ENDNOTE_RENDER_COUNT_MISMATCH`; source
+footnote/endnote issue codes remain warnings so users know to review final
+numbering and placement in Word/WPS.
+
+`content_parser_modules/table_extractor.py` now expands DOCX tables onto a
+stable cell grid and preserves basic horizontal/vertical merged cells as
+`table_merges` (`gridSpan` / `vMerge`) plus source grid/cell widths as
+`table_col_widths_twips`, common row/header/margin/alignment layout details,
+explicit table/cell borders as `table_borders` / cell override `borders`, and
+up to two-level nested tables as `table_cell_items` with
+`location="nested_table_cell"` and `after_paragraph_index` when the nested
+table appears between visible paragraphs inside the same source cell. DOCX
+images inside table-cell paragraphs are also attached as cell media with
+`location="table_cell"`, including inside supported nested tables, so they do
+not become ordinary body images after the table. When an image shares a source
+paragraph with text, the extractor records whether the image appeared before
+or after the visible text from OOXML run order. Inline OMML formulas and
+footnote/endnote references inside table-cell paragraphs are recorded as
+replaceable `rich_text` cell items so the cell keeps native formula/note markup
+instead of only the formula's plain text.
+`script_generator_modules/runtime_media_tables.py` applies those merges back
+into the generated DOCX, restores fixed table grids/cell widths, layout
+details, explicit border OOXML, nested tables, table-cell images, and
+table-cell rich text inside parent cells in source order, and records the rendered table-fidelity counts in
+`build_manifest.json`. Structural and strict image counters recurse through
+nested `table_cell_items`, so mixed body images plus nested-table images are
+not undercounted.
+The
+historical `TABLE_MERGE_UNSUPPORTED` and `COMPLEX_TABLE_UNSUPPORTED` audit
+codes remain warning/review signals for three-level-and-deeper nested /
+overwide / irregular
+tables. Source audit details now include irregular merge-grid counts and
+section-scoped landscape wide-table risk counts; nested wide tables are counted
+once, and valid `gridBefore` vertical-merge continuations are not treated as
+orphaned merges or dropped during table extraction. QA can therefore point users to the specific tables that need
+Word/WPS visual review instead of asking them to flatten simple merged,
+bordered, or two-level nested tables.
 
 Caption detection deliberately separates true captions such as `图 1 xxx 示意图`
 from prose references such as `图 1 展示了...`, so body prose keeps body style

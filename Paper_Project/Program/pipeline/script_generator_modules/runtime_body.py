@@ -9,7 +9,7 @@ def paragraph_item_has_image(item):
         return True
     for cell in item.get('table_cell_items') or []:
         for nested in cell.get('items') or []:
-            if isinstance(nested, dict) and (nested.get('role') in ('image', 'figure') or nested.get('image')):
+            if paragraph_item_has_image(nested):
                 return True
     return False
 
@@ -43,7 +43,17 @@ def render_paragraph_item(item, code_sensitive=False, chapter=None):
         if item.get('role') == 'code' or rows_look_like_code(rows):
             add_code_block(item.get('code') or code_text_from_rows(rows))
         else:
-            render_table(rows, item.get('table_cell_items') or [])
+            render_table(
+                rows,
+                item.get('table_cell_items') or [],
+                item.get('table_merges') or [],
+                item.get('table_col_widths_twips') or [],
+                item.get('table_row_heights_twips') or [],
+                item.get('table_repeat_header_rows'),
+                item.get('table_cell_margins_twips') or {},
+                item.get('table_cell_overrides') or [],
+                item.get('table_borders') or {},
+            )
         return
     if isinstance(item, dict) and (item.get('role') == 'figure_caption'):
         add_caption(item.get('text') or '', 'figure_caption')
@@ -105,7 +115,17 @@ def render_body():
             nxt = paragraphs[idx + 1] if idx + 1 < len(paragraphs) else None
             if isinstance(para, str) and is_table_item(nxt) and looks_like_table_title(para):
                 add_caption(next_table_caption(para, current_chapter), 'table_caption')
-                render_table(nxt.get('table_rows') or [], nxt.get('table_cell_items') or [])
+                render_table(
+                    nxt.get('table_rows') or [],
+                    nxt.get('table_cell_items') or [],
+                    nxt.get('table_merges') or [],
+                    nxt.get('table_col_widths_twips') or [],
+                    nxt.get('table_row_heights_twips') or [],
+                    nxt.get('table_repeat_header_rows'),
+                    nxt.get('table_cell_margins_twips') or {},
+                    nxt.get('table_cell_overrides') or [],
+                    nxt.get('table_borders') or {},
+                )
                 idx += 2
                 continue
             if is_table_item(para):

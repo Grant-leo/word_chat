@@ -490,6 +490,75 @@ def pipeline_context_resolves_inputs_outputs_and_workflow() -> None:
 
 
 @case
+def pipeline_context_rejects_legacy_doc_inputs_with_next_step() -> None:
+    work = new_workdir("legacy_doc_resolution")
+    template_dir = work / "Templates"
+    inputs_dir = work / "Inputs"
+    template_dir.mkdir()
+    inputs_dir.mkdir()
+    (template_dir / "template.docx").write_bytes(PNG_1X1)
+    (inputs_dir / "legacy.doc").write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1legacy")
+    resolution = resolve_inputs("template.docx", "legacy.doc", None, str(template_dir), str(inputs_dir))
+    assert_true(not resolution.ok, "legacy .doc content should be rejected before extraction")
+    assert_true("LEGACY_DOC_UNSUPPORTED" in (resolution.error or ""), f"legacy .doc rejection should name issue code: {resolution}")
+    assert_true(".docx" in (resolution.error or ""), f"legacy .doc rejection should tell users to convert to DOCX: {resolution}")
+
+
+@case
+def pipeline_context_rejects_misc_unsupported_explicit_inputs() -> None:
+    work = new_workdir("unsupported_input_resolution")
+    template_dir = work / "Templates"
+    inputs_dir = work / "Inputs"
+    template_dir.mkdir()
+    inputs_dir.mkdir()
+    (template_dir / "template.docx").write_bytes(PNG_1X1)
+    (template_dir / "shortcut.lnk").write_bytes(b"shortcut")
+    for name in ("legacy.wps", "archive.rar", "sheet.xlsx"):
+        (inputs_dir / name).write_bytes(b"unsupported")
+
+    template_resolution = resolve_inputs("shortcut.lnk", "legacy.wps", None, str(template_dir), str(inputs_dir))
+    assert_true(not template_resolution.ok, "unsupported template extension should be rejected before extraction")
+    assert_true("SOURCE_FORMAT_UNSUPPORTED" in (template_resolution.error or ""), f"template rejection should name source-format code: {template_resolution}")
+
+    legacy_wps = resolve_inputs("template.docx", "legacy.wps", None, str(template_dir), str(inputs_dir))
+    assert_true(not legacy_wps.ok and "LEGACY_DOC_UNSUPPORTED" in (legacy_wps.error or ""), f".wps should be isolated as legacy input: {legacy_wps}")
+    for name in ("archive.rar", "sheet.xlsx"):
+        resolution = resolve_inputs("template.docx", name, None, str(template_dir), str(inputs_dir))
+        assert_true(not resolution.ok, f"{name} should be rejected before extraction")
+        assert_true("SOURCE_FORMAT_UNSUPPORTED" in (resolution.error or ""), f"{name} rejection should name issue code: {resolution}")
+
+
+@case
+def run_pipeline_comparison_assessment_handles_cross_drive_display() -> None:
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    import run_pipeline as runner
+
+    original_write = runner.write_assessment
+    original_relpath = runner.os.path.relpath
+    try:
+        runner.write_assessment = lambda _out_dir: {
+            "md_path": r"C:\Temp\comparison_assessment.md",
+            "decision": "PASSED_MACHINE",
+        }
+
+        def raising_relpath(_path, _start):
+            raise ValueError("path is on a different drive")
+
+        runner.os.path.relpath = raising_relpath
+        output = io.StringIO()
+        with redirect_stdout(output):
+            runner._write_comparison_assessment(str(new_workdir("assessment_cross_drive")))
+        text = output.getvalue()
+        assert_true("[ASSESSMENT]" in text, f"assessment status was not printed: {text}")
+        assert_true("[ASSESSMENT-WARN]" not in text, f"cross-drive display should not warn: {text}")
+        assert_true("C:/Temp/comparison_assessment.md" in text, f"fallback path display was not normalized: {text}")
+    finally:
+        runner.write_assessment = original_write
+        runner.os.path.relpath = original_relpath
+
+
+@case
 def pipeline_workflow_external_input_avoids_fake_rerun_command() -> None:
     from qa_checker_modules.repair import build_repair_plan
     from qa_checker_modules.report_phase import build_report

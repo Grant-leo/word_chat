@@ -7,6 +7,7 @@ from xml.etree import ElementTree as ET
 
 try:
     from qa_conformance_modules.ooxml import (
+        W,
         _cm_indent_to_twips,
         _compact,
         _expected_align,
@@ -22,6 +23,7 @@ try:
     from qa_conformance_modules.registry import BACKMATTER_ROLES, FRONTMATTER_ROLES
 except ImportError:  # pragma: no cover - package-style imports
     from .ooxml import (
+        W,
         _cm_indent_to_twips,
         _compact,
         _expected_align,
@@ -76,6 +78,10 @@ def _style_issues(role: str, text: str, p: ET.Element, profile: Dict[str, Any]) 
     return issues
 
 
+def _para_has_tab(p: ET.Element) -> bool:
+    return any(child.tag == W + "tab" for child in p.iter())
+
+
 def _find_para_by_text(paragraphs: List[ET.Element], text: str, used: Optional[set[int]] = None) -> Optional[ET.Element]:
     targets = _compact_targets(text)
     if not targets:
@@ -83,7 +89,13 @@ def _find_para_by_text(paragraphs: List[ET.Element], text: str, used: Optional[s
     for p in paragraphs:
         if used is not None and id(p) in used:
             continue
-        if _compact(_text_of_para(p)) in targets:
+        actual = _compact(_text_of_para(p))
+        if actual in targets:
+            # LOF/LOT listing lines render tabs as OOXML <w:tab/>, which is
+            # not visible in _text_of_para().  They must not satisfy expected
+            # body caption/content checks.
+            if _para_has_tab(p):
+                continue
             if used is not None:
                 used.add(id(p))
             return p
@@ -93,9 +105,8 @@ def _find_para_by_text(paragraphs: List[ET.Element], text: str, used: Optional[s
         actual = _compact(_text_of_para(p))
         if any(target in actual for target in targets):
             # Avoid matching LOF/LOT listing lines that contain caption text
-            # plus a tab-separated page number.  Real captions rendered by
-            # add_caption() do not contain \t.
-            if '\t' in _text_of_para(p):
+            # plus an OOXML tab-separated page number.
+            if _para_has_tab(p):
                 continue
             if used is not None:
                 used.add(id(p))
@@ -260,4 +271,3 @@ def _expected_paragraphs(content: Dict[str, Any]) -> List[Dict[str, str]]:
         if text and not _is_reference_heading(text):
             expected.append({"role": "reference", "text": text})
     return expected
-

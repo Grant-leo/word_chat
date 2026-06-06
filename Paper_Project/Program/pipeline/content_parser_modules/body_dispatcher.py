@@ -36,7 +36,7 @@ try:
         is_backmatter_heading,
         normalize_heading_spacing,
     )
-    from content_parser_modules.image_extractor import image_items_from_ooxml
+    from content_parser_modules.image_extractor import image_items_from_ooxml, images_from_run_ooxml
     from content_parser_modules.paragraph_stream import (
         append_stream_run_group,
         paragraph_stream_items,
@@ -51,7 +51,7 @@ try:
     )
     from content_parser_modules.table_extractor import (
         code_text_from_table_rows,
-        extract_table_rows_from_ooxml,
+        extract_table_from_ooxml,
         looks_like_code_line,
         table_rows_look_like_code,
     )
@@ -76,7 +76,7 @@ except ImportError:  # pragma: no cover - package-style imports
         is_backmatter_heading,
         normalize_heading_spacing,
     )
-    from .image_extractor import image_items_from_ooxml
+    from .image_extractor import image_items_from_ooxml, images_from_run_ooxml
     from .paragraph_stream import append_stream_run_group, paragraph_stream_items
     from .placeholders import is_unfilled_placeholder_text
     from .placeholders import is_template_instruction_text
@@ -85,7 +85,7 @@ except ImportError:  # pragma: no cover - package-style imports
     from .source_toc import is_source_toc_title, source_toc_skip_count_after_title
     from .table_extractor import (
         code_text_from_table_rows,
-        extract_table_rows_from_ooxml,
+        extract_table_from_ooxml,
         looks_like_code_line,
         table_rows_look_like_code,
     )
@@ -175,10 +175,10 @@ def _section_from_heading(text: str, level: int) -> Dict[str, Any]:
     return section
 
 
-def _append_paragraph_stream(section: Dict[str, Any], paragraph: Any, image_registry: Any) -> None:
+def _append_paragraph_stream(section: Dict[str, Any], paragraph: Any, image_registry: Any, notes: Dict[str, Dict[str, str]] | None = None) -> None:
     """Append text/image/math items from one Word paragraph in OOXML order."""
     text = paragraph.text.strip()
-    stream_items = paragraph_stream_items(paragraph, image_registry)
+    stream_items = paragraph_stream_items(paragraph, image_registry, notes=notes)
     if not stream_items and text:
         stream_items = [{"role": "text", "text": text}]
     rich_runs: List[Dict[str, Any]] = []
@@ -201,6 +201,13 @@ def _append_paragraph_stream(section: Dict[str, Any], paragraph: Any, image_regi
             section["paragraphs"].append(item)
         elif item.get("role") == "math_inline":
             rich_runs.append({"type": "math", "text": item.get("text") or "", "math": item.get("math") or []})
+        elif item.get("role") == "note_ref":
+            rich_runs.append({
+                "type": "note_ref",
+                "note_type": item.get("note_type") or "footnote",
+                "source_id": item.get("source_id") or "",
+                "text": item.get("text") or "",
+            })
         elif item.get("role") == "formula":
             flush_rich_runs()
             section["paragraphs"].append(item)
@@ -211,7 +218,7 @@ def _append_paragraph_stream(section: Dict[str, Any], paragraph: Any, image_regi
     flush_rich_runs()
 
 
-def parse_body_sections(doc: Any, text_start: int, image_registry: Any) -> BodyDispatchResult:
+def parse_body_sections(doc: Any, text_start: int, image_registry: Any, notes: Dict[str, Dict[str, str]] | None = None) -> BodyDispatchResult:
     """Parse DOCX body children after front matter into content sections."""
     current_section = make_body_section()
     sections = [current_section]
@@ -276,17 +283,25 @@ def parse_body_sections(doc: Any, text_start: int, image_registry: Any) -> BodyD
                     current_section = section
                     sections.append(current_section)
             else:
-                _append_paragraph_stream(current_section, paragraph, image_registry)
+                _append_paragraph_stream(current_section, paragraph, image_registry, notes=notes)
 
         elif tag == "tbl":
             if p_idx < text_start:
                 continue
-            rows = extract_table_rows_from_ooxml(child, clean_text_func=clean_text_artifacts)
-            table_images = image_items_from_ooxml(child, doc.part.rels, image_registry, location="table_cell")
+            table_data = extract_table_from_ooxml(
+                child,
+                clean_text_func=clean_text_artifacts,
+                image_rels=doc.part.rels,
+                image_registry=image_registry,
+                image_items_func=image_items_from_ooxml,
+                image_run_items_func=images_from_run_ooxml,
+                notes=notes,
+            )
+            rows = table_data.get("table_rows") or []
             if rows:
                 if ref_collector.consume_table_rows(rows):
                     pass
-                elif table_rows_look_like_code(rows):
+                elif table_rows_look_like_code(rows) and not table_data.get("table_cell_items"):
                     current_section["paragraphs"].append(
                         {
                             "role": "code",
@@ -295,11 +310,25 @@ def parse_body_sections(doc: Any, text_start: int, image_registry: Any) -> BodyD
                         }
                     )
                 else:
-                    current_section["paragraphs"].append({"role": "table", "table_rows": rows})
-            if table_images and not ref_collector.active:
-                for image_item in table_images:
-                    current_section["images"].append(image_item.get("image"))
-                    current_section["paragraphs"].append(image_item)
+                    table_item = {"role": "table", "table_rows": rows}
+                    if table_data.get("table_merges"):
+                        table_item["table_merges"] = table_data.get("table_merges")
+                    if table_data.get("table_col_widths_twips"):
+                        table_item["table_col_widths_twips"] = table_data.get("table_col_widths_twips")
+                    for layout_key in (
+                        "table_row_heights_twips",
+                        "table_repeat_header_rows",
+                        "table_cell_margins_twips",
+                        "table_borders",
+                        "table_cell_overrides",
+                        "table_cell_items",
+                    ):
+                        if layout_key == "table_repeat_header_rows":
+                            if layout_key in table_data:
+                                table_item[layout_key] = table_data.get(layout_key)
+                        elif table_data.get(layout_key):
+                            table_item[layout_key] = table_data.get(layout_key)
+                    current_section["paragraphs"].append(table_item)
 
     return BodyDispatchResult(
         sections=sections,

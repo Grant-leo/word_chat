@@ -57,11 +57,12 @@ def math_entry_from_ooxml(math_elem, math_type='inline'):
     return entry
 
 
-def paragraph_stream_items(para, registry):
+def paragraph_stream_items(para, registry, notes=None):
     """Yield paragraph text/image/math items in true OOXML run order."""
     items = []
     buf = []
     seen_rids = set()
+    notes = notes or {}
 
     def flush_text():
         text = ''.join(buf)
@@ -110,6 +111,16 @@ def paragraph_stream_items(para, registry):
                 items.extend(images_from_run_ooxml(run_elem, para.part.rels, registry, seen_rids))
             elif name == 'oMath':
                 append_math(part, 'inline')
+            elif name in ('footnoteReference', 'endnoteReference'):
+                flush_text()
+                note_type = 'footnote' if name == 'footnoteReference' else 'endnote'
+                note_id = str(part.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}id') or '').strip()
+                items.append({
+                    'role': 'note_ref',
+                    'note_type': note_type,
+                    'source_id': note_id,
+                    'text': (notes.get(note_type) or {}).get(note_id, ''),
+                })
             elif name == 't':
                 if part.text:
                     buf.append(part.text)
@@ -138,9 +149,27 @@ def append_stream_run_group(section, runs, append_text_or_code_func=None, in_app
         return
     text = ''.join(str(run.get('text') or '') for run in runs).strip()
     math_items = []
+    note_items = []
     for run in runs:
         if run.get('type') == 'math':
             math_items.extend(run.get('math') or [])
+        if run.get('type') == 'note_ref':
+            note_items.append(run)
+    if note_items:
+        section['paragraphs'].append({
+            'role': 'rich_text',
+            'text': ''.join(str(run.get('text') or '') for run in runs if run.get('type') == 'text').strip(),
+            'runs': runs,
+            'notes': [
+                {
+                    'type': note.get('note_type') or 'footnote',
+                    'source_id': note.get('source_id') or '',
+                    'text': note.get('text') or '',
+                }
+                for note in note_items
+            ],
+        })
+        return
     if not math_items:
         if append_text_or_code_func is not None:
             append_text_or_code_func(section, text, in_appendix=in_appendix)

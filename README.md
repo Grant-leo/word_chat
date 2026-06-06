@@ -150,9 +150,9 @@ build_generated.py ─────────→ 最终论文.docx
 ## 公式、图片和 QA
 
 - Markdown 的 `$...$` / `$$...$$` 会转成 Word 原生 OOXML Math。
-- DOCX 中的文本公式会尽量识别并重建为可编辑公式。
+- DOCX 中的文本公式会尽量识别并重建为可编辑公式；DOCX 表格单元格里的 inline OMML 公式也会作为原生 Word 公式保留，脚注引用也会留在表格单元格内，不会压成普通字符串或丢到表格外。
 - 图片会复制到本次输出目录的 `figures/`，不会污染 `Inputs/`；Markdown 本地图片路径支持 `%20` 空格编码、`<带空格路径>` 包裹写法、文件名括号、可选图片 title（如 `![图](path "title")`）、复制链接时常见的 `?query` / `#fragment` 后缀，以及引用式图片 `![图][id]` + `[id]: path`、引用定义下一行 title、shortcut 引用式图片 `![图]` + `[图]: path`、HTML 图片标签 `<img src="path" alt="图">`、懒加载 `data-src` / `data-original`、`srcset` 首候选和 PNG/JPG data URI。本地图片只把 `.png` / `.jpg` / `.jpeg` 作为稳定可生成格式；GIF、WebP、SVG、无扩展名图片，或扩展名和真实格式不一致的图片，会用 `CONTENT_IMAGE_UNREADABLE` 提示重新导出普通 PNG/JPG/JPEG 后更新 Markdown 链接并重跑。内联 data URI 也会核对 MIME 声明和真实图片格式，`data:image/png` 里实际是 JPEG 这类标错内容会作为 `CONTENT_IMAGE_UNREADABLE` 阻断，不会按错误扩展名写入 `figures/`。Markdown 表格单元格里的图片会记录到 `table_cell_items`、标记 `markdown_table_cell` 并渲染在生成的 Word 表格单元格内，缺失时同样进入 QA；损坏、打不开、不支持的本地图片或坏 data URI 会用 `CONTENT_IMAGE_UNREADABLE` 提示重新导出普通 PNG/JPG；远程 `http://` / `https://` 图片不会自动下载，QA 会用 `CONTENT_IMAGE_REMOTE_UNSUPPORTED` 明确提示先下载到本地并改成相对路径后重跑。
-- DOCX 表格单元格里的正文图片会进入内容图片流并渲染；DOCX 图片关系如果是损坏字节、特殊嵌入对象、扩展名和真实格式不一致或不支持的图片格式，会以 `IMAGE_EXTRACT_FAILED` 阻断并提示用户把源图重新导出/插入为普通 PNG/JPG 后重跑，不会把坏图片写进 `figures/`；Markdown 表格单元格图片会保留在原表格单元格中渲染，避免被表格文本清洗静默丢掉或跑到表格外；源文件页眉/页脚图片属于 non-body 内容，会以 `NON_BODY_IMAGE_UNSUPPORTED` 提示用户移到正文或确认忽略。
+- DOCX 表格单元格里的正文图片会挂到对应 `table_cell_items` 并渲染在原 Word 表格单元格内；同一单元格段落里的“图片在文字前/后”顺序会按 OOXML run 顺序保留。二层嵌套表中的单元格图片也会保留在嵌套表内，QA 与 strict 预期计数会递归统计这些图片，避免“渲染成功但图片跑到表格外”或“QA 少数图片”的静默误排。DOCX 图片关系如果是损坏字节、特殊嵌入对象、扩展名和真实格式不一致或不支持的图片格式，会以 `IMAGE_EXTRACT_FAILED` 阻断并提示用户把源图重新导出/插入为普通 PNG/JPG 后重跑，不会把坏图片写进 `figures/`；Markdown 表格单元格图片也会保留在原表格单元格中渲染，缺失时同样进入 QA；源文件页眉/页脚图片属于 non-body 内容，会以 `NON_BODY_IMAGE_UNSUPPORTED` 提示用户移到正文或确认忽略。
 - Markdown 开头的 YAML/front matter、第一行 H1 题名支持 UTF-8 BOM，题名也支持 Setext `Title` + `===`；中文题名写入 `title_cn`，英文/非 CJK 题名写入 `title_en`，避免有效标题触发 `TITLE_MISSING`。
 - “图 1 展示了……”这类正文引用句会保持正文样式；“图 1 xxx 示意图”这类真实图注才按图注排版。
 - 缺图、损坏/不支持的本地 Markdown 图片、远程 Markdown 图片 URL、DOCX 图片关系读取失败、公式丢失、表格数量不匹配、占位符残留会进入 QA 报告；本地坏图、GIF/WebP/SVG 等不支持格式、扩展名不匹配或 data URI MIME/真实格式不一致会点名 `CONTENT_IMAGE_UNREADABLE` 并提示重新导出 PNG/JPG，DOCX 坏图片关系会点名 `IMAGE_EXTRACT_FAILED` 并提示重新导出/插入普通 PNG/JPG，远程图片会点名 `CONTENT_IMAGE_REMOTE_UNSUPPORTED`，不会误导用户等待自动下载。
@@ -179,12 +179,12 @@ build_generated.py ─────────→ 最终论文.docx
 
 ## 当前验证基线
 
-截至 2026-06-02：
+截至 2026-06-05：
 
-- 合成回归：`253 passed, 0 failed`
+- 合成回归：`297 passed, 0 failed`
 - 自动修复闭环回归：可修复 QA error、连续无改善停止、重建失败停止、needs_user_file 停止、strict/visual QA 依赖缺失、visual 参数保持、报告路径脱敏、停止后 `agent_summary` 汇总下一步均已覆盖
 - Agent-first 自动入口：`--agent-auto` 可自动扫描单候选模板/内容；多候选时预检报告会把每个候选转成可直接回复给 Agent 的句子，并在 Markdown/JSON 中列出 `Templates/` 与 `Inputs/` 的放置位置和支持格式；默认普通用户自动修复，并写出 `agent_summary.md/json`
-- 小白中断体验：交互取消、EOF、预检失败、生成脚本构建失败、QA/依赖失败都会给出下一步，`agent_summary.md/json` 会聚合结构/strict/visual QA 的问题码和具体修复动作，构建失败也会生成 `qa_report.md/json`、`qa_repair_plan.md/json` 和 `qa_fix_prompt.txt`；`qa_report.md/json` 顶部会点名首个结构 QA 问题码和动作；strict/visual 报告顶部下一步也会点名 leading issue code，并针对占位符、Word 域、PDF 页数无效、页面图片不可读等问题给出更具体的下一步；外部绝对路径输入不会生成失效的 basename 重跑命令，即使外部路径中也有同名 `Inputs` / `Templates` 目录，而会提示放入本项目 `Inputs/` / `Templates/` 后按文件名重跑；Markdown 图片路径已覆盖 `%20` 空格编码、`<带空格路径>` 本地写法、文件名括号、可选图片 title、本地图片 `?query` / `#fragment` 后缀、引用式图片 `![图][id]` + `[id]: path`、引用定义下一行 title、shortcut 引用式图片 `![图]` + `[图]: path`、HTML `<img src>`、HTML 懒加载 `data-src`、`srcset` 首候选、PNG/JPG data URI 图片和 Markdown 表格单元格图片，未定义图片引用会以 `CONTENT_IMAGE_MISSING` 阻断，损坏图片、GIF/WebP/SVG 等不支持本地格式、扩展名不匹配、坏 data URI 或 data URI MIME/真实格式不一致会以 `CONTENT_IMAGE_UNREADABLE` 提示重新导出 PNG/JPG，远程图片 URL 会以 `CONTENT_IMAGE_REMOTE_UNSUPPORTED` 提示下载到本地并改相对路径，UTF-8 BOM 开头的 YAML/front matter、Markdown H1、Setext 一级英文题名，以及“格式块 + 公式 + 缺图”的组合边界已覆盖；DOCX 表格单元格图、DOCX 损坏/不支持图片关系的 `IMAGE_EXTRACT_FAILED` 阻断、Markdown 表格单元格图原位渲染、页眉/页脚 non-body 图和 `内容提取.md` 图片摘要也有回归覆盖，strict QA 已覆盖默认正文段落出现在第一个显式标题前的场景，visual/WPS 样张对比会优先抽封面、目录/正文锚点和图表公式风险页
+- 小白中断体验：交互取消、EOF、预检失败、生成脚本构建失败、QA/依赖失败都会给出下一步，`agent_summary.md/json` 会聚合结构/strict/visual QA 的问题码和具体修复动作，构建失败也会生成 `qa_report.md/json`、`qa_repair_plan.md/json` 和 `qa_fix_prompt.txt`；`qa_report.md/json` 顶部会点名首个结构 QA 问题码和动作；strict/visual 报告顶部下一步也会点名 leading issue code，并针对占位符、Word 域、PDF 页数无效、页面图片不可读等问题给出更具体的下一步；外部绝对路径输入不会生成失效的 basename 重跑命令，即使外部路径中也有同名 `Inputs` / `Templates` 目录，而会提示放入本项目 `Inputs/` / `Templates/` 后按文件名重跑；Markdown 图片路径已覆盖 `%20` 空格编码、`<带空格路径>` 本地写法、文件名括号、可选图片 title、本地图片 `?query` / `#fragment` 后缀、引用式图片 `![图][id]` + `[id]: path`、引用定义下一行 title、shortcut 引用式图片 `![图]` + `[图]: path`、HTML `<img src>`、HTML 懒加载 `data-src`、`srcset` 首候选、PNG/JPG data URI 图片和 Markdown 表格单元格图片，未定义图片引用会以 `CONTENT_IMAGE_MISSING` 阻断，损坏图片、GIF/WebP/SVG 等不支持本地格式、扩展名不匹配、坏 data URI 或 data URI MIME/真实格式不一致会以 `CONTENT_IMAGE_UNREADABLE` 提示重新导出 PNG/JPG，远程图片 URL 会以 `CONTENT_IMAGE_REMOTE_UNSUPPORTED` 提示下载到本地并改相对路径，UTF-8 BOM 开头的 YAML/front matter、Markdown H1、Setext 一级英文题名，以及“格式块 + 公式 + 缺图”的组合边界已覆盖；DOCX 表格单元格图和二层嵌套表内图片原位渲染、同段落图文 run 顺序保留、DOCX 表格单元格 inline OMML 公式原生渲染、DOCX 表格单元格脚注引用原位渲染、QA/strict 图片计数递归覆盖、DOCX 损坏/不支持图片关系的 `IMAGE_EXTRACT_FAILED` 阻断、Markdown 表格单元格图原位渲染、页眉/页脚 non-body 图、正文表格合并/列宽/行高/重复表头/单元格边距/垂直对齐/显式边框/二层嵌套表保真、嵌套表前后段落顺序保真、三层及以上嵌套风险审计、异常合并网格审计、横向宽表风险计数、嵌套宽表去重、`gridBefore` 纵向合并误报防护和 `gridBefore` 纵向合并解析保真、`内容提取.md` 图片摘要也有回归覆盖，strict QA 已覆盖默认正文段落出现在第一个显式标题前的场景，visual/WPS 样张对比会优先抽封面、目录/正文锚点和图表公式风险页
 - 模板说明清理：DOCX 模板里的“格式说明”、封面字段说明、源目录样例和 TOC 页码样例不会再进入最终论文；真实样例 `模版.docx` + `样例_测试内容.docx` 已通过 developer visual 端到端验证，结构 QA、strict conformance、visual QA 均为 `0` error / `0` warning。
 - 后置章节等价：结构 QA 现在把 `Acknowledgements` / `Acknowledgment` / `致谢`、`References` / `参考文献`、`Appendix` / `附录` 这类语义等价标题视为已覆盖，避免让用户为中英文模板标题差异处理误报的 `CONTENT_HEADING_MISSING`。
 - QA JSON 契约：结构 `qa_report.json`、strict `conformance_report.json`、visual `visual_report.json` 都显式写入 `status`（`passed` / `passed_with_warnings` / `failed`）和 `result_label`（例如 `通过但有警告`）；依赖缺失、QA 崩溃、构建失败、提取验证失败等 fallback 报告也必须写同样字段。流水线会对结构、strict、visual 三类 QA 报告都运行契约检查，包括依赖缺失和 QA 崩溃 fallback 报告，并在终端报告缺失字段或与 `passed` / warning 状态不一致的字段，`agent_summary.json` 的每个报告条目也同步暴露该状态，避免界面或 Agent 只靠 `passed` 猜测。
@@ -226,6 +226,31 @@ Report where the final DOCX is, whether automatic QA converged, what was repaire
 ```
 
 Outputs are written to `Outputs/<date_content>/`. Read `agent_summary.md` first, then use `repair_loop_report.md`, `qa_report.md`, and `qa_repair_plan.md` to inspect details.
+
+## Private Real-Data Hardening
+
+Private corpora stay local and ignored. To inventory a private pool such as
+`Templates/20261/`, run:
+
+```powershell
+python Paper_Project/Program/pipeline/private_corpus_audit.py Templates/20261
+```
+
+This writes only local reports under `Outputs/_private_realdata_audit/`:
+`inventory.json`, `inventory.md`, and `review_queue.json`. The audit records
+structural features and issue codes, not body text. Do not commit these reports
+or the source documents.
+
+QA-enabled runs now also write `comparison_assessment.json/md`, which records
+whether the run is `FAILED_AUTOMATIC`, `PASSED_WITH_REVIEW`,
+`PASSED_MACHINE`, and so on. Warning-only runs still require review; they are
+not treated as perfect delivery.
+
+Unsupported explicit inputs such as `.doc`, `.wps`, `.rar`, `.lnk`, and
+`.xlsx` stop at preflight with a concrete next step. Save legacy Word files as
+DOCX manually before adding them to a test matrix. Golden visual baselines are
+not created during compare-only runs; use `--update-golden` only after manual
+approval.
 
 ## License
 

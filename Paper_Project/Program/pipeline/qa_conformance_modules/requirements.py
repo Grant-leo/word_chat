@@ -40,6 +40,32 @@ def _profile_from_format(fmt: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 
 def _content_counts(content: Dict[str, Any]) -> Dict[str, int]:
+    def count_tables(item: Any) -> int:
+        if not isinstance(item, dict):
+            return 0
+        total = 1 if item.get("table_rows") and item.get("role") != "code" else 0
+        for cell in item.get("table_cell_items") or []:
+            if not isinstance(cell, dict):
+                continue
+            for nested in cell.get("items") or []:
+                total += count_tables(nested)
+        return total
+
+    def image_names_from_item(item: Any) -> list[str]:
+        if not isinstance(item, dict):
+            return []
+        names = []
+        if item.get("role") in {"image", "figure"} or item.get("image") or item.get("filename") or item.get("asset"):
+            name = str(item.get("image") or item.get("filename") or item.get("asset") or "")
+            if name:
+                names.append(name)
+        for cell in item.get("table_cell_items") or []:
+            if not isinstance(cell, dict):
+                continue
+            for nested in cell.get("items") or []:
+                names.extend(image_names_from_item(nested))
+        return names
+
     inline_images = 0
     inline_names = []
     section_images = 0
@@ -53,20 +79,11 @@ def _content_counts(content: Dict[str, Any]) -> Dict[str, int]:
         for item in sec.get("paragraphs") or []:
             if not isinstance(item, dict):
                 continue
-            item_image_names = []
-            if item.get("role") in {"image", "figure"} or item.get("image") or item.get("filename"):
-                item_image_names.append(str(item.get("image") or item.get("filename") or item.get("asset") or ""))
-            for cell in item.get("table_cell_items") or []:
-                if not isinstance(cell, dict):
-                    continue
-                for nested in cell.get("items") or []:
-                    if isinstance(nested, dict) and (nested.get("role") in {"image", "figure"} or nested.get("image") or nested.get("filename")):
-                        item_image_names.append(str(nested.get("image") or nested.get("filename") or nested.get("asset") or ""))
+            item_image_names = image_names_from_item(item)
             if item_image_names:
                 inline_images += len(item_image_names)
                 inline_names.extend(name for name in item_image_names if name)
-            if item.get("table_rows") and item.get("role") != "code":
-                tables += 1
+            tables += count_tables(item)
             math_items = item.get("math") or []
             if math_items:
                 formulas += len(math_items)

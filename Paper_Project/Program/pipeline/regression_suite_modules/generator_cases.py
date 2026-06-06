@@ -1,7 +1,11 @@
 ﻿"""Script generator and generated-runtime regression cases."""
 from __future__ import annotations
 
+import json
 import re
+import zipfile
+from typing import List
+from xml.etree import ElementTree as ET
 
 from docx import Document
 from qa_conformance import check_conformance
@@ -16,6 +20,16 @@ from script_generator import (
     _infer_template_rules,
     _normalize_numbered_section_order,
 )
+
+W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+
+
+def _first_property_child_names(xml: str, prop_name: str) -> List[str]:
+    root = ET.fromstring(xml.encode("utf-8"))
+    prop = root.find(f".//{W_NS}{prop_name}")
+    if prop is None:
+        return []
+    return [str(child.tag).rsplit("}", 1)[-1] for child in list(prop)]
 
 
 @case
@@ -140,6 +154,66 @@ def script_generator_keeps_figure_reference_prose_as_body() -> None:
     conf = check_conformance(str(result["work"]), mode="developer", output_docx_name="out.docx")
     codes = [item["code"] for item in conf["issues"]]
     assert_true("STYLE_MISMATCH" not in codes, f"figure reference prose was rendered as caption: {conf['issues']}")
+
+
+@case
+def script_generator_renders_native_footnotes_from_note_runs() -> None:
+    note_text = "Generated native footnote text."
+    content = base_content(
+        [
+            {
+                "role": "rich_text",
+                "text": "A sentence with a footnote.",
+                "runs": [
+                    {"type": "text", "text": "A sentence with a footnote"},
+                    {"type": "note_ref", "note_type": "footnote", "source_id": "2", "text": note_text},
+                    {"type": "text", "text": "."},
+                ],
+                "notes": [{"type": "footnote", "source_id": "2", "text": note_text}],
+            }
+        ]
+    )
+    content["_meta"]["footnote_references_extracted"] = 1
+    content["_meta"]["footnote_definitions_extracted"] = 1
+    result = run_generated_case("native_footnote_render", content)
+    with zipfile.ZipFile(result["work"] / "out.docx") as zf:
+        footnotes_xml = zf.read("word/footnotes.xml").decode("utf-8", errors="replace")
+    manifest = json.loads((result["work"] / "build_manifest.json").read_text(encoding="utf-8"))
+
+    assert_true("<w:footnoteReference" in result["xml"], f"document body has no footnoteReference: {result['xml'][:500]}")
+    assert_true(note_text in footnotes_xml, f"footnote text missing from footnotes.xml: {footnotes_xml}")
+    assert_true(manifest["counts"].get("footnote_references_rendered") == 1, f"footnote render count missing: {manifest}")
+    assert_true(manifest["counts"].get("footnote_definitions_rendered") == 1, f"footnote definition count missing: {manifest}")
+
+
+@case
+def script_generator_renders_native_endnotes_from_note_runs() -> None:
+    note_text = "Generated native endnote text."
+    content = base_content(
+        [
+            {
+                "role": "rich_text",
+                "text": "A sentence with an endnote.",
+                "runs": [
+                    {"type": "text", "text": "A sentence with an endnote"},
+                    {"type": "note_ref", "note_type": "endnote", "source_id": "5", "text": note_text},
+                    {"type": "text", "text": "."},
+                ],
+                "notes": [{"type": "endnote", "source_id": "5", "text": note_text}],
+            }
+        ]
+    )
+    content["_meta"]["endnote_references_extracted"] = 1
+    content["_meta"]["endnote_definitions_extracted"] = 1
+    result = run_generated_case("native_endnote_render", content)
+    with zipfile.ZipFile(result["work"] / "out.docx") as zf:
+        endnotes_xml = zf.read("word/endnotes.xml").decode("utf-8", errors="replace")
+    manifest = json.loads((result["work"] / "build_manifest.json").read_text(encoding="utf-8"))
+
+    assert_true("<w:endnoteReference" in result["xml"], f"document body has no endnoteReference: {result['xml'][:500]}")
+    assert_true(note_text in endnotes_xml, f"endnote text missing from endnotes.xml: {endnotes_xml}")
+    assert_true(manifest["counts"].get("endnote_references_rendered") == 1, f"endnote render count missing: {manifest}")
+    assert_true(manifest["counts"].get("endnote_definitions_rendered") == 1, f"endnote definition count missing: {manifest}")
 
 
 @case
@@ -503,6 +577,361 @@ def script_generator_renders_backmatter_rich_items() -> None:
     assert_true(counts["content_tables_rendered"] == 1, f"appendix table was not rendered: {counts}")
     assert_true(counts["content_formulas_rendered"] == 1, f"appendix formula was not rendered: {counts}")
     assert_true(counts["content_images_rendered"] == 1, f"appendix image was not rendered: {counts}")
+
+
+@case
+def script_generator_renders_merged_table_cells() -> None:
+    content = base_content(
+        [
+            {
+                "role": "table",
+                "table_rows": [
+                    ["Merged header", "", "Score"],
+                    ["Group A", "Alpha", "1"],
+                    ["", "Beta", "2"],
+                ],
+                "table_merges": [
+                    {"row": 0, "col": 0, "rowspan": 1, "colspan": 2},
+                    {"row": 1, "col": 0, "rowspan": 2, "colspan": 1},
+                ],
+            }
+        ],
+        meta_tables=1,
+    )
+    result = run_generated_case("merged_table_cells", content)
+    xml = result["xml"]
+    assert_true(re.search(r"<w:gridSpan\b[^>]*/?w:val=\"2\"", xml), "horizontal merge gridSpan was not rendered")
+    assert_true(re.search(r"<w:vMerge\b[^>]*/?w:val=\"restart\"", xml), "vertical merge restart was not rendered")
+    assert_true(re.search(r"<w:vMerge\s*/>", xml), "vertical merge continuation was not rendered")
+    counts = result["manifest"]["counts"]
+    assert_true(counts.get("content_table_merges_rendered") == 2, f"table merge render count was not recorded: {counts}")
+
+
+@case
+def script_generator_renders_table_column_widths() -> None:
+    content = base_content(
+        [
+            {
+                "role": "table",
+                "table_rows": [
+                    ["Metric", "Description", "Value"],
+                    ["A", "Longer explanatory text", "1"],
+                ],
+                "table_col_widths_twips": [1200, 2800, 1600],
+            }
+        ],
+        meta_tables=1,
+    )
+    result = run_generated_case("table_column_widths", content)
+    xml = result["xml"]
+    assert_true(re.search(r"<w:tblLayout\b[^>]*/?w:type=\"fixed\"", xml), "fixed table layout was not rendered")
+    for width in ("1200", "2800", "1600"):
+        assert_true(re.search(rf"<w:gridCol\b[^>]*/?w:w=\"{width}\"", xml), f"gridCol width {width} was not rendered")
+        assert_true(re.search(rf"<w:tcW\b[^>]*/?w:w=\"{width}\"", xml), f"cell tcW width {width} was not rendered")
+    counts = result["manifest"]["counts"]
+    assert_true(counts.get("content_table_widths_rendered") == 1, f"table width render count was not recorded: {counts}")
+
+
+@case
+def script_generator_renders_table_layout_details() -> None:
+    content = base_content(
+        [
+            {
+                "role": "table",
+                "table_rows": [
+                    ["Header A", "Header B"],
+                    ["Body A", "Body B"],
+                ],
+                "table_row_heights_twips": [{"val": 480, "rule": "exact"}, {"val": 360, "rule": "atLeast"}],
+                "table_repeat_header_rows": 2,
+                "table_cell_margins_twips": {"top": 80, "left": 120, "bottom": 90, "right": 140},
+                "table_cell_overrides": [
+                    {
+                        "row": 0,
+                        "col": 0,
+                        "v_align": "top",
+                        "margins_twips": {"top": 40, "left": 60, "bottom": 40, "right": 60},
+                    }
+                ],
+            }
+        ],
+        meta_tables=1,
+    )
+    result = run_generated_case("table_layout_details", content)
+    xml = result["xml"]
+    assert_true(
+        re.search(r"<w:trHeight\b(?=[^>]*w:val=\"480\")(?=[^>]*w:hRule=\"exact\")", xml),
+        "exact row height was not rendered",
+    )
+    assert_true(
+        re.search(r"<w:trHeight\b(?=[^>]*w:val=\"360\")(?=[^>]*w:hRule=\"atLeast\")", xml),
+        "atLeast row height was not rendered",
+    )
+    assert_true(len(re.findall(r"<w:tblHeader\b", xml)) >= 2, "repeat header rows were not rendered")
+    for side, width in {"top": "80", "left": "120", "bottom": "90", "right": "140"}.items():
+        assert_true(
+            re.search(rf"<w:{side}\b(?=[^>]*w:w=\"{width}\")(?=[^>]*w:type=\"dxa\")", xml),
+            f"default table cell margin {side}={width} was not rendered",
+        )
+    assert_true(re.search(r"<w:vAlign\b[^>]*w:val=\"top\"", xml), "cell vertical alignment override was not rendered")
+    for side, width in {"top": "40", "left": "60", "bottom": "40", "right": "60"}.items():
+        assert_true(
+            re.search(rf"<w:{side}\b(?=[^>]*w:w=\"{width}\")(?=[^>]*w:type=\"dxa\")", xml),
+            f"cell-specific margin {side}={width} was not rendered",
+        )
+    counts = result["manifest"]["counts"]
+    assert_true(counts.get("content_table_row_heights_rendered") == 1, f"row height count missing: {counts}")
+    assert_true(counts.get("content_table_repeat_header_rows_rendered") == 2, f"repeat-header count missing: {counts}")
+    assert_true(counts.get("content_table_cell_margins_rendered") == 1, f"default margin count missing: {counts}")
+    assert_true(counts.get("content_table_cell_overrides_rendered") == 1, f"cell override count missing: {counts}")
+
+
+@case
+def script_generator_renders_table_border_details() -> None:
+    content = base_content(
+        [
+            {
+                "role": "table",
+                "table_rows": [
+                    ["Header A", "Header B"],
+                    ["Body A", "Body B"],
+                ],
+                "table_col_widths_twips": [1600, 2400],
+                "table_borders": {
+                    "top": {"val": "double", "sz": "12", "color": "4472C4", "space": "0"},
+                    "insideH": {"val": "single", "sz": "4", "color": "808080", "space": "0"},
+                },
+                "table_cell_margins_twips": {"top": 80, "left": 120, "bottom": 90, "right": 140},
+                "table_cell_overrides": [
+                    {
+                        "row": 0,
+                        "col": 0,
+                        "v_align": "top",
+                        "margins_twips": {"top": 40, "left": 60, "bottom": 40, "right": 60},
+                        "borders": {
+                            "bottom": {"val": "dashed", "sz": "6", "color": "C00000", "space": "0"},
+                            "right": {"val": "nil", "sz": "0", "color": "000000", "space": "0"},
+                        },
+                    }
+                ],
+            }
+        ],
+        meta_tables=1,
+    )
+    result = run_generated_case("table_border_details", content)
+    xml = result["xml"]
+    assert_true(
+        re.search(r"<w:tblBorders>.*<w:top\b(?=[^>]*w:val=\"double\")(?=[^>]*w:sz=\"12\")(?=[^>]*w:color=\"4472C4\")", xml, re.S),
+        "table top border was not rendered",
+    )
+    assert_true(
+        re.search(r"<w:insideH\b(?=[^>]*w:val=\"single\")(?=[^>]*w:sz=\"4\")(?=[^>]*w:color=\"808080\")", xml),
+        "table insideH border was not rendered",
+    )
+    assert_true(
+        re.search(r"<w:bottom\b(?=[^>]*w:val=\"dashed\")(?=[^>]*w:sz=\"6\")(?=[^>]*w:color=\"C00000\")", xml),
+        "cell bottom border was not rendered",
+    )
+    assert_true(
+        re.search(r"<w:right\b(?=[^>]*w:val=\"nil\")(?=[^>]*w:sz=\"0\")(?=[^>]*w:color=\"000000\")", xml),
+        "cell nil right border was not rendered",
+    )
+    assert_true(
+        len(re.findall(r"<w:tcBorders>", xml)) == 1,
+        "default three-line borders should not overwrite explicit source borders",
+    )
+    tbl_pr_children = _first_property_child_names(xml, "tblPr")
+    for child_name in ("tblBorders", "tblLayout", "tblCellMar"):
+        assert_true(child_name in tbl_pr_children, f"{child_name} was missing from tblPr: {tbl_pr_children}")
+    assert_true(
+        tbl_pr_children.index("tblBorders") < tbl_pr_children.index("tblLayout") < tbl_pr_children.index("tblCellMar"),
+        f"table property order is invalid: {tbl_pr_children}",
+    )
+    tc_pr_children = _first_property_child_names(xml, "tcPr")
+    for child_name in ("tcW", "tcBorders", "tcMar", "vAlign"):
+        assert_true(child_name in tc_pr_children, f"{child_name} was missing from tcPr: {tc_pr_children}")
+    assert_true(
+        tc_pr_children.index("tcW") < tc_pr_children.index("tcBorders") < tc_pr_children.index("tcMar") < tc_pr_children.index("vAlign"),
+        f"cell property order is invalid: {tc_pr_children}",
+    )
+    counts = result["manifest"]["counts"]
+    assert_true(counts.get("content_table_borders_rendered") == 1, f"table border count missing: {counts}")
+    assert_true(counts.get("content_table_cell_borders_rendered") == 1, f"cell border count missing: {counts}")
+
+
+@case
+def script_generator_keeps_borders_on_merged_table_cells() -> None:
+    content = base_content(
+        [
+            {
+                "role": "table",
+                "table_rows": [
+                    ["Merged header", "", "Score"],
+                    ["Body A", "Body B", "1"],
+                ],
+                "table_merges": [
+                    {"row": 0, "col": 0, "rowspan": 1, "colspan": 2},
+                ],
+                "table_cell_overrides": [
+                    {
+                        "row": 0,
+                        "col": 0,
+                        "borders": {
+                            "top": {"val": "double", "sz": "12", "color": "4472C4"},
+                            "bottom": {"val": "dashed", "sz": "6", "color": "C00000"},
+                        },
+                    }
+                ],
+            }
+        ],
+        meta_tables=1,
+    )
+    result = run_generated_case("merged_table_cell_borders", content)
+    xml = result["xml"]
+    assert_true(re.search(r"<w:gridSpan\b[^>]*/?w:val=\"2\"", xml), "horizontal merge gridSpan was not rendered")
+    assert_true(
+        re.search(r"<w:top\b(?=[^>]*w:val=\"double\")(?=[^>]*w:sz=\"12\")(?=[^>]*w:color=\"4472C4\")", xml),
+        "merged cell top border was lost during merge",
+    )
+    assert_true(
+        re.search(r"<w:bottom\b(?=[^>]*w:val=\"dashed\")(?=[^>]*w:sz=\"6\")(?=[^>]*w:color=\"C00000\")", xml),
+        "merged cell bottom border was lost during merge",
+    )
+
+
+@case
+def script_generator_cell_borders_do_not_trigger_default_table_borders() -> None:
+    content = base_content(
+        [
+            {
+                "role": "table",
+                "table_rows": [
+                    ["Header A", "Header B"],
+                    ["Body A", "Body B"],
+                ],
+                "table_cell_overrides": [
+                    {
+                        "row": 0,
+                        "col": 0,
+                        "borders": {
+                            "bottom": {"val": "dashed", "sz": "6", "color": "C00000"},
+                        },
+                    }
+                ],
+            }
+        ],
+        meta_tables=1,
+    )
+    result = run_generated_case("cell_border_overrides_default_table", content)
+    xml = result["xml"]
+    assert_true(
+        len(re.findall(r"<w:tcBorders>", xml)) == 1,
+        "cell-level source borders should prevent generated default three-line borders",
+    )
+    assert_true(
+        re.search(r"<w:bottom\b(?=[^>]*w:val=\"dashed\")(?=[^>]*w:sz=\"6\")(?=[^>]*w:color=\"C00000\")", xml),
+        "explicit cell bottom border was not rendered",
+    )
+    assert_true(
+        not re.search(r"<w:top\b(?=[^>]*w:val=\"single\")(?=[^>]*w:sz=\"12\")(?=[^>]*w:color=\"000000\")", xml),
+        "generated default table top border polluted a source cell-border-only table",
+    )
+
+
+@case
+def script_generator_renders_two_level_nested_table_inside_parent_cell() -> None:
+    img_src = new_workdir("nested_table_cell_image_src")
+    write_sample_png(img_src / "top.png", width=180, height=120)
+    write_sample_png(img_src / "nested.png", width=160, height=120)
+    content = base_content(
+        [
+            {
+                "role": "image",
+                "image": "top.png",
+                "caption": "Fig. 1 Top-level image",
+            },
+            {
+                "role": "table",
+                "table_rows": [
+                    ["Outer A", "Outer B"],
+                    ["Nested before\nNested after", "Outer D"],
+                ],
+                "table_cell_items": [
+                    {
+                        "row": 1,
+                        "col": 0,
+                        "items": [
+                            {
+                                "role": "table",
+                                "location": "nested_table_cell",
+                                "after_paragraph_index": 1,
+                                "table_rows": [["Nested A", "Nested B"], ["Nested C", "Nested D"]],
+                                "table_cell_items": [
+                                    {
+                                        "row": 1,
+                                        "col": 1,
+                                        "items": [
+                                            {
+                                                "role": "table",
+                                                "location": "nested_table_cell",
+                                                "table_rows": [["Deeper A", "Deeper B"]],
+                                                "table_cell_items": [
+                                                    {
+                                                        "row": 0,
+                                                        "col": 1,
+                                                        "items": [
+                                                            {
+                                                                "role": "image",
+                                                                "image": "nested.png",
+                                                                "location": "table_cell",
+                                                                "after_paragraph_index": 1,
+                                                            }
+                                                        ],
+                                                    }
+                                                ],
+                                            }
+                                        ],
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        meta_tables=3,
+    )
+    content["_meta"]["images_extracted"] = 2
+    content["_meta"]["images_dir"] = str(img_src)
+    requirements = build_requirements(base_format(), content)
+    assert_true(
+        requirements.get("expected_counts", {}).get("images") == 2,
+        f"nested table-cell image was not included in expected image counts: {requirements}",
+    )
+    result = run_generated_case("two_level_nested_table_inside_cell", content)
+    xml = result["xml"]
+    assert_true(len(re.findall(r"<w:tbl>", xml)) >= 3, "nested tables were not rendered as Word tables")
+    assert_true("Nested A" in xml and "Nested D" in xml, "nested table text was missing from generated XML")
+    assert_true("Deeper A" in xml and "Deeper B" in xml, "second-level nested table text was missing from generated XML")
+    assert_true(xml.count("<w:drawing>") == 2, "top-level plus nested table-cell images should render exactly once each")
+    assert_true(
+        xml.find("Nested before") < xml.find("Nested A") < xml.find("Nested after"),
+        "nested table was not rendered between the parent cell's before/after paragraphs",
+    )
+    assert_true(
+        re.search(r"<w:tc\b[\s\S]*Nested before[\s\S]*<w:tbl>[\s\S]*Nested A[\s\S]*Nested D[\s\S]*<w:tbl>[\s\S]*Deeper A[\s\S]*Deeper B[\s\S]*</w:tbl>[\s\S]*Nested after", xml),
+        "nested table was not rendered inside the parent cell in source order",
+    )
+    table_xmls = re.findall(r"<w:tbl\b.*?</w:tbl>", xml, flags=re.S)
+    table_drawings = sum(table_xml.count("<w:drawing>") for table_xml in table_xmls)
+    assert_true(table_drawings >= 1, "nested table-cell image rendered outside generated Word tables")
+    assert_true(
+        re.search(r"Deeper B[\s\S]*<w:drawing>", xml),
+        "nested table-cell image was not rendered after its source cell text",
+    )
+    counts = result["manifest"]["counts"]
+    assert_true(counts.get("content_nested_tables_rendered") == 2, f"nested table render count missing: {counts}")
+    assert_true(counts.get("content_images_rendered") == 2, f"nested table-cell image render count missing: {counts}")
 
 
 @case
@@ -878,6 +1307,23 @@ def no_lof_lot_when_no_captions() -> None:
 
 
 @case
+def lot_not_generated_for_caption_like_heading_without_table() -> None:
+    content = base_content(["Intro body."])
+    content["sections"].append({
+        "heading": "Table 1 Data sources and economic meaning",
+        "level": 1,
+        "role": "body",
+        "paragraphs": ["Only prose under a caption-like heading, no table object."],
+        "images": [],
+    })
+    content["_meta"]["tables_count"] = 0
+    result = run_generated_case("lot_heading_without_table", content)
+    doc = Document(result["work"] / "out.docx")
+    compact_texts = {"".join((p.text or "").split()) for p in doc.paragraphs}
+    assert_true("表清单" not in compact_texts, "LOT should not be generated without a real table")
+
+
+@case
 def lof_lot_both_generated_when_both_present() -> None:
     img_dir = new_workdir("lof_lot_both_dir")
     write_sample_png(img_dir / "fig1.png")
@@ -935,3 +1381,32 @@ def lof_lot_paragraphs_excluded_from_conformance() -> None:
     assert_true("STYLE_MISMATCH" not in codes,
                 f"conformance should not flag LOF lines as style mismatches: {conf.get('issues', [])}")
 
+
+@case
+def conformance_does_not_satisfy_caption_from_lof_lot_tab_line() -> None:
+    work = new_workdir("lof_caption_missing_not_satisfied_by_list")
+    content = base_content([
+        {"role": "figure_caption", "text": "Fig. 1 Missing body caption"},
+        "Body paragraph remains.",
+    ])
+    content["sections"][0]["heading"] = "正文"
+    write_json(work / "format.json", base_format())
+    write_json(work / "content.json", content)
+    write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {}})
+    doc = Document()
+    doc.add_paragraph("Synthetic Thesis")
+    doc.add_paragraph("目  录")
+    list_line = doc.add_paragraph()
+    list_line.add_run("Fig. 1 Missing body caption")
+    list_line.add_run("\t")
+    list_line.add_run("1")
+    doc.add_paragraph("Body paragraph remains.")
+    doc.add_paragraph("参考文献")
+    doc.add_paragraph("[1] Synthetic reference.")
+    doc.save(work / "out.docx")
+    conf = check_conformance(str(work), mode="developer", output_docx_name="out.docx")
+    codes = [item["code"] for item in conf.get("issues", [])]
+    assert_true(
+        "CONTENT_PARAGRAPH_MISSING" in codes,
+        f"conformance should not treat LOF/LOT list lines as body captions: {conf.get('issues', [])}",
+    )

@@ -157,7 +157,12 @@ def collect_table_entries():
             isinstance(p, dict) and p.get('role') == 'table_caption'
             for p in (sec.get('paragraphs') or [])
         )
-        if not has_inline_table_caption:
+        has_table_items = any(
+            isinstance(p, dict) and p.get('table_rows') and p.get('role') != 'code'
+            for p in (sec.get('paragraphs') or [])
+        )
+        has_section_tables = bool(sec.get('tables') or sec.get('table_rows'))
+        if not has_inline_table_caption and (has_table_items or has_section_tables):
             h = (sec.get('heading') or '').strip()
             if is_table_caption_text(h):
                 entries.append({'text': normalize_caption(h)})

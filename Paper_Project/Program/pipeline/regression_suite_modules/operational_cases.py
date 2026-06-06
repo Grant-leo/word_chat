@@ -7,7 +7,9 @@ import os
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 from docx import Document
 from privacy import sanitize_value
@@ -15,6 +17,8 @@ from qa_checker import check_output
 from regression_suite_modules.harness import assert_true, base_content, base_format, case, new_workdir, write_json
 
 PIPELINE_DIR = Path(__file__).resolve().parents[1]
+W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+ET.register_namespace("w", "http://schemas.openxmlformats.org/wordprocessingml/2006/main")
 
 
 @case
@@ -29,6 +33,382 @@ def privacy_sanitizes_absolute_paths() -> None:
     assert_true(r"X:\workspace" not in text and "project" not in text, "project path leaked")
     assert_true("<PROJECT>" in text and "<TEMP>" in text, "path labels missing")
     assert_true("Missing image: <PROJECT>/Inputs/private/figure.png" in text, "embedded absolute path was not sanitized")
+
+
+@case
+def private_corpus_inventory_classifies_realdata_without_content_leakage() -> None:
+    from private_corpus_audit import audit_corpus
+
+    work = new_workdir("private_corpus_inventory")
+    corpus = work / "corpus"
+    corpus.mkdir()
+    doc = Document()
+    doc.add_paragraph("1 Introduction")
+    doc.add_paragraph("Synthetic body text for inventory classification.")
+    doc.save(corpus / "paper.docx")
+    (corpus / "legacy.doc").write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1legacy")
+    (corpus / "archive.rar").write_bytes(b"Rar!\x1a\x07\x00")
+
+    result = audit_corpus(corpus, output_dir=work / "audit")
+    categories = {item["relative_path"]: item["classification"] for item in result["items"]}
+    assert_true(categories["paper.docx"] in {"content_candidate", "reference_candidate", "template_candidate"}, "valid DOCX was not classified as a document candidate")
+    assert_true(categories["legacy.doc"] == "unsupported_or_conversion_needed", "legacy .doc should be isolated")
+    assert_true(categories["archive.rar"] == "attachment_or_nonpaper", "archive should not enter document matrix")
+    assert_true((work / "audit" / "inventory.json").exists(), "inventory.json was not written")
+    assert_true((work / "audit" / "inventory.md").exists(), "inventory.md was not written")
+    assert_true((work / "audit" / "review_queue.json").exists(), "review_queue.json was not written")
+    report_text = (work / "audit" / "inventory.json").read_text(encoding="utf-8")
+    assert_true("Synthetic body text" not in report_text, "private inventory leaked body text")
+
+
+@case
+def source_audit_detects_high_risk_docx_structures() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_structures")
+    path = work / "risky.docx"
+    doc = Document()
+    doc.add_paragraph("Body text")
+    doc.save(path)
+    with zipfile.ZipFile(path, "a") as zf:
+        xml = zf.read("word/document.xml").decode("utf-8")
+        xml = xml.replace(
+            "</w:body>",
+            (
+                "<w:p><w:r><w:pict><v:shape xmlns:v=\"urn:schemas-microsoft-com:vml\">"
+                "<v:textbox><w:txbxContent><w:p><w:r><w:t>Box</w:t></w:r></w:p></w:txbxContent>"
+                "</v:textbox></v:shape></w:pict></w:r></w:p>"
+                "<w:sdt><w:sdtContent><w:p><w:r><w:t>Control</w:t></w:r></w:p></w:sdtContent></w:sdt>"
+                "<w:p><w:r><w:ins><w:t>Inserted</w:t></w:ins></w:r></w:p>"
+                "<w:sectPr><w:pgSz w:w=\"16838\" w:h=\"11906\" w:orient=\"landscape\"/></w:sectPr>"
+                "</w:body>"
+            ),
+        )
+        zf.writestr("word/document.xml", xml)
+        zf.writestr("word/footnotes.xml", "<w:footnotes xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:footnote w:id=\"2\"><w:p><w:r><w:t>Footnote</w:t></w:r></w:p></w:footnote></w:footnotes>")
+        zf.writestr("word/endnotes.xml", "<w:endnotes xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:endnote w:id=\"2\"><w:p><w:r><w:t>Endnote</w:t></w:r></w:p></w:endnote></w:endnotes>")
+        zf.writestr("word/comments.xml", "<w:comments xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:comment w:id=\"0\"><w:p><w:r><w:t>Comment</w:t></w:r></w:p></w:comment></w:comments>")
+        zf.writestr("word/embeddings/oleObject1.bin", b"ole")
+
+    audit = audit_docx_source(path)
+    codes = {issue["code"] for issue in audit["issues"]}
+    expected = {
+        "SOURCE_TEXTBOX_UNSUPPORTED",
+        "SOURCE_FOOTNOTE_UNSUPPORTED",
+        "SOURCE_ENDNOTE_UNSUPPORTED",
+        "COMMENTS_PRESENT",
+        "CONTENT_CONTROL_UNSUPPORTED",
+        "TRACKED_CHANGES_PRESENT",
+        "SOURCE_EMBEDDED_OBJECT_UNSUPPORTED",
+        "SOURCE_LANDSCAPE_SECTION_UNSUPPORTED",
+    }
+    assert_true(expected <= codes, f"source audit missed high-risk structures: {codes}")
+
+
+@case
+def complex_table_and_image_format_boundaries_are_structural_qa_visible() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_table_image")
+    path = work / "table_image.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).merge(table.cell(0, 1))
+    doc.save(path)
+    with zipfile.ZipFile(path, "a") as zf:
+        zf.writestr("word/media/image99.wmf", b"wmf")
+
+    audit = audit_docx_source(path)
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert_true("TABLE_MERGE_UNSUPPORTED" in codes or "COMPLEX_TABLE_UNSUPPORTED" in codes, f"merged table was not reported: {codes}")
+    assert_true("CONTENT_IMAGE_FORMAT_UNSUPPORTED" in codes, f"unsupported image format was not reported: {codes}")
+
+
+@case
+def source_audit_allows_two_level_nested_tables_and_flags_deeper_nesting() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_nested_tables")
+
+    one_level = work / "one_level_nested.docx"
+    doc = Document()
+    outer = doc.add_table(rows=1, cols=1)
+    nested = outer.cell(0, 0).add_table(rows=1, cols=1)
+    nested.cell(0, 0).text = "Nested"
+    doc.save(one_level)
+    one_audit = audit_docx_source(str(one_level))
+    one_codes = {issue["code"] for issue in one_audit["issues"]}
+    assert_true(
+        "COMPLEX_TABLE_UNSUPPORTED" not in one_codes,
+        f"one-level nested table should be handled by the engine, not blocked as complex: {one_audit}",
+    )
+    assert_true(one_audit["counts"].get("nested_table_max_depth") == 1, f"one-level nested depth missing: {one_audit}")
+
+    two_level = work / "two_level_nested.docx"
+    doc = Document()
+    outer = doc.add_table(rows=1, cols=1)
+    nested = outer.cell(0, 0).add_table(rows=1, cols=1)
+    deeper = nested.cell(0, 0).add_table(rows=1, cols=1)
+    deeper.cell(0, 0).text = "Deeper"
+    doc.save(two_level)
+    two_audit = audit_docx_source(str(two_level))
+    two_codes = {issue["code"] for issue in two_audit["issues"]}
+    assert_true(
+        "COMPLEX_TABLE_UNSUPPORTED" not in two_codes,
+        f"two-level nested table should be handled by the engine, not blocked as complex: {two_audit}",
+    )
+    assert_true(two_audit["counts"].get("nested_table_max_depth") == 2, f"two-level nested depth missing: {two_audit}")
+
+    three_level = work / "three_level_nested.docx"
+    doc = Document()
+    outer = doc.add_table(rows=1, cols=1)
+    nested = outer.cell(0, 0).add_table(rows=1, cols=1)
+    deeper = nested.cell(0, 0).add_table(rows=1, cols=1)
+    deepest = deeper.cell(0, 0).add_table(rows=1, cols=1)
+    deepest.cell(0, 0).text = "Deepest"
+    doc.save(three_level)
+    three_audit = audit_docx_source(str(three_level))
+    three_codes = {issue["code"] for issue in three_audit["issues"]}
+    assert_true("COMPLEX_TABLE_UNSUPPORTED" in three_codes, f"three-level nested table was not reported: {three_audit}")
+    assert_true(three_audit["counts"].get("nested_table_max_depth") == 3, f"three-level nested depth missing: {three_audit}")
+
+
+@case
+def source_audit_flags_irregular_table_merge_grid() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_irregular_table")
+    path = work / "irregular_table.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Top left"
+    table.cell(0, 1).text = "Top right"
+    table.cell(1, 0).text = "Orphan continue should not disappear silently"
+    table.cell(1, 1).text = "Bottom right"
+    doc.save(path)
+    with zipfile.ZipFile(path, "a") as zf:
+        xml = zf.read("word/document.xml").decode("utf-8")
+        marker = '<w:t>Orphan continue should not disappear silently</w:t>'
+        replacement = '<w:vMerge/></w:tcPr><w:p><w:r>' + marker
+        xml = xml.replace('<w:tcPr><w:tcW w:type="dxa" w:w="4320"/></w:tcPr><w:p><w:r>' + marker, '<w:tcPr><w:tcW w:type="dxa" w:w="4320"/>' + replacement, 1)
+        zf.writestr("word/document.xml", xml)
+
+    audit = audit_docx_source(str(path))
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert_true("COMPLEX_TABLE_UNSUPPORTED" in codes, f"irregular merge grid was not reported: {audit}")
+    assert_true(audit["counts"].get("irregular_table_count") == 1, f"irregular table count missing: {audit}")
+    detail = " ".join(str(issue.get("detail") or "") for issue in audit["issues"] if issue.get("code") == "COMPLEX_TABLE_UNSUPPORTED")
+    assert_true("irregular_tables=1" in detail, f"complex table detail did not name irregular table count: {audit}")
+
+
+@case
+def source_audit_flags_landscape_wide_table_risk() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_landscape_wide_table")
+    path = work / "landscape_wide_table.docx"
+    doc = Document()
+    table = doc.add_table(rows=1, cols=9)
+    for idx, cell in enumerate(table.rows[0].cells):
+        cell.text = f"C{idx + 1}"
+    doc.save(path)
+    with zipfile.ZipFile(path, "a") as zf:
+        xml = zf.read("word/document.xml").decode("utf-8")
+        xml = xml.replace("<w:pgSz w:w=\"12240\" w:h=\"15840\"/>", "<w:pgSz w:w=\"15840\" w:h=\"12240\" w:orient=\"landscape\"/>", 1)
+        zf.writestr("word/document.xml", xml)
+
+    audit = audit_docx_source(str(path))
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert_true("SOURCE_LANDSCAPE_SECTION_UNSUPPORTED" in codes, f"landscape section was not reported: {audit}")
+    assert_true("COMPLEX_TABLE_UNSUPPORTED" in codes, f"wide table was not reported as complex: {audit}")
+    assert_true(audit["counts"].get("wide_table_count") == 1, f"wide table count missing: {audit}")
+    assert_true(audit["counts"].get("landscape_wide_table_risk_count") == 1, f"landscape wide table risk missing: {audit}")
+    detail = " ".join(str(issue.get("detail") or "") for issue in audit["issues"] if issue.get("code") == "COMPLEX_TABLE_UNSUPPORTED")
+    assert_true("wide_tables=1" in detail and "landscape_wide_tables=1" in detail, f"wide table detail incomplete: {audit}")
+
+
+@case
+def source_audit_does_not_double_count_nested_wide_tables() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_nested_wide_table_count")
+    path = work / "nested_wide_table.docx"
+    doc = Document()
+    outer = doc.add_table(rows=1, cols=1)
+    nested = outer.cell(0, 0).add_table(rows=1, cols=9)
+    for idx, cell in enumerate(nested.rows[0].cells):
+        cell.text = f"N{idx + 1}"
+    doc.save(path)
+
+    audit = audit_docx_source(str(path))
+    assert_true(audit["counts"].get("wide_table_count") == 1, f"nested wide table was double-counted: {audit}")
+
+
+@case
+def source_audit_does_not_mark_portrait_wide_table_as_landscape_risk() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_portrait_wide_then_landscape")
+    path = work / "portrait_wide_then_landscape.docx"
+    doc = Document()
+    table = doc.add_table(rows=1, cols=9)
+    for idx, cell in enumerate(table.rows[0].cells):
+        cell.text = f"P{idx + 1}"
+    doc.add_paragraph("Portrait section ends")
+    doc.add_paragraph("Landscape section has no table")
+    doc.save(path)
+    with zipfile.ZipFile(path, "a") as zf:
+        xml = zf.read("word/document.xml").decode("utf-8")
+        root = ET.fromstring(xml.encode("utf-8"))
+        body = root.find(W_NS + "body")
+        assert_true(body is not None, "document body missing")
+        for para in body.findall(W_NS + "p"):
+            text = "".join(node.text or "" for node in para.iter(W_NS + "t"))
+            if text != "Portrait section ends":
+                continue
+            p_pr = para.find(W_NS + "pPr")
+            if p_pr is None:
+                p_pr = ET.Element(W_NS + "pPr")
+                para.insert(0, p_pr)
+            sect_pr = ET.Element(W_NS + "sectPr")
+            pg_sz = ET.SubElement(sect_pr, W_NS + "pgSz")
+            pg_sz.set(W_NS + "w", "12240")
+            pg_sz.set(W_NS + "h", "15840")
+            p_pr.append(sect_pr)
+            break
+        final_sect = body.find(W_NS + "sectPr")
+        if final_sect is None:
+            final_sect = ET.SubElement(body, W_NS + "sectPr")
+        final_sect.clear()
+        pg_sz = ET.SubElement(final_sect, W_NS + "pgSz")
+        pg_sz.set(W_NS + "w", "15840")
+        pg_sz.set(W_NS + "h", "12240")
+        pg_sz.set(W_NS + "orient", "landscape")
+        zf.writestr("word/document.xml", ET.tostring(root, encoding="unicode"))
+
+    audit = audit_docx_source(str(path))
+    assert_true(audit["counts"].get("wide_table_count") == 1, f"wide table count missing: {audit}")
+    assert_true(audit["counts"].get("landscape_section_count") == 1, f"landscape section count missing: {audit}")
+    assert_true(
+        audit["counts"].get("landscape_wide_table_risk_count") == 0,
+        f"portrait wide table was incorrectly marked as landscape risk: {audit}",
+    )
+
+
+@case
+def source_audit_respects_grid_before_for_vmerge_columns() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_grid_before_vmerge")
+    path = work / "grid_before_vmerge.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Left"
+    table.cell(0, 1).text = "Vertical start"
+    table.cell(1, 1).text = "Vertical continue"
+    doc.save(path)
+    with zipfile.ZipFile(path, "a") as zf:
+        root = ET.fromstring(zf.read("word/document.xml"))
+        table_el = root.find(".//" + W_NS + "tbl")
+        assert_true(table_el is not None, "table missing")
+        rows = table_el.findall(W_NS + "tr")
+        assert_true(len(rows) >= 2, "table rows missing")
+        first_row_cells = rows[0].findall(W_NS + "tc")
+        second_row_cells = rows[1].findall(W_NS + "tc")
+        assert_true(len(first_row_cells) == 2 and len(second_row_cells) == 2, "test table shape changed")
+
+        def ensure_tc_pr(cell):
+            tc_pr = cell.find(W_NS + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(W_NS + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        restart = ET.SubElement(ensure_tc_pr(first_row_cells[1]), W_NS + "vMerge")
+        restart.set(W_NS + "val", "restart")
+        rows[1].remove(second_row_cells[0])
+        tr_pr = ET.Element(W_NS + "trPr")
+        grid_before = ET.SubElement(tr_pr, W_NS + "gridBefore")
+        grid_before.set(W_NS + "val", "1")
+        rows[1].insert(0, tr_pr)
+        ET.SubElement(ensure_tc_pr(second_row_cells[1]), W_NS + "vMerge")
+        zf.writestr("word/document.xml", ET.tostring(root, encoding="unicode"))
+
+    audit = audit_docx_source(str(path))
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert_true("TABLE_MERGE_UNSUPPORTED" in codes, f"vMerge should still be reported as merged table: {audit}")
+    assert_true("COMPLEX_TABLE_UNSUPPORTED" not in codes, f"valid gridBefore vMerge was misreported as complex: {audit}")
+    assert_true(audit["counts"].get("irregular_vmerge_count") == 0, f"valid gridBefore vMerge was counted irregular: {audit}")
+
+
+@case
+def source_audit_issues_are_promoted_to_structural_qa() -> None:
+    work = new_workdir("source_audit_structural_qa")
+    doc = Document()
+    doc.add_paragraph("Rendered body")
+    doc.save(work / "最终论文.docx")
+    issue_codes = [
+        "SOURCE_FORMAT_UNSUPPORTED",
+        "LEGACY_DOC_UNSUPPORTED",
+        "SOURCE_TEXTBOX_UNSUPPORTED",
+        "SOURCE_FOOTNOTE_UNSUPPORTED",
+        "SOURCE_ENDNOTE_UNSUPPORTED",
+        "TRACKED_CHANGES_PRESENT",
+        "COMMENTS_PRESENT",
+        "CONTENT_CONTROL_UNSUPPORTED",
+        "SOURCE_EMBEDDED_OBJECT_UNSUPPORTED",
+        "SOURCE_LANDSCAPE_SECTION_UNSUPPORTED",
+        "CONTENT_IMAGE_FORMAT_UNSUPPORTED",
+        "COMPLEX_TABLE_UNSUPPORTED",
+        "TABLE_MERGE_UNSUPPORTED",
+    ]
+    write_json(
+        work / "content.json",
+        {
+            "_meta": {
+                "source_audit": {
+                    "issues": [
+                        {
+                            "code": code,
+                            "severity": "error" if code not in {"COMMENTS_PRESENT", "SOURCE_LANDSCAPE_SECTION_UNSUPPORTED", "COMPLEX_TABLE_UNSUPPORTED", "TABLE_MERGE_UNSUPPORTED"} else "warning",
+                            "message": code,
+                            "detail": "synthetic structural risk",
+                        }
+                        for code in issue_codes
+                    ]
+                }
+            },
+            "title_info": {"title_cn": "Synthetic"},
+            "sections": [{"heading": "1 Introduction", "level": 1, "paragraphs": ["Rendered body"]}],
+            "references": ["[1] Synthetic reference."],
+        },
+    )
+    write_json(work / "format.json", {"_meta": {}, "paragraphs": [{"text": "style sample"}]})
+
+    report = check_output(str(work), mode="developer")
+    codes = {issue["code"] for issue in report["issues"]}
+    assert_true(set(issue_codes) <= codes, f"structural QA did not promote source audit issues: {codes}")
+    textbox = next(issue for issue in report["issues"] if issue["code"] == "SOURCE_TEXTBOX_UNSUPPORTED")
+    assert_true("source_audit.py" in textbox["owner_developer"], f"source audit owner was not preserved: {textbox}")
+    assert_true(report["passed"] is False, "source audit error codes should fail structural QA")
+
+
+@case
+def comparison_assessment_promotes_warning_runs_to_review() -> None:
+    from comparison_assessment import assess_run
+
+    work = new_workdir("comparison_assessment")
+    structural = {
+        "schema_version": 1,
+        "passed": True,
+        "status": "passed_with_warnings",
+        "issues": [{"code": "REFERENCES_MISSING", "severity": "warning"}],
+    }
+    (work / "qa_report.json").write_text(json.dumps(structural, ensure_ascii=False), encoding="utf-8")
+    assessment = assess_run(work)
+    assert_true(assessment["decision"] == "PASSED_WITH_REVIEW", f"warning-only run should require review: {assessment}")
+    assert_true(assessment["manual_review_required"] is True, "warning-only run should expose manual_review_required")
+    assert_true("REFERENCES_MISSING" in assessment["blocking_issue_codes"], "leading warning code was not surfaced")
 
 
 @case
@@ -100,6 +480,24 @@ def visual_qa_fails_closed_without_pdf_tools() -> None:
     assert_true("PDFINFO_UNAVAILABLE" in codes, "missing pdfinfo was not reported")
     assert_true("Poppler" in report.get("next_action", ""), f"visual QA did not guide dependency repair: {report}")
     assert_true("下一步" in qa_visual.report_to_markdown(report), "visual report markdown should include next action")
+
+
+@case
+def visual_golden_compare_missing_does_not_auto_create_baseline() -> None:
+    from qa_visual_modules.golden import _compare_or_update_golden
+
+    work = new_workdir("visual_golden_missing")
+    golden_dir = work / "golden"
+    result = _compare_or_update_golden(
+        str(work),
+        counts={"pages": 1, "page_width_pt": 595.3, "page_height_pt": 841.9, "text_pages": 1, "all_page_images": 1},
+        pages_text=["body"],
+        image_stats={"page_hashes": ["0" * 16]},
+        golden_dir=str(golden_dir),
+        update_golden=False,
+    )
+    assert_true(result["status"] == "missing", f"compare-only missing golden should stay missing: {result}")
+    assert_true(not list(golden_dir.glob("*.json")), "compare-only golden mode should not create baseline files")
 
 
 @case

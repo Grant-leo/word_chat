@@ -15,8 +15,11 @@ try:
     )
     from content_parser_modules.front_matter import extract_front_matter
     from content_parser_modules.text_cleaner import clean_text_artifacts as _clean_text_artifacts
-    from content_parser_modules.body_dispatcher import parse_body_sections
+    from content_parser_modules.body_dispatcher import append_text_or_code, parse_body_sections
+    from content_parser_modules.boxed_content import append_recovered_boxed_text, recover_boxed_text_records
     from content_parser_modules.image_extractor import ImageRegistry, non_body_image_entries as _non_body_image_entries
+    from content_parser_modules.notes import count_note_runs, extract_note_maps
+    from content_parser_modules.source_audit import audit_docx_source
     from content_parser_modules.section_builder import (
         filter_content_sections,
         mark_first_body_page_break,
@@ -30,8 +33,11 @@ except ImportError:  # pragma: no cover - package-style imports
     )
     from .front_matter import extract_front_matter
     from .text_cleaner import clean_text_artifacts as _clean_text_artifacts
-    from .body_dispatcher import parse_body_sections
+    from .body_dispatcher import append_text_or_code, parse_body_sections
+    from .boxed_content import append_recovered_boxed_text, recover_boxed_text_records
     from .image_extractor import ImageRegistry, non_body_image_entries as _non_body_image_entries
+    from .notes import count_note_runs, extract_note_maps
+    from .source_audit import audit_docx_source
     from .section_builder import (
         filter_content_sections,
         mark_first_body_page_break,
@@ -66,11 +72,21 @@ def _content_placeholder_samples(content, limit=8):
 
 
 def _count_structured_body_tables(sections):
+    def count_item(item):
+        if not isinstance(item, dict):
+            return 0
+        total = 1 if item.get('table_rows') and item.get('role') != 'code' else 0
+        for cell in item.get('table_cell_items') or []:
+            if not isinstance(cell, dict):
+                continue
+            for nested in cell.get('items') or []:
+                total += count_item(nested)
+        return total
+
     total = 0
     for section in sections or []:
         for item in section.get('paragraphs') or []:
-            if isinstance(item, dict) and item.get('table_rows') and item.get('role') != 'code':
-                total += 1
+            total += count_item(item)
     return total
 
 
@@ -137,6 +153,8 @@ def _default_output_dir():
 def extract(docx_path, output_dir=None):
     """Extract content from a content docx into structured JSON + copy images."""
     output_dir = ensure_safe_output_dir(output_dir or _default_output_dir())
+    source_audit = audit_docx_source(docx_path)
+    note_maps = extract_note_maps(docx_path)
     doc = Document(docx_path)
     base = os.path.splitext(os.path.basename(docx_path))[0]
 
@@ -155,6 +173,9 @@ def extract(docx_path, output_dir=None):
             'paragraphs': len(doc.paragraphs),
             'source_tables_count': len(doc.tables),
             'tables_count': 0,
+            'source_audit': source_audit,
+            'footnote_definitions_extracted': len(note_maps.get('footnote') or {}),
+            'endnote_definitions_extracted': len(note_maps.get('endnote') or {}),
         },
         'title_info': {},
         'sections': [],
@@ -169,7 +190,7 @@ def extract(docx_path, output_dir=None):
     if front_matter.get('cover_info'):
         content['cover_info'] = front_matter['cover_info']
 
-    body_result = parse_body_sections(doc, text_start, image_registry)
+    body_result = parse_body_sections(doc, text_start, image_registry, notes=note_maps)
     content['sections'] = filter_content_sections(body_result.sections)
     if body_result.references:
         references, late_front_sections, late_cn_title = _split_late_front_matter_from_references(body_result.references)
@@ -181,8 +202,19 @@ def extract(docx_path, output_dir=None):
             content['sections'] = late_front_sections + content['sections']
             content['_meta']['late_front_matter_recovered'] = True
 
+    boxed_records = recover_boxed_text_records(docx_path)
+    if boxed_records:
+        recovery_counts = append_recovered_boxed_text(content, boxed_records, append_text_or_code)
+        content['_meta']['recovered_textbox_paragraphs'] = recovery_counts.get('textbox', 0)
+        content['_meta']['recovered_content_control_paragraphs'] = recovery_counts.get('content_control', 0)
+        if recovery_counts.get('duplicates'):
+            content['_meta']['recovered_boxed_text_duplicates'] = recovery_counts.get('duplicates', 0)
+
     mark_first_body_page_break(content['sections'])
     postprocess_section_paragraphs(content['sections'])
+    note_counts = count_note_runs(content)
+    content['_meta']['footnote_references_extracted'] = note_counts.get('footnote', 0)
+    content['_meta']['endnote_references_extracted'] = note_counts.get('endnote', 0)
     content['_meta']['tables_count'] = _count_structured_body_tables(content['sections'])
     remaining_placeholders = _content_placeholder_samples(content)
     if remaining_placeholders:

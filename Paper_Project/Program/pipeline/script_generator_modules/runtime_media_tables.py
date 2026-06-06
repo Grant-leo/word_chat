@@ -233,11 +233,13 @@ def fit_table_cell_picture_dimensions(path, ncols=1):
         return Inches(max(0.75, text_width_inches(1.0) / max(int(ncols or 1), 1) * 0.9)), None
 
 
-def render_table_cell_image(cell, filename, ncols=1):
+def render_table_cell_image(cell, filename, ncols=1, force_new_paragraph=False):
     path = content_image_path(filename)
     if not path:
         return None
-    p = cell.paragraphs[0] if cell.paragraphs and not cell.paragraphs[0].text.strip() else cell.add_paragraph()
+    p = cell.add_paragraph() if force_new_paragraph else (
+        cell.paragraphs[0] if cell.paragraphs and not cell.paragraphs[0].text.strip() else cell.add_paragraph()
+    )
     configure_picture_paragraph(p, keep_with_next=False)
     r = p.add_run()
     try:
@@ -262,41 +264,601 @@ def table_cell_media_map(cell_items):
     return by_cell
 
 
-def render_table(rows, cell_items=None):
+def normalize_table_col_widths(table_col_widths, ncols):
+    widths = []
+    for value in table_col_widths or []:
+        try:
+            width = int(value or 0)
+        except Exception:
+            width = 0
+        widths.append(max(0, width))
+        if len(widths) >= ncols:
+            break
+    if len(widths) < ncols:
+        widths.extend([0] * (ncols - len(widths)))
+    if not any(widths):
+        return []
+    total = sum(widths)
+    try:
+        max_total = int(text_width_cm() * 567)
+    except Exception:
+        max_total = 0
+    if total > 0 and max_total > 0 and total > max_total:
+        scale = max_total / float(total)
+        widths = [max(120, int(width * scale)) if width > 0 else 0 for width in widths]
+    return widths
+
+
+def set_fixed_table_layout(table):
+    try:
+        table.autofit = False
+    except Exception:
+        pass
+    try:
+        tblPr = table._tbl.tblPr
+        layout = tblPr.find(qn('w:tblLayout'))
+        if layout is None:
+            layout = OxmlElement('w:tblLayout')
+            insert_property_child(tblPr, layout, 'tblPr')
+        layout.set(qn('w:type'), 'fixed')
+    except Exception:
+        pass
+
+
+def set_table_grid_widths(table, widths):
+    if not widths:
+        return False
+    set_fixed_table_layout(table)
+    try:
+        tblGrid = table._tbl.tblGrid
+        if tblGrid is None:
+            tblGrid = OxmlElement('w:tblGrid')
+            table._tbl.insert(0, tblGrid)
+        for old in list(tblGrid):
+            tblGrid.remove(old)
+        for width in widths:
+            grid_col = OxmlElement('w:gridCol')
+            grid_col.set(qn('w:w'), str(int(width or 0)))
+            tblGrid.append(grid_col)
+        return True
+    except Exception:
+        return False
+
+
+def set_cell_width_twips(cell, width):
+    if not width:
+        return
+    try:
+        tcPr = cell._tc.get_or_add_tcPr()
+        tcW = tcPr.find(qn('w:tcW'))
+        if tcW is None:
+            tcW = OxmlElement('w:tcW')
+            tcPr.insert(0, tcW)
+        tcW.set(qn('w:w'), str(int(width)))
+        tcW.set(qn('w:type'), 'dxa')
+    except Exception:
+        pass
+
+
+def normalize_margin_twips(margins):
+    if not isinstance(margins, dict):
+        return {}
+    out = {}
+    aliases = {'left': ('left', 'start'), 'right': ('right', 'end'), 'top': ('top',), 'bottom': ('bottom',)}
+    for side, names in aliases.items():
+        value = None
+        for name in names:
+            if name in margins:
+                value = margins.get(name)
+                break
+        try:
+            width = int(value or 0)
+        except Exception:
+            width = 0
+        if width > 0:
+            out[side] = width
+    return out
+
+
+def set_margin_container(parent, container_name, margins):
+    margins = normalize_margin_twips(margins)
+    if not margins:
+        return False
+    try:
+        old = parent.find(qn('w:' + container_name))
+        if old is not None:
+            parent.remove(old)
+        container = OxmlElement('w:' + container_name)
+        for side in ('top', 'left', 'bottom', 'right'):
+            if side not in margins:
+                continue
+            el = OxmlElement('w:' + side)
+            el.set(qn('w:w'), str(int(margins[side])))
+            el.set(qn('w:type'), 'dxa')
+            container.append(el)
+        insert_property_child(parent, container, property_parent_kind(container_name))
+        return True
+    except Exception:
+        return False
+
+
+def set_table_default_cell_margins(table, margins):
+    try:
+        tblPr = table._tbl.tblPr
+        return set_margin_container(tblPr, 'tblCellMar', margins)
+    except Exception:
+        return False
+
+
+def set_cell_margins_twips(cell, margins):
+    try:
+        tcPr = cell._tc.get_or_add_tcPr()
+        return set_margin_container(tcPr, 'tcMar', margins)
+    except Exception:
+        return False
+
+
+def normalize_border_spec(spec):
+    if isinstance(spec, dict):
+        val = str(spec.get('val') or spec.get('type') or '').strip()
+        if not val:
+            return {}
+        out = {'val': val}
+        for attr, aliases in (
+            ('sz', ('sz', 'size')),
+            ('color', ('color',)),
+            ('space', ('space',)),
+        ):
+            value = None
+            for name in aliases:
+                if name in spec:
+                    value = spec.get(name)
+                    break
+            if value is None:
+                continue
+            if attr in ('sz', 'space'):
+                try:
+                    value = max(0, int(value))
+                except Exception:
+                    pass
+            value = str(value).strip()
+            if value:
+                out[attr] = value
+        if val in ('nil', 'none'):
+            out.setdefault('sz', '0')
+        return out
+    val = str(spec or '').strip()
+    if not val:
+        return {}
+    if val in ('nil', 'none'):
+        return {'val': 'nil', 'sz': '0'}
+    return {'val': val}
+
+
+def normalize_border_map(borders):
+    if not isinstance(borders, dict):
+        return {}
+    out = {}
+    allowed = ('top', 'left', 'bottom', 'right', 'insideH', 'insideV', 'tl2br', 'tr2bl', 'start', 'end')
+    for side in allowed:
+        if side not in borders:
+            continue
+        spec = normalize_border_spec(borders.get(side))
+        if spec:
+            out[side] = spec
+    return out
+
+
+def property_parent_kind(container_name):
+    if container_name in ('tblBorders', 'tblCellMar', 'tblLayout'):
+        return 'tblPr'
+    if container_name in ('tcBorders', 'tcMar'):
+        return 'tcPr'
+    return ''
+
+
+def property_order_index(local_name, kind):
+    orders = {
+        'tblPr': (
+            'tblStyle', 'tblpPr', 'tblOverlap', 'bidiVisual',
+            'tblStyleRowBandSize', 'tblStyleColBandSize', 'tblW', 'jc',
+            'tblCellSpacing', 'tblInd', 'tblBorders', 'shd', 'tblLayout',
+            'tblCellMar', 'tblLook', 'tblCaption', 'tblDescription', 'tblPrChange',
+        ),
+        'tcPr': (
+            'cnfStyle', 'tcW', 'gridSpan', 'hMerge', 'vMerge', 'tcBorders',
+            'shd', 'noWrap', 'tcMar', 'textDirection', 'tcFitText', 'vAlign',
+            'hideMark', 'headers',
+        ),
+    }
+    try:
+        return orders.get(kind, ()).index(local_name)
+    except ValueError:
+        return 10_000
+
+
+def insert_property_child(parent, child, kind):
+    if not kind:
+        parent.append(child)
+        return
+    child_name = str(child.tag).rsplit('}', 1)[-1]
+    child_index = property_order_index(child_name, kind)
+    for pos, existing in enumerate(list(parent)):
+        existing_name = str(existing.tag).rsplit('}', 1)[-1]
+        if property_order_index(existing_name, kind) > child_index:
+            parent.insert(pos, child)
+            return
+    parent.append(child)
+
+
+def border_specs_from_container(container):
+    specs = {}
+    if container is None:
+        return specs
+    for child in list(container):
+        side = str(child.tag).rsplit('}', 1)[-1]
+        if side not in ('top', 'left', 'bottom', 'right', 'insideH', 'insideV', 'tl2br', 'tr2bl', 'start', 'end'):
+            continue
+        spec = {}
+        for attr in ('val', 'sz', 'color', 'space'):
+            value = child.get(qn('w:' + attr))
+            if value is not None:
+                spec[attr] = str(value)
+        if spec:
+            specs[side] = spec
+    return specs
+
+
+def set_border_container(parent, container_name, borders, merge_existing=False):
+    borders = normalize_border_map(borders)
+    if not borders:
+        return False
+    try:
+        old = parent.find(qn('w:' + container_name))
+        if merge_existing and old is not None:
+            merged = border_specs_from_container(old)
+            merged.update(borders)
+            borders = normalize_border_map(merged)
+        if old is not None:
+            parent.remove(old)
+        container = OxmlElement('w:' + container_name)
+        for side in ('top', 'left', 'bottom', 'right', 'insideH', 'insideV', 'tl2br', 'tr2bl', 'start', 'end'):
+            spec = borders.get(side)
+            if not spec:
+                continue
+            el = OxmlElement('w:' + side)
+            for attr in ('val', 'sz', 'color', 'space'):
+                if attr in spec:
+                    el.set(qn('w:' + attr), str(spec[attr]))
+            container.append(el)
+        insert_property_child(parent, container, property_parent_kind(container_name))
+        return True
+    except Exception:
+        return False
+
+
+def set_table_borders(table, borders):
+    try:
+        tblPr = table._tbl.tblPr
+        return set_border_container(tblPr, 'tblBorders', borders)
+    except Exception:
+        return False
+
+
+def set_cell_borders_from_spec(cell, borders):
+    try:
+        tcPr = cell._tc.get_or_add_tcPr()
+        return set_border_container(tcPr, 'tcBorders', borders, merge_existing=True)
+    except Exception:
+        return False
+
+
+def apply_table_borders(table, table_borders):
+    if set_table_borders(table, table_borders or {}):
+        BUILD_STATS['content_table_borders_rendered'] = BUILD_STATS.get('content_table_borders_rendered', 0) + 1
+        return True
+    return False
+
+
+def normalize_row_height_spec(spec):
+    if isinstance(spec, dict):
+        value = spec.get('val') if 'val' in spec else spec.get('height')
+        rule = str(spec.get('rule') or spec.get('hRule') or '').strip()
+    else:
+        value = spec
+        rule = ''
+    try:
+        val = int(value or 0)
+    except Exception:
+        val = 0
+    if val <= 0:
+        return None
+    out = {'val': val}
+    if rule in ('auto', 'exact', 'atLeast'):
+        out['rule'] = rule
+    return out
+
+
+def apply_row_heights(table, row_heights):
+    rendered = False
+    for ri, spec in enumerate(row_heights or []):
+        if ri >= len(table.rows):
+            break
+        height = normalize_row_height_spec(spec)
+        if not height:
+            continue
+        try:
+            trPr = table.rows[ri]._tr.get_or_add_trPr()
+            tr_height = trPr.find(qn('w:trHeight'))
+            if tr_height is None:
+                tr_height = OxmlElement('w:trHeight')
+                trPr.append(tr_height)
+            tr_height.set(qn('w:val'), str(int(height['val'])))
+            if height.get('rule'):
+                tr_height.set(qn('w:hRule'), height['rule'])
+            rendered = True
+        except Exception:
+            continue
+    if rendered:
+        BUILD_STATS['content_table_row_heights_rendered'] = BUILD_STATS.get('content_table_row_heights_rendered', 0) + 1
+    return rendered
+
+
+def apply_repeat_header_rows(table, repeat_rows=None):
+    if repeat_rows is None:
+        if len(table.rows):
+            repeat_table_header(table.rows[0])
+        return 0
+    try:
+        count = int(repeat_rows or 0)
+    except Exception:
+        count = 0
+    count = max(0, min(count, len(table.rows)))
+    for ri in range(count):
+        repeat_table_header(table.rows[ri])
+    if count:
+        BUILD_STATS['content_table_repeat_header_rows_rendered'] = BUILD_STATS.get('content_table_repeat_header_rows_rendered', 0) + count
+    return count
+
+
+def apply_cell_overrides(table, overrides):
+    rendered = 0
+    border_rendered = 0
+    align_map = {
+        'top': WD_CELL_VERTICAL_ALIGNMENT.TOP,
+        'center': WD_CELL_VERTICAL_ALIGNMENT.CENTER,
+        'middle': WD_CELL_VERTICAL_ALIGNMENT.CENTER,
+        'bottom': WD_CELL_VERTICAL_ALIGNMENT.BOTTOM,
+    }
+    for override in overrides or []:
+        if not isinstance(override, dict):
+            continue
+        try:
+            row = int(override.get('row') or 0)
+            col = int(override.get('col') or 0)
+        except Exception:
+            continue
+        if row < 0 or col < 0 or row >= len(table.rows) or col >= len(table.rows[row].cells):
+            continue
+        cell = table.rows[row].cells[col]
+        changed = False
+        align = str(override.get('v_align') or override.get('vertical_alignment') or '').strip().lower()
+        if align in align_map:
+            try:
+                cell.vertical_alignment = align_map[align]
+                changed = True
+            except Exception:
+                pass
+        if set_cell_margins_twips(cell, override.get('margins_twips') or override.get('margins') or {}):
+            changed = True
+        if set_cell_borders_from_spec(cell, override.get('borders') or override.get('border_sides') or {}):
+            changed = True
+            border_rendered += 1
+        if changed:
+            rendered += 1
+    if rendered:
+        BUILD_STATS['content_table_cell_overrides_rendered'] = BUILD_STATS.get('content_table_cell_overrides_rendered', 0) + rendered
+    if border_rendered:
+        BUILD_STATS['content_table_cell_borders_rendered'] = BUILD_STATS.get('content_table_cell_borders_rendered', 0) + border_rendered
+    return rendered
+
+
+def apply_table_merges(table, table_merges):
+    rendered = 0
+    for merge in table_merges or []:
+        if not isinstance(merge, dict):
+            continue
+        try:
+            row = int(merge.get('row') or 0)
+            col = int(merge.get('col') or 0)
+            rowspan = max(1, int(merge.get('rowspan') or 1))
+            colspan = max(1, int(merge.get('colspan') or 1))
+            if rowspan <= 1 and colspan <= 1:
+                continue
+            end_row = row + rowspan - 1
+            end_col = col + colspan - 1
+            if row < 0 or col < 0 or end_row >= len(table.rows) or end_col >= len(table.rows[row].cells):
+                continue
+            table.cell(row, col).merge(table.cell(end_row, end_col))
+            rendered += 1
+        except Exception:
+            continue
+    if rendered:
+        BUILD_STATS['content_table_merges_rendered'] = BUILD_STATS.get('content_table_merges_rendered', 0) + rendered
+    return rendered
+
+
+def media_after_paragraph_index(media):
+    if not isinstance(media, dict) or 'after_paragraph_index' not in media:
+        return None
+    try:
+        return max(0, int(media.get('after_paragraph_index') or 0))
+    except Exception:
+        return None
+
+
+def media_replace_paragraph_index(media):
+    if not isinstance(media, dict) or 'replace_paragraph_index' not in media:
+        return None
+    try:
+        return max(0, int(media.get('replace_paragraph_index') or 0))
+    except Exception:
+        return None
+
+
+def render_table_cell_rich_text(cell, item, prof, force_new_paragraph=False):
+    if not isinstance(item, dict):
+        return False
+    runs = item.get('runs') or []
+    if not runs and item.get('text'):
+        runs = [{'type': 'text', 'text': item.get('text') or ''}]
+    if not runs:
+        return False
+    p = cell.add_paragraph() if force_new_paragraph else (
+        cell.paragraphs[0] if cell.paragraphs and not cell.paragraphs[0].text.strip() else cell.add_paragraph()
+    )
+    apply_paragraph_profile(p, prof, first_indent_override=0)
+    wrote = False
+    for run in runs:
+        kind = run.get('type') or ('math' if run.get('math') else 'text')
+        if kind == 'math':
+            for m in run.get('math') or []:
+                wrote = append_inline_formula(p, m) or wrote
+        elif kind == 'note_ref':
+            wrote = append_note_reference(p, run) or wrote
+        else:
+            text = str(run.get('text') or '')
+            if text:
+                add_text_runs(p, text, prof, False)
+                wrote = True
+    return wrote
+
+
+def render_table_cell_media_item(cell, media, ncols, prof, force_new_paragraph=False):
+    if not isinstance(media, dict):
+        return False
+    if media.get('role') == 'rich_text' or media.get('math'):
+        return render_table_cell_rich_text(cell, media, prof, force_new_paragraph=force_new_paragraph)
+    if media.get('role') == 'image' or media.get('image'):
+        render_table_cell_image(
+            cell,
+            media.get('image') or media.get('filename') or media.get('asset') or '',
+            ncols=ncols,
+            force_new_paragraph=force_new_paragraph,
+        )
+        return True
+    if media.get('table_rows'):
+        render_table(
+            media.get('table_rows') or [],
+            media.get('table_cell_items') or [],
+            media.get('table_merges') or [],
+            media.get('table_col_widths_twips') or [],
+            media.get('table_row_heights_twips') or [],
+            media.get('table_repeat_header_rows'),
+            media.get('table_cell_margins_twips') or {},
+            media.get('table_cell_overrides') or [],
+            media.get('table_borders') or {},
+            container=cell,
+            nested=True,
+        )
+        return True
+    if media.get('role') == 'missing_image':
+        p = cell.add_paragraph() if force_new_paragraph else (
+            cell.paragraphs[0] if cell.paragraphs and not cell.paragraphs[0].text.strip() else cell.add_paragraph()
+        )
+        apply_paragraph_profile(p, prof, first_indent_override=0)
+        r = p.add_run(media.get('text') or media.get('source') or 'missing image')
+        apply_run_profile(r, prof, r.text)
+        return True
+    return False
+
+
+def render_table(rows, cell_items=None, table_merges=None, table_col_widths_twips=None, table_row_heights_twips=None, table_repeat_header_rows=None, table_cell_margins_twips=None, table_cell_overrides=None, table_borders=None, container=None, nested=False):
     if not rows:
         return
+    container = container or doc
     ncols = max(len(r) for r in rows)
     media_by_cell = table_cell_media_map(cell_items)
-    table = doc.add_table(rows=len(rows), cols=ncols)
+    explicit_borders = bool(normalize_border_map(table_borders))
+    for override in table_cell_overrides or []:
+        if isinstance(override, dict) and normalize_border_map(override.get('borders') or override.get('border_sides') or {}):
+            explicit_borders = True
+            break
+    table = container.add_table(rows=len(rows), cols=ncols)
     BUILD_STATS['content_tables_rendered'] = BUILD_STATS.get('content_tables_rendered', 0) + 1
+    if nested:
+        BUILD_STATS['content_nested_tables_rendered'] = BUILD_STATS.get('content_nested_tables_rendered', 0) + 1
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    col_widths = normalize_table_col_widths(table_col_widths_twips, ncols)
+    if col_widths and set_table_grid_widths(table, col_widths):
+        BUILD_STATS['content_table_widths_rendered'] = BUILD_STATS.get('content_table_widths_rendered', 0) + 1
+    if set_table_default_cell_margins(table, table_cell_margins_twips or {}):
+        BUILD_STATS['content_table_cell_margins_rendered'] = BUILD_STATS.get('content_table_cell_margins_rendered', 0) + 1
     for ri, row in enumerate(rows):
-        if ri == 0:
-            repeat_table_header(table.rows[ri])
         prevent_row_split(table.rows[ri])
         prof = profile('table_header' if ri == 0 else 'table_body')
         for ci in range(ncols):
             text = row[ci] if ci < len(row) else ''
             cell = table.rows[ri].cells[ci]
+            if ci < len(col_widths):
+                set_cell_width_twips(cell, col_widths[ci])
             cell.text = ''
             cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
-            parts = str(text or '').split('\n') or ['']
-            for pi, part in enumerate(parts):
-                p = cell.paragraphs[0] if pi == 0 else cell.add_paragraph()
-                apply_paragraph_profile(p, prof, first_indent_override=0)
-                r = p.add_run(part)
-                apply_run_profile(r, prof, part)
+            parts = str(text or '').split('\n') if str(text or '') else []
+            positioned_media = {}
+            trailing_media = []
+            replacement_media = {}
             for media in media_by_cell.get((ri, ci), []):
-                if not isinstance(media, dict):
+                replace_idx = media_replace_paragraph_index(media)
+                if replace_idx is not None:
+                    replacement_media.setdefault(replace_idx, []).append(media)
                     continue
-                if media.get('role') == 'image' or media.get('image'):
-                    render_table_cell_image(cell, media.get('image') or media.get('filename') or media.get('asset') or '', ncols=ncols)
-                elif media.get('role') == 'missing_image':
-                    p = cell.paragraphs[0] if cell.paragraphs and not cell.paragraphs[0].text.strip() else cell.add_paragraph()
+                idx = media_after_paragraph_index(media)
+                if idx is None:
+                    trailing_media.append(media)
+                else:
+                    positioned_media.setdefault(idx, []).append(media)
+            wrote_any = False
+            for pos in range(len(parts) + 1):
+                for media in positioned_media.get(pos, []):
+                    if render_table_cell_media_item(cell, media, ncols, prof, force_new_paragraph=wrote_any):
+                        wrote_any = True
+                if pos >= len(parts):
+                    continue
+                part = parts[pos]
+                replacements = replacement_media.get(pos) or []
+                if replacements:
+                    for media in replacements:
+                        if render_table_cell_media_item(cell, media, ncols, prof, force_new_paragraph=wrote_any):
+                            wrote_any = True
+                else:
+                    p = cell.paragraphs[0] if not wrote_any and cell.paragraphs else cell.add_paragraph()
                     apply_paragraph_profile(p, prof, first_indent_override=0)
-                    r = p.add_run(media.get('text') or media.get('source') or 'missing image')
-                    apply_run_profile(r, prof, r.text)
-    apply_three_line_borders(table)
+                    r = p.add_run(part)
+                    apply_run_profile(r, prof, part)
+                    wrote_any = True
+            for pos in sorted(key for key in positioned_media if key > len(parts)):
+                for media in positioned_media.get(pos, []):
+                    if render_table_cell_media_item(cell, media, ncols, prof, force_new_paragraph=wrote_any):
+                        wrote_any = True
+            for pos in sorted(key for key in replacement_media if key >= len(parts)):
+                for media in replacement_media.get(pos, []):
+                    if render_table_cell_media_item(cell, media, ncols, prof, force_new_paragraph=wrote_any):
+                        wrote_any = True
+            for media in trailing_media:
+                if render_table_cell_media_item(cell, media, ncols, prof, force_new_paragraph=wrote_any):
+                    wrote_any = True
+            if not wrote_any:
+                p = cell.paragraphs[0] if cell.paragraphs else cell.add_paragraph()
+                apply_paragraph_profile(p, prof, first_indent_override=0)
+    apply_repeat_header_rows(table, table_repeat_header_rows)
+    apply_row_heights(table, table_row_heights_twips)
+    apply_table_merges(table, table_merges)
+    if explicit_borders:
+        apply_table_borders(table, table_borders)
+    else:
+        apply_three_line_borders(table)
+    apply_cell_overrides(table, table_cell_overrides)
     if should_keep_table_together(rows):
         keep_table_together(table)
     return table

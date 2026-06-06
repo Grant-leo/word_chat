@@ -38,6 +38,7 @@ if os.path.isdir(PIPELINE):
 from format_extractor import extract as extract_format
 from content_parser import extract as extract_content
 from script_generator import generate as generate_script
+from comparison_assessment import write_assessment
 from pipeline_runner.artifacts import write_build_failure_report, write_content_artifacts, write_extraction_failure_report, write_format_artifacts, write_format_blocker_report_if_needed
 from pipeline_runner.build_phase import generate_and_build_docx_phase
 from pipeline_runner.cli import main_cli
@@ -79,6 +80,19 @@ def _write_agent_preflight(status, message, next_steps):
     return json_path, md_path
 
 
+def _write_comparison_assessment(out_dir):
+    try:
+        result = write_assessment(out_dir)
+        md_path = result.get("md_path") or ""
+        try:
+            display = os.path.relpath(md_path, BASE).replace(os.sep, "/") if os.path.isabs(md_path) else md_path
+        except ValueError:
+            display = str(md_path).replace(os.sep, "/")
+        print(f"  [ASSESSMENT] {result.get('decision')} -> {display}")
+    except Exception as exc:
+        print(f"  [ASSESSMENT-WARN] comparison assessment failed: {type(exc).__name__}")
+
+
 def run(
     template_file,
     content_file,
@@ -104,7 +118,7 @@ def run(
     auto_repair = bool(auto_repair)
     if auto_repair and mode != 'user':
         print('[ERROR] --auto-repair only supports --mode user because it may edit only Outputs/<run>/build_generated.py.')
-        if agent_auto:
+        if resolution.error:
             _write_agent_preflight(
                 "blocked_invalid_mode",
                 "--auto-repair 只能在 user 模式下运行。",
@@ -287,6 +301,7 @@ def run(
         )
         if not qa_ok:
             if not auto_repair:
+                _write_comparison_assessment(out_dir)
                 write_agent_summary(out_dir, folder_name, output_docx, mode, pipeline_status="failed", note="QA 未通过，请查看 qa_report.md / qa_repair_plan.md。")
                 return None
         if auto_repair:
@@ -312,8 +327,10 @@ def run(
                 repair_report_path = os.path.relpath(repair_report_path, BASE)
             print(f'  [AUTO-REPAIR] report -> {repair_report_path.replace(os.sep, "/")}')
             if not repair_result.ok:
+                _write_comparison_assessment(out_dir)
                 write_agent_summary(out_dir, folder_name, output_docx, mode, pipeline_status="needs_user_action", note="自动修复闭环停止，仍需要用户文件、依赖或人工确认。")
                 return None
+        _write_comparison_assessment(out_dir)
 
     # -- Done --
     step('完成')

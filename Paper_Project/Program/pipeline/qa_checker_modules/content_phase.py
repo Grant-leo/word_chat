@@ -51,6 +51,23 @@ def run_content_checks(out_dir: str, paths: Dict[str, str], counts: Dict[str, An
             counts["content_tables"] = _count_content_tables(content)
             counts["content_text_chars"] = _content_text_chars(content)
             meta = content.get("_meta") or {}
+            source_audit = meta.get("source_audit") or {}
+            source_audit_issues = [
+                issue for issue in (source_audit.get("issues") or [])
+                if isinstance(issue, dict) and issue.get("code")
+            ]
+            counts["source_audit_issues"] = len(source_audit_issues)
+            counts["source_audit_issue_codes"] = [
+                str(issue.get("code")) for issue in source_audit_issues[:12]
+            ]
+            for issue in source_audit_issues:
+                code = str(issue.get("code") or "").strip()
+                severity = str(issue.get("severity") or "warning").strip().lower()
+                if severity not in {"error", "warning"}:
+                    severity = "warning"
+                message = str(issue.get("message") or code)
+                detail = str(issue.get("detail") or "")
+                add(code, severity, message, detail)
             missing_images = meta.get("missing_images") or []
             image_failures = meta.get("image_extract_failures") or []
             non_body_images = meta.get("non_body_images") or []
@@ -116,6 +133,28 @@ def run_content_checks(out_dir: str, paths: Dict[str, str], counts: Dict[str, An
                     "warning" if contained else "error",
                     "内容中存在疑似图表/公式碎片的低分辨率图片；已按原始尺寸保留，避免放大。" if contained else "内容中存在疑似图表/公式碎片的低分辨率图片，可能形成模糊文字图。",
                     " / ".join(low_res_fragments),
+                )
+            footnote_refs = int(meta.get("footnote_references_extracted") or 0)
+            endnote_refs = int(meta.get("endnote_references_extracted") or 0)
+            rendered_footnotes = int(manifest_counts.get("footnote_references_rendered") or 0)
+            rendered_endnotes = int(manifest_counts.get("endnote_references_rendered") or 0)
+            counts["footnote_references_extracted"] = footnote_refs
+            counts["endnote_references_extracted"] = endnote_refs
+            counts["footnote_references_rendered"] = rendered_footnotes
+            counts["endnote_references_rendered"] = rendered_endnotes
+            if footnote_refs and rendered_footnotes < footnote_refs:
+                add(
+                    "FOOTNOTE_RENDER_COUNT_MISMATCH",
+                    "error",
+                    "内容中识别到脚注引用，但最终 DOCX 中渲染的脚注引用数量不足。",
+                    f"extracted={footnote_refs}; rendered={rendered_footnotes}",
+                )
+            if endnote_refs and rendered_endnotes < endnote_refs:
+                add(
+                    "ENDNOTE_RENDER_COUNT_MISMATCH",
+                    "error",
+                    "内容中识别到尾注引用，但最终 DOCX 中渲染的尾注引用数量不足。",
+                    f"extracted={endnote_refs}; rendered={rendered_endnotes}",
                 )
             if not content.get("sections"):
                 add("CONTENT_EMPTY", "error", "内容提取结果没有正文 section。")

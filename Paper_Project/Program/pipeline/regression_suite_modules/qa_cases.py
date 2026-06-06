@@ -57,6 +57,38 @@ def qa_manifest_detects_missing_table_render() -> None:
 
 
 @case
+def qa_manifest_detects_missing_footnote_render() -> None:
+    work = new_workdir("qa_missing_footnote")
+    doc = Document()
+    doc.add_paragraph("1 Introduction")
+    doc.add_paragraph("A sentence with a source footnote.")
+    doc.save(work / "out.docx")
+    content = base_content(
+        [
+            {
+                "role": "rich_text",
+                "text": "A sentence with a source footnote.",
+                "runs": [
+                    {"type": "text", "text": "A sentence with a source footnote"},
+                    {"type": "note_ref", "note_type": "footnote", "source_id": "2", "text": "Missing rendered footnote."},
+                    {"type": "text", "text": "."},
+                ],
+            }
+        ]
+    )
+    content["_meta"]["footnote_references_extracted"] = 1
+    write_json(work / "content.json", content)
+    write_json(work / "format.json", base_format())
+    write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {"footnote_references_rendered": 0}})
+    write_json(work / "workflow_mode.json", {"mode": "developer"})
+    (work / "build_generated.py").write_text("# synthetic generated script\n", encoding="utf-8")
+
+    report = check_output(str(work), mode="developer", output_docx_name="out.docx")
+    codes = [item["code"] for item in report["issues"]]
+    assert_true("FOOTNOTE_RENDER_COUNT_MISMATCH" in codes, f"QA did not report missing footnote render: {report['issues']}")
+
+
+@case
 def code_table_is_not_body_table() -> None:
     content = base_content(
         [

@@ -74,6 +74,8 @@ def add_rich_text_runs(item, role='body', first_indent=True):
         if kind == 'math':
             for m in run.get('math') or []:
                 wrote = append_inline_formula(p, m) or wrote
+        elif kind == 'note_ref':
+            wrote = append_note_reference(p, run) or wrote
         else:
             text = str(run.get('text') or '')
             if text:

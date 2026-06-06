@@ -38,6 +38,36 @@ def _display_input_path(folder_label: str, requested: str) -> str:
     return f"{folder_label}/{requested}".replace("//", "/")
 
 
+def _input_ext(value: str) -> str:
+    return os.path.splitext(str(value or ""))[1].lower()
+
+
+def _unsupported_input_error(role_label: str, folder_label: str, requested: str, code: str, next_step: str) -> str:
+    display = _display_input_path(folder_label, requested)
+    return f"[ERROR] {code}: {role_label} `{display}` 暂不支持。下一步：{next_step}"
+
+
+def _validate_input_extension(role_label: str, folder_label: str, requested: str, allowed_exts: set[str]) -> str:
+    ext = _input_ext(requested)
+    if ext in allowed_exts:
+        return ""
+    if ext in {".doc", ".wps"}:
+        return _unsupported_input_error(
+            role_label,
+            folder_label,
+            requested,
+            "LEGACY_DOC_UNSUPPORTED",
+            "请先用 Word/WPS 打开并另存为 `.docx`，确认内容正常后放回项目源文件夹再重新运行。",
+        )
+    return _unsupported_input_error(
+        role_label,
+        folder_label,
+        requested,
+        "SOURCE_FORMAT_UNSUPPORTED",
+        f"模板只支持 `.docx`/`.pdf`，正文只支持 `.docx`/`.md`；请转换文件格式后放回 `{folder_label}/` 再运行。",
+    )
+
+
 def _workflow_project_root(out_dir: str) -> str:
     normalized = os.path.normpath(os.path.abspath(os.fspath(out_dir or ".")))
     cursor = normalized
@@ -94,6 +124,9 @@ def _workflow_location_warning(path: str, folder_name: str, role_label: str, pro
 def resolve_inputs(template_file, content_file, md_file, template_dir, inputs_dir) -> InputResolution:
     """Resolve CLI filenames into concrete input paths."""
     if md_file:
+        ext_error = _validate_input_extension("Markdown 输入", "Inputs", md_file, {".md"})
+        if ext_error:
+            return InputResolution(error=ext_error)
         md_path = os.path.abspath(md_file) if not os.path.isabs(md_file) else md_file
         if not os.path.exists(md_path):
             md_path = os.path.join(inputs_dir, md_file)
@@ -109,6 +142,12 @@ def resolve_inputs(template_file, content_file, md_file, template_dir, inputs_di
             )
         )
 
+    template_ext_error = _validate_input_extension("模板文件", "Templates", template_file, {".docx", ".pdf", ".md"})
+    if template_ext_error:
+        return InputResolution(error=template_ext_error)
+    content_ext_error = _validate_input_extension("内容文件", "Inputs", content_file, {".docx", ".md"})
+    if content_ext_error:
+        return InputResolution(error=content_ext_error)
     template_path = template_file if os.path.isabs(template_file) else os.path.join(template_dir, template_file)
     content_path = content_file if os.path.isabs(content_file) else os.path.join(inputs_dir, content_file)
     if not os.path.exists(template_path):
