@@ -204,11 +204,11 @@ Golden compare-only mode must not create missing baselines; a missing baseline i
 
 ### Private Real-Data Audit
 
-Private real-data pools such as `Templates/20261/` are local-only and ignored.
+Private real-data pools such as `Templates/<private-corpus>/` are local-only and ignored.
 Do not add them to ordinary `--agent-auto` selection. Inventory them with:
 
 ```bash
-python Paper_Project/Program/pipeline/private_corpus_audit.py Templates/20261
+python Paper_Project/Program/pipeline/private_corpus_audit.py Templates/<private-corpus>
 ```
 
 The audit writes `Outputs/_private_realdata_audit/inventory.json`,

@@ -21,6 +21,19 @@ W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 ET.register_namespace("w", "http://schemas.openxmlformats.org/wordprocessingml/2006/main")
 
 
+def _rewrite_docx_part(docx_path: Path, part_name: str, transform) -> None:
+    original = docx_path.with_suffix(docx_path.suffix + ".src")
+    docx_path.replace(original)
+    with zipfile.ZipFile(original, "r") as zin, zipfile.ZipFile(docx_path, "w", zipfile.ZIP_DEFLATED) as zout:
+        for info in zin.infolist():
+            data = zin.read(info.filename)
+            if info.filename == part_name:
+                text = data.decode("utf-8")
+                data = transform(text).encode("utf-8")
+            zout.writestr(info, data)
+    original.unlink()
+
+
 @case
 def privacy_sanitizes_absolute_paths() -> None:
     data = {
@@ -70,9 +83,9 @@ def source_audit_detects_high_risk_docx_structures() -> None:
     doc = Document()
     doc.add_paragraph("Body text")
     doc.save(path)
-    with zipfile.ZipFile(path, "a") as zf:
-        xml = zf.read("word/document.xml").decode("utf-8")
-        xml = xml.replace(
+
+    def inject_risky_structures(xml: str) -> str:
+        return xml.replace(
             "</w:body>",
             (
                 "<w:p><w:r><w:pict><v:shape xmlns:v=\"urn:schemas-microsoft-com:vml\">"
@@ -84,7 +97,9 @@ def source_audit_detects_high_risk_docx_structures() -> None:
                 "</w:body>"
             ),
         )
-        zf.writestr("word/document.xml", xml)
+
+    _rewrite_docx_part(path, "word/document.xml", inject_risky_structures)
+    with zipfile.ZipFile(path, "a") as zf:
         zf.writestr("word/footnotes.xml", "<w:footnotes xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:footnote w:id=\"2\"><w:p><w:r><w:t>Footnote</w:t></w:r></w:p></w:footnote></w:footnotes>")
         zf.writestr("word/endnotes.xml", "<w:endnotes xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:endnote w:id=\"2\"><w:p><w:r><w:t>Endnote</w:t></w:r></w:p></w:endnote></w:endnotes>")
         zf.writestr("word/comments.xml", "<w:comments xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:comment w:id=\"0\"><w:p><w:r><w:t>Comment</w:t></w:r></w:p></w:comment></w:comments>")
@@ -186,12 +201,17 @@ def source_audit_flags_irregular_table_merge_grid() -> None:
     table.cell(1, 0).text = "Orphan continue should not disappear silently"
     table.cell(1, 1).text = "Bottom right"
     doc.save(path)
-    with zipfile.ZipFile(path, "a") as zf:
-        xml = zf.read("word/document.xml").decode("utf-8")
+
+    def inject_orphan_vmerge(xml: str) -> str:
         marker = '<w:t>Orphan continue should not disappear silently</w:t>'
         replacement = '<w:vMerge/></w:tcPr><w:p><w:r>' + marker
-        xml = xml.replace('<w:tcPr><w:tcW w:type="dxa" w:w="4320"/></w:tcPr><w:p><w:r>' + marker, '<w:tcPr><w:tcW w:type="dxa" w:w="4320"/>' + replacement, 1)
-        zf.writestr("word/document.xml", xml)
+        return xml.replace(
+            '<w:tcPr><w:tcW w:type="dxa" w:w="4320"/></w:tcPr><w:p><w:r>' + marker,
+            '<w:tcPr><w:tcW w:type="dxa" w:w="4320"/>' + replacement,
+            1,
+        )
+
+    _rewrite_docx_part(path, "word/document.xml", inject_orphan_vmerge)
 
     audit = audit_docx_source(str(path))
     codes = {issue["code"] for issue in audit["issues"]}
@@ -212,10 +232,15 @@ def source_audit_flags_landscape_wide_table_risk() -> None:
     for idx, cell in enumerate(table.rows[0].cells):
         cell.text = f"C{idx + 1}"
     doc.save(path)
-    with zipfile.ZipFile(path, "a") as zf:
-        xml = zf.read("word/document.xml").decode("utf-8")
-        xml = xml.replace("<w:pgSz w:w=\"12240\" w:h=\"15840\"/>", "<w:pgSz w:w=\"15840\" w:h=\"12240\" w:orient=\"landscape\"/>", 1)
-        zf.writestr("word/document.xml", xml)
+
+    def inject_landscape_section(xml: str) -> str:
+        return xml.replace(
+            "<w:pgSz w:w=\"12240\" w:h=\"15840\"/>",
+            "<w:pgSz w:w=\"15840\" w:h=\"12240\" w:orient=\"landscape\"/>",
+            1,
+        )
+
+    _rewrite_docx_part(path, "word/document.xml", inject_landscape_section)
 
     audit = audit_docx_source(str(path))
     codes = {issue["code"] for issue in audit["issues"]}
@@ -257,8 +282,8 @@ def source_audit_does_not_mark_portrait_wide_table_as_landscape_risk() -> None:
     doc.add_paragraph("Portrait section ends")
     doc.add_paragraph("Landscape section has no table")
     doc.save(path)
-    with zipfile.ZipFile(path, "a") as zf:
-        xml = zf.read("word/document.xml").decode("utf-8")
+
+    def inject_final_landscape_section(xml: str) -> str:
         root = ET.fromstring(xml.encode("utf-8"))
         body = root.find(W_NS + "body")
         assert_true(body is not None, "document body missing")
@@ -284,7 +309,9 @@ def source_audit_does_not_mark_portrait_wide_table_as_landscape_risk() -> None:
         pg_sz.set(W_NS + "w", "15840")
         pg_sz.set(W_NS + "h", "12240")
         pg_sz.set(W_NS + "orient", "landscape")
-        zf.writestr("word/document.xml", ET.tostring(root, encoding="unicode"))
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(path, "word/document.xml", inject_final_landscape_section)
 
     audit = audit_docx_source(str(path))
     assert_true(audit["counts"].get("wide_table_count") == 1, f"wide table count missing: {audit}")
@@ -307,8 +334,9 @@ def source_audit_respects_grid_before_for_vmerge_columns() -> None:
     table.cell(0, 1).text = "Vertical start"
     table.cell(1, 1).text = "Vertical continue"
     doc.save(path)
-    with zipfile.ZipFile(path, "a") as zf:
-        root = ET.fromstring(zf.read("word/document.xml"))
+
+    def inject_grid_before_vmerge(xml: str) -> str:
+        root = ET.fromstring(xml.encode("utf-8"))
         table_el = root.find(".//" + W_NS + "tbl")
         assert_true(table_el is not None, "table missing")
         rows = table_el.findall(W_NS + "tr")
@@ -332,7 +360,9 @@ def source_audit_respects_grid_before_for_vmerge_columns() -> None:
         grid_before.set(W_NS + "val", "1")
         rows[1].insert(0, tr_pr)
         ET.SubElement(ensure_tc_pr(second_row_cells[1]), W_NS + "vMerge")
-        zf.writestr("word/document.xml", ET.tostring(root, encoding="unicode"))
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(path, "word/document.xml", inject_grid_before_vmerge)
 
     audit = audit_docx_source(str(path))
     codes = {issue["code"] for issue in audit["issues"]}

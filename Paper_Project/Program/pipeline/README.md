@@ -32,7 +32,7 @@ Real documents used for product hardening stay local and ignored. The first
 stage is inventory, not formatting:
 
 ```powershell
-python Paper_Project/Program/pipeline/private_corpus_audit.py Templates/20261
+python Paper_Project/Program/pipeline/private_corpus_audit.py Templates/<private-corpus>
 ```
 
 The audit writes:
@@ -53,7 +53,7 @@ must not store body text. Classifications are fixed to:
 - `attachment_or_nonpaper`
 - `unsupported_or_conversion_needed`
 
-`Templates/20261/` is treated as a private real-data pool and is not part of the
+`Templates/<private-corpus>/` is treated as a private real-data pool and is not part of the
 ordinary recursive `--agent-auto` file choice path. `.doc` / `.wps` files are
 blocked by default and should be manually saved as DOCX before joining an E2E
 matrix.
@@ -101,9 +101,9 @@ CLI, output, verification, and QA details in a focused package:
 
 ## Verification Baseline
 
-Current baseline as of 2026-06-05:
+Current baseline as of 2026-06-18:
 
-- Synthetic regression after private real-data audit/source-audit/comparison-assessment hardening, boxed-content recovery, native note rendering, merged-table preservation, `gridBefore` vertical-merge round-trip preservation, table-column-width preservation, table layout-detail preservation, explicit table/cell border preservation, border/layout property-order hardening, source-order two-level nested table preservation, DOCX table-cell and nested-table image in-cell preservation, table-cell image/text run-order preservation, table-cell inline OMML formula preservation, table-cell footnote reference preservation, irregular merge-grid audit, and section-scoped/de-duplicated wide-table risk counts: `297 passed, 0 failed`.
+- Synthetic regression after private real-data audit/source-audit/comparison-assessment hardening, boxed-content recovery, native note rendering, merged-table preservation, `gridBefore` vertical-merge round-trip preservation, table-column-width preservation, table layout-detail preservation, explicit table/cell border preservation, border/layout property-order hardening, source-order two-level nested table preservation, DOCX table-cell and nested-table image in-cell preservation, table-cell image/text run-order preservation, table-cell inline OMML formula preservation, table-cell inline LaTeX formula preservation, mixed table-cell image/LaTeX/OMML ordering preservation, inline table-cell image/formula/footnote ordering preservation, nested table-cell inline image/LaTeX/OMML/footnote ordering preservation, table-cell footnote reference preservation, table-cell image-before-note-only reference preservation, irregular merge-grid audit, source-audit DOCX fixture rewrite hygiene, and section-scoped/de-duplicated wide-table risk counts: `302 passed, 0 failed`.
 - DOCX textbox/content-control recovery: visible text inside `w:txbxContent`
   and `w:sdtContent` is now recovered into the body stream, deduplicated, and
   reported in content metadata; textbox position fidelity remains a warning
@@ -114,7 +114,7 @@ Current baseline as of 2026-06-05:
 - DOCX body table fidelity: basic merged cells, column widths, row heights,
   repeated header rows, default cell margins, cell-level margins, and vertical
   alignment now round-trip through `content.json` and generated DOCX XML.
-- Private real-data inventory smoke on `Templates/20261/`: 418 local files scanned; 44 `template_candidate`, 126 `content_candidate`, 157 `reference_candidate`, 10 `attachment_or_nonpaper`, and 81 `unsupported_or_conversion_needed`. Reports stay local under `Outputs/_private_realdata_audit/` and are not committed.
+- Private real-data inventory smoke: local-only private corpus scans stay under ignored output folders, report structural classifications only, and must not publish source file contents, local paths, or corpus statistics.
 - Agent-first flow: `--agent-auto` scans local inputs, auto-selects only single candidates, defaults to user auto-repair, and writes `agent_summary.md/json`.
 - Novice interruption coverage: interactive cancellation/EOF, missing preflight inputs, generated-script build failures, QA dependency failures, and auto-repair blockers all route to a next action.
 - Strict/visual report handoff coverage: `conformance_report.md/json` and `visual_report.md/json` top-level `next_action` values name the leading issue code before the beginner-facing repair step, so users can connect codes such as `PLACEHOLDER_TEXT_LEFT`, `PDF_PAGE_COUNT_INVALID`, and `WPS_SAMPLE_IMAGE_MISMATCH` to the next concrete action even without opening `agent_summary.md`.
@@ -128,7 +128,12 @@ Current baseline as of 2026-06-05:
 - Markdown table-cell images: images embedded inside GitHub-style Markdown table cells are attached to `table_cell_items`, keep `location="markdown_table_cell"`, and render inside generated Word table cells; missing table-cell images remain QA-visible `CONTENT_IMAGE_MISSING` blockers instead of being stripped by table text cleanup.
 - DOCX table-cell images: images inside DOCX body table cells are attached to the source cell's `table_cell_items` instead of being appended after the table; same-paragraph image-before-text and text-before-image ordering is preserved from OOXML run order; images inside supported two-level nested tables stay inside the nested cell, and structural/strict image counts recurse through nested `table_cell_items`.
 - DOCX table-cell inline OMML formulas: formula-bearing cell paragraphs are attached as replaceable `rich_text` cell items and rendered back as native inline Word math inside the generated table cell instead of being flattened into plain text.
+- DOCX table-cell inline LaTeX formulas: plain cell text such as `Energy $E=mc^2$ model` is split into text/math/text rich runs and rendered as native inline Word math without leaking `$...$` delimiters into the final DOCX.
+- DOCX mixed table-cell media/formulas: when a cell contains preceding paragraphs, an image paragraph, and a later paragraph mixing `$...$` LaTeX with inline OMML, the image remains before the formula paragraph and both formula sources render as native Word math.
+- DOCX inline table-cell media/formula/notes: when the same source cell paragraph contains text, an inline image, later LaTeX/OMML formulas, and a footnote reference, extraction splits the cell at the image boundary so the generated table keeps text, image, formulas, and note in source order.
+- DOCX nested table-cell inline media/formula/notes: supported two-level nested tables preserve the same source order when a nested cell paragraph mixes text, an inline image, LaTeX, OMML, and a footnote reference.
 - DOCX table-cell footnote references: note references in table-cell paragraphs are attached to the same `rich_text` cell item, carry extracted note text, render as native Word footnote references inside the generated table cell, and participate in recursive note-count QA.
+- DOCX table-cell note-only anchors: an image followed only by a footnote anchor, with no visible text after the image, still renders as a native footnote reference after the image instead of being dropped.
 - DOCX relationship-image fail-closed handoff: corrupt or unsupported image bytes in source DOCX relationships are validated before copying into `figures/`; invalid images are not counted as extracted, do not leak into the content stream, and surface `IMAGE_EXTRACT_FAILED` with a beginner-facing step to re-export/reinsert the source image as a normal PNG/JPG before rerunning.
 - Strict conformance body-start detection: default body paragraphs before the first explicit Markdown heading stay inside strict content checks instead of being skipped as TOC/front matter.
 - Content-summary coverage: `内容提取.md` renders structured `role="image"` items, including table-cell images, as `[图片]` and mentions table-cell image counts in table summaries instead of opaque `[结构化内容]`.

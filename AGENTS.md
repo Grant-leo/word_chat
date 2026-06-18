@@ -213,7 +213,7 @@ Example: template has no cross-references → generated script has no `B_ref()`.
 
 - All format values from `P{}` (template) or `D{}` (derived). Never hardcode.
 - Do not commit or upload private test data: real files under `Inputs/`, `Outputs/`, `Templates/`, generated DOCX/PDF/PNG, QA renders, and template assets are local-only.
-- Treat `Templates/20261/` and similar folders as private real-data pools. Do not connect them to ordinary `--agent-auto` selection. Use `python Paper_Project/Program/pipeline/private_corpus_audit.py Templates/20261` to write local-only `Outputs/_private_realdata_audit/inventory.json`, `inventory.md`, and `review_queue.json`; these reports must stay uncommitted.
+- Treat `Templates/<private-corpus>/` and similar ignored folders as private real-data pools. Do not connect them to ordinary `--agent-auto` selection. Use `python Paper_Project/Program/pipeline/private_corpus_audit.py Templates/<private-corpus>` to write local-only `Outputs/_private_realdata_audit/inventory.json`, `inventory.md`, and `review_queue.json`; these reports must stay uncommitted.
 - Explicit unsupported input formats such as `.doc`, `.wps`, `.rar`, `.lnk`, `.xlsx`, bad DOCX, scanned/protected PDFs, and unsafe image formats must fail closed with issue codes and concrete next actions instead of raw tracebacks or silent defaults. Legacy `.doc` / `.wps` files should be manually saved as DOCX before joining an E2E matrix.
 - Codex skill files are user-local runtime configuration, not repository source; do not add or restore project skills under `docs/skills/`.
 - Always honor the workflow mode: user mode changes only `build_generated.py`; developer mode changes only reusable core scripts and reruns the whole pipeline.

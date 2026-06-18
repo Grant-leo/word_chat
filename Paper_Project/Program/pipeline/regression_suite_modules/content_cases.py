@@ -613,6 +613,131 @@ def content_parser_preserves_two_level_nested_tables_in_cells() -> None:
 
 
 @case
+def content_parser_preserves_nested_table_cell_inline_image_formula_and_footnote_order() -> None:
+    work = new_workdir("parser_nested_table_cell_inline_image_formula_note")
+    img = work / "nested_inline_image.png"
+    write_sample_png(img, width=128, height=96)
+    docx = work / "nested_table_cell_inline_image_formula_note.docx"
+    doc = Document()
+    doc.add_paragraph("1 Nested table inline content")
+    outer = doc.add_table(rows=1, cols=1)
+    host = outer.cell(0, 0)
+    host.text = "Outer before"
+    nested = host.add_table(rows=1, cols=1)
+    para = nested.cell(0, 0).paragraphs[0]
+    para.add_run("NestedLead")
+    para.add_run().add_picture(str(img))
+    para.add_run(r"Nested formula $a=1$ and ")
+    para._element.append(etree.fromstring(latex_to_omath(r"b=2", display=False).encode("utf-8")))
+    para.add_run(" noted")
+    host.add_paragraph("Outer after")
+    doc.save(docx)
+
+    footnote_text = "Nested table-cell note must stay after the formula."
+
+    def inject_reference(xml: str) -> str:
+        replacements = [
+            (
+                '<w:t xml:space="preserve"> noted</w:t></w:r></w:p>',
+                '<w:t xml:space="preserve"> noted</w:t></w:r><w:r><w:footnoteReference w:id="5"/></w:r></w:p>',
+            ),
+            (
+                "<w:t> noted</w:t></w:r></w:p>",
+                '<w:t> noted</w:t></w:r><w:r><w:footnoteReference w:id="5"/></w:r></w:p>',
+            ),
+        ]
+        for old, new in replacements:
+            if old in xml:
+                return xml.replace(old, new, 1)
+        return xml
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_reference)
+    with zipfile.ZipFile(docx, "a") as zf:
+        zf.writestr(
+            "word/footnotes.xml",
+            (
+                '<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                '<w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>'
+                '<w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>'
+                f'<w:footnote w:id="5"><w:p><w:r><w:t>{footnote_text}</w:t></w:r></w:p></w:footnote>'
+                "</w:footnotes>"
+            ),
+        )
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    table_items = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"nested table should stay inside the outer table cell: {paragraphs}")
+    outer_item = table_items[0]
+    assert_true(
+        outer_item.get("table_rows") == [["Outer before\nOuter after"]],
+        f"outer cell direct text should not absorb nested content: {outer_item}",
+    )
+    host_items = [
+        item
+        for entry in outer_item.get("table_cell_items") or []
+        if entry.get("row") == 0 and entry.get("col") == 0
+        for item in entry.get("items") or []
+        if isinstance(item, dict)
+    ]
+    nested_items = [item for item in host_items if item.get("role") == "table"]
+    assert_true(nested_items, f"nested table was not attached to the parent cell: {outer_item}")
+    nested_item = nested_items[0]
+    assert_true(
+        nested_item.get("table_rows") == [["NestedLead\nNested formula $a=1$ and b=2 noted"]],
+        f"nested table-cell text/image boundary changed: {nested_item}",
+    )
+    nested_cell_items = nested_item.get("table_cell_items") or []
+    image_item = next(
+        (
+            item
+            for entry in nested_cell_items
+            if entry.get("row") == 0 and entry.get("col") == 0
+            for item in entry.get("items") or []
+            if isinstance(item, dict) and item.get("role") == "image"
+        ),
+        None,
+    )
+    rich_item = next(
+        (
+            item
+            for entry in nested_cell_items
+            if entry.get("row") == 0 and entry.get("col") == 0
+            for item in entry.get("items") or []
+            if isinstance(item, dict) and item.get("role") == "rich_text"
+        ),
+        None,
+    )
+    assert_true(image_item and image_item.get("after_paragraph_index") == 1, f"nested inline cell image position changed: {nested_cell_items}")
+    assert_true(
+        rich_item and rich_item.get("replace_paragraph_index") == 1,
+        f"nested formula/note rich text should replace text after image: {nested_item}",
+    )
+    assert_true(
+        [run.get("type") for run in rich_item.get("runs") or []] == ["text", "math", "text", "math", "text", "note_ref"],
+        f"nested formula/note run order changed: {rich_item}",
+    )
+
+    result = run_generated_case("nested_table_cell_inline_image_formula_note_render", content, base_format())
+    xml = result["xml"]
+    assert_true("$a=1$" not in xml, "nested table-cell formula leaked LaTeX delimiters into generated XML")
+    assert_true(omath_count(xml) >= 2, "nested table-cell LaTeX/OMML formulas did not both render as native math")
+    assert_true(xml.count("<w:drawing>") == 1, f"nested inline cell image did not render exactly once: {result['manifest']}")
+    assert_true("<w:footnoteReference" in xml, "nested table-cell footnote did not render as native reference")
+    assert_true(
+        xml.find("NestedLead") < xml.find("<w:drawing>") < xml.find("Nested formula") < xml.find("<w:footnoteReference"),
+        "nested table-cell image/formula/footnote source order changed",
+    )
+    assert_true(
+        result["manifest"]["counts"].get("content_nested_tables_rendered", 0) >= 1,
+        f"nested table render count missing: {result['manifest']}",
+    )
+    assert_true(result["manifest"]["counts"].get("inline_formulas_rendered", 0) >= 2, f"inline formula count missing: {result['manifest']}")
+    assert_true(result["manifest"]["counts"].get("footnote_references_rendered") == 1, f"footnote count missing: {result['manifest']}")
+    assert_true(result["report"]["passed"] is True, f"nested inline image/formula/note table-cell render should pass QA: {result['report']}")
+
+
+@case
 def content_parser_does_not_count_cover_table_as_body_table() -> None:
     work = new_workdir("parser_cover_table_count")
     docx = work / "cover_table_count.docx"
@@ -1003,6 +1128,83 @@ def content_parser_preserves_table_cell_footnote_reference() -> None:
     assert_true("<w:footnoteReference" in result["xml"], "table-cell footnote did not render as native reference")
     assert_true(result["manifest"]["counts"].get("footnote_references_rendered") == 1, f"footnote count missing: {result['manifest']}")
     assert_true(result["report"]["passed"] is True, f"table-cell footnote render should pass QA: {result['report']}")
+
+
+@case
+def content_parser_preserves_table_cell_image_before_note_only_reference() -> None:
+    work = new_workdir("parser_table_cell_image_note_only")
+    img = work / "cell_image_note_only.png"
+    write_sample_png(img, width=128, height=96)
+    docx = work / "table_cell_image_note_only.docx"
+    doc = Document()
+    doc.add_paragraph("1 Table note-only reference")
+    table = doc.add_table(rows=1, cols=1)
+    para = table.cell(0, 0).paragraphs[0]
+    para.add_run("Lead")
+    para.add_run().add_picture(str(img))
+    doc.save(docx)
+
+    footnote_text = "Note-only anchor after an image must still render."
+
+    def inject_reference(xml: str) -> str:
+        return xml.replace(
+            "</w:drawing></w:r></w:p>",
+            '</w:drawing></w:r><w:r><w:footnoteReference w:id="6"/></w:r></w:p>',
+            1,
+        )
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_reference)
+    with zipfile.ZipFile(docx, "a") as zf:
+        zf.writestr(
+            "word/footnotes.xml",
+            (
+                '<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                '<w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>'
+                '<w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>'
+                f'<w:footnote w:id="6"><w:p><w:r><w:t>{footnote_text}</w:t></w:r></w:p></w:footnote>'
+                "</w:footnotes>"
+            ),
+        )
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    table_items = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "table"]
+    assert_true(table_items, f"table with image/note-only cell was not preserved: {paragraphs}")
+    table_item = table_items[0]
+    assert_true(table_item.get("table_rows") == [["Lead"]], f"note-only anchor should not add visible cell text: {table_item}")
+    cell_items = table_item.get("table_cell_items") or []
+    image_item = next(
+        (
+            item
+            for entry in cell_items
+            if entry.get("row") == 0 and entry.get("col") == 0
+            for item in entry.get("items") or []
+            if isinstance(item, dict) and item.get("role") == "image"
+        ),
+        None,
+    )
+    rich_item = next(
+        (
+            item
+            for entry in cell_items
+            if entry.get("row") == 0 and entry.get("col") == 0
+            for item in entry.get("items") or []
+            if isinstance(item, dict) and item.get("role") == "rich_text"
+        ),
+        None,
+    )
+    assert_true(image_item and image_item.get("after_paragraph_index") == 1, f"image position changed: {cell_items}")
+    assert_true(rich_item and rich_item.get("replace_paragraph_index") == 1, f"note-only rich text position changed: {table_item}")
+    assert_true([run.get("type") for run in rich_item.get("runs") or []] == ["note_ref"], f"note-only run changed: {rich_item}")
+    assert_true((rich_item.get("notes") or [{}])[0].get("text") == footnote_text, f"note text not attached: {rich_item}")
+
+    result = run_generated_case("table_cell_image_note_only_render", content, base_format())
+    xml = result["xml"]
+    assert_true(xml.count("<w:drawing>") == 1, f"image did not render exactly once: {result['manifest']}")
+    assert_true("<w:footnoteReference" in xml, "note-only table-cell footnote did not render as native reference")
+    assert_true(xml.find("Lead") < xml.find("<w:drawing>") < xml.find("<w:footnoteReference"), "image/note-only source order changed")
+    assert_true(result["manifest"]["counts"].get("footnote_references_rendered") == 1, f"footnote count missing: {result['manifest']}")
+    assert_true(result["report"]["passed"] is True, f"image/note-only table-cell render should pass QA: {result['report']}")
 
 
 @case
@@ -1398,6 +1600,210 @@ def content_parser_preserves_table_cell_inline_omml_formula() -> None:
     assert_true(omath_count(result["xml"]) >= 1, "table-cell inline OMML rendered as plain text instead of native math")
     assert_true(result["manifest"]["counts"].get("inline_formulas_rendered", 0) >= 1, f"inline formula count missing: {result['manifest']}")
     assert_true(result["report"]["passed"] is True, f"table-cell inline OMML render should pass QA: {result['report']}")
+
+
+@case
+def content_parser_preserves_table_cell_latex_inline_formula() -> None:
+    work = new_workdir("parser_table_cell_latex_inline")
+    docx = work / "table_cell_latex_inline.docx"
+    doc = Document()
+    doc.add_paragraph("1 Table formula")
+    table = doc.add_table(rows=1, cols=1)
+    table.cell(0, 0).paragraphs[0].add_run(r"Energy $E=mc^2$ model")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    table_items = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "table"]
+    assert_true(table_items, f"table with LaTeX inline cell was not preserved: {paragraphs}")
+    table_item = table_items[0]
+    cell_items = table_item.get("table_cell_items") or []
+    rich_item = next(
+        (
+            item
+            for entry in cell_items
+            if entry.get("row") == 0 and entry.get("col") == 0
+            for item in entry.get("items") or []
+            if isinstance(item, dict) and item.get("role") == "rich_text"
+        ),
+        None,
+    )
+    assert_true(rich_item, f"table-cell LaTeX inline formula was not preserved as structured rich text: {table_item}")
+    assert_true(
+        [run.get("type") for run in rich_item.get("runs") or []] == ["text", "math", "text"],
+        f"table-cell LaTeX inline formula run order changed: {rich_item}",
+    )
+
+    result = run_generated_case("table_cell_latex_inline_render", content, base_format())
+    assert_true("$E=mc^2$" not in result["xml"], "table-cell LaTeX delimiter leaked into generated XML")
+    assert_true(omath_count(result["xml"]) >= 1, "table-cell LaTeX inline formula rendered as plain text instead of native math")
+    assert_true(result["manifest"]["counts"].get("inline_formulas_rendered", 0) >= 1, f"inline formula count missing: {result['manifest']}")
+    assert_true(result["report"]["passed"] is True, f"table-cell LaTeX inline render should pass QA: {result['report']}")
+
+
+@case
+def content_parser_preserves_table_cell_mixed_image_latex_and_omml_order() -> None:
+    work = new_workdir("parser_table_cell_mixed_media_formula")
+    img = work / "cell_image.png"
+    write_sample_png(img, width=128, height=96)
+    docx = work / "table_cell_mixed_media_formula.docx"
+    doc = Document()
+    doc.add_paragraph("1 Mixed cell")
+    table = doc.add_table(rows=1, cols=1)
+    cell = table.cell(0, 0)
+    cell.paragraphs[0].add_run("Lead paragraph")
+    cell.add_paragraph().add_run().add_picture(str(img))
+    formula_para = cell.add_paragraph()
+    formula_para.add_run(r"Formula line $x=1$ and ")
+    formula_para._element.append(etree.fromstring(latex_to_omath(r"y=2", display=False).encode("utf-8")))
+    formula_para.add_run(" done")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    table_items = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "table"]
+    assert_true(table_items, f"table with mixed media/formula cell was not preserved: {paragraphs}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [["Lead paragraph\nFormula line $x=1$ and y=2 done"]],
+        f"table text changed during mixed cell extraction: {table_item}",
+    )
+    cell_items = table_item.get("table_cell_items") or []
+    image_item = next(
+        (
+            item
+            for entry in cell_items
+            if entry.get("row") == 0 and entry.get("col") == 0
+            for item in entry.get("items") or []
+            if isinstance(item, dict) and item.get("role") == "image"
+        ),
+        None,
+    )
+    rich_item = next(
+        (
+            item
+            for entry in cell_items
+            if entry.get("row") == 0 and entry.get("col") == 0
+            for item in entry.get("items") or []
+            if isinstance(item, dict) and item.get("role") == "rich_text"
+        ),
+        None,
+    )
+    assert_true(image_item and image_item.get("after_paragraph_index") == 1, f"cell image position changed: {cell_items}")
+    assert_true(rich_item, f"mixed formula cell did not produce rich text: {table_item}")
+    assert_true(
+        [run.get("type") for run in rich_item.get("runs") or []] == ["text", "math", "text", "math", "text"],
+        f"mixed LaTeX/OMML run order changed: {rich_item}",
+    )
+
+    result = run_generated_case("table_cell_mixed_media_formula_render", content, base_format())
+    xml = result["xml"]
+    assert_true("$x=1$" not in xml, "table-cell mixed formula leaked LaTeX delimiters into generated XML")
+    assert_true(omath_count(xml) >= 2, "table-cell mixed LaTeX/OMML formulas did not both render as native math")
+    assert_true(xml.count("<w:drawing>") == 1, f"cell image did not render exactly once: {result['manifest']}")
+    assert_true(xml.find("<w:drawing>") < xml.find("Formula line"), "cell image moved after the following formula paragraph")
+    assert_true(result["manifest"]["counts"].get("inline_formulas_rendered", 0) >= 2, f"inline formula count missing: {result['manifest']}")
+    assert_true(result["report"]["passed"] is True, f"mixed table-cell media/formula render should pass QA: {result['report']}")
+
+
+@case
+def content_parser_preserves_table_cell_inline_image_before_formula_and_footnote() -> None:
+    work = new_workdir("parser_table_cell_inline_image_formula_note")
+    img = work / "cell_inline_image.png"
+    write_sample_png(img, width=128, height=96)
+    docx = work / "table_cell_inline_image_formula_note.docx"
+    doc = Document()
+    doc.add_paragraph("1 Inline cell")
+    table = doc.add_table(rows=1, cols=1)
+    para = table.cell(0, 0).paragraphs[0]
+    para.add_run("Lead")
+    para.add_run().add_picture(str(img))
+    para.add_run(r"Formula line $x=1$ and ")
+    para._element.append(etree.fromstring(latex_to_omath(r"y=2", display=False).encode("utf-8")))
+    para.add_run(" noted")
+    doc.save(docx)
+
+    footnote_text = "Inline cell note must stay after the formula."
+
+    def inject_reference(xml: str) -> str:
+        replacements = [
+            (
+                '<w:t xml:space="preserve"> noted</w:t></w:r></w:p>',
+                '<w:t xml:space="preserve"> noted</w:t></w:r><w:r><w:footnoteReference w:id="4"/></w:r></w:p>',
+            ),
+            (
+                "<w:t> noted</w:t></w:r></w:p>",
+                '<w:t> noted</w:t></w:r><w:r><w:footnoteReference w:id="4"/></w:r></w:p>',
+            ),
+        ]
+        for old, new in replacements:
+            if old in xml:
+                return xml.replace(old, new, 1)
+        return xml
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_reference)
+    with zipfile.ZipFile(docx, "a") as zf:
+        zf.writestr(
+            "word/footnotes.xml",
+            (
+                '<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                '<w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>'
+                '<w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>'
+                f'<w:footnote w:id="4"><w:p><w:r><w:t>{footnote_text}</w:t></w:r></w:p></w:footnote>'
+                "</w:footnotes>"
+            ),
+        )
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    table_items = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "table"]
+    assert_true(table_items, f"table with inline image/formula/note cell was not preserved: {paragraphs}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [["Lead\nFormula line $x=1$ and y=2 noted"]],
+        f"inline image should split table-cell text at source image position: {table_item}",
+    )
+    cell_items = table_item.get("table_cell_items") or []
+    image_item = next(
+        (
+            item
+            for entry in cell_items
+            if entry.get("row") == 0 and entry.get("col") == 0
+            for item in entry.get("items") or []
+            if isinstance(item, dict) and item.get("role") == "image"
+        ),
+        None,
+    )
+    rich_item = next(
+        (
+            item
+            for entry in cell_items
+            if entry.get("row") == 0 and entry.get("col") == 0
+            for item in entry.get("items") or []
+            if isinstance(item, dict) and item.get("role") == "rich_text"
+        ),
+        None,
+    )
+    assert_true(image_item and image_item.get("after_paragraph_index") == 1, f"inline cell image position changed: {cell_items}")
+    assert_true(rich_item and rich_item.get("replace_paragraph_index") == 1, f"formula/note rich text should replace text after image: {table_item}")
+    assert_true(
+        [run.get("type") for run in rich_item.get("runs") or []] == ["text", "math", "text", "math", "text", "note_ref"],
+        f"formula/note run order changed: {rich_item}",
+    )
+
+    result = run_generated_case("table_cell_inline_image_formula_note_render", content, base_format())
+    xml = result["xml"]
+    assert_true("$x=1$" not in xml, "inline table-cell formula leaked LaTeX delimiters into generated XML")
+    assert_true(omath_count(xml) >= 2, "inline table-cell LaTeX/OMML formulas did not both render as native math")
+    assert_true(xml.count("<w:drawing>") == 1, f"inline cell image did not render exactly once: {result['manifest']}")
+    assert_true("<w:footnoteReference" in xml, "inline table-cell footnote did not render as native reference")
+    assert_true(
+        xml.find("Lead") < xml.find("<w:drawing>") < xml.find("Formula line") < xml.find("<w:footnoteReference"),
+        "inline table-cell image/formula/footnote source order changed",
+    )
+    assert_true(result["manifest"]["counts"].get("inline_formulas_rendered", 0) >= 2, f"inline formula count missing: {result['manifest']}")
+    assert_true(result["manifest"]["counts"].get("footnote_references_rendered") == 1, f"footnote count missing: {result['manifest']}")
+    assert_true(result["report"]["passed"] is True, f"inline image/formula/note table-cell render should pass QA: {result['report']}")
 
 
 @case

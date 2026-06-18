@@ -6,8 +6,10 @@ from typing import Any, Callable, Dict, List, Optional
 
 try:
     from content_parser_modules.paragraph_stream import math_entry_from_ooxml
+    from content_parser_modules.formula_text_items import _rich_text_item_from_inline_formula_spans
 except ImportError:  # pragma: no cover - package-style imports
     from .paragraph_stream import math_entry_from_ooxml
+    from .formula_text_items import _rich_text_item_from_inline_formula_spans
 
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -208,7 +210,7 @@ def _append_clean_text_part(
     text_parts: List[str],
     buf: List[str],
     clean_text_func: Optional[Callable[..., str]] = None,
-) -> None:
+) -> Optional[tuple[int, str]]:
     raw = "".join(buf)
     buf.clear()
     if clean_text_func is not None:
@@ -216,7 +218,10 @@ def _append_clean_text_part(
     else:
         txt = raw.rstrip()
     if txt:
+        idx = len(text_parts)
         text_parts.append(txt)
+        return idx, txt
+    return None
 
 
 def _clean_cell_text(raw: str, clean_text_func: Optional[Callable[..., str]] = None) -> str:
@@ -240,6 +245,40 @@ def _append_rich_text_run(runs: List[Dict[str, Any]], text: str) -> None:
         runs[-1]["text"] = str(runs[-1].get("text") or "") + text
     else:
         runs.append({"type": "text", "text": text})
+
+
+def _append_text_with_inline_formula_runs(
+    runs: List[Dict[str, Any]],
+    math_items: List[Dict[str, Any]],
+    text: str,
+) -> None:
+    rich_item = _rich_text_item_from_inline_formula_spans(text)
+    if not isinstance(rich_item, dict) or not rich_item.get("runs"):
+        _append_rich_text_run(runs, text)
+        return
+    for run in rich_item.get("runs") or []:
+        if not isinstance(run, dict):
+            continue
+        kind = run.get("type") or ("math" if run.get("math") else "text")
+        if kind == "math":
+            entries = [entry for entry in (run.get("math") or []) if isinstance(entry, dict)]
+            if entries:
+                math_items.extend(entries)
+                copied = dict(run)
+                copied["math"] = entries
+                runs.append(copied)
+        else:
+            _append_rich_text_run(runs, str(run.get("text") or ""))
+
+
+def _rich_text_replacement_for_text(index: int, text: str) -> Optional[Dict[str, Any]]:
+    rich_item = _rich_text_item_from_inline_formula_spans(text)
+    if not isinstance(rich_item, dict):
+        return None
+    rich_item = dict(rich_item)
+    rich_item["location"] = "table_cell"
+    rich_item["replace_paragraph_index"] = index
+    return rich_item
 
 
 def _extract_structured_paragraph_items(
@@ -321,64 +360,73 @@ def _extract_structured_paragraph_items(
             append_math(child, "display" if local_name == "oMathPara" else "inline")
     flush_text()
 
-    plain_raw = "".join(str(token.get("text") or "") for token in tokens if token.get("type") in {"text", "math"})
-    plain_text = _clean_cell_text(plain_raw, clean_text_func=clean_text_func)
-    replace_index = len(text_parts)
-    if plain_text:
-        text_parts.append(plain_text)
+    def flush_segment(segment_tokens: List[Dict[str, Any]]) -> None:
+        if not segment_tokens:
+            return
+        plain_raw = "".join(
+            str(token.get("text") or "")
+            for token in segment_tokens
+            if token.get("type") in {"text", "math"}
+        )
+        plain_text = _clean_cell_text(plain_raw, clean_text_func=clean_text_func)
+        replace_index = len(text_parts)
+        if plain_text:
+            text_parts.append(plain_text)
 
-    rich_runs: List[Dict[str, Any]] = []
-    math_items: List[Dict[str, Any]] = []
-    note_items: List[Dict[str, Any]] = []
-    for token in tokens:
-        kind = token.get("type")
-        if kind == "text":
-            _append_rich_text_run(rich_runs, str(token.get("text") or ""))
-        elif kind == "math":
-            entries = token.get("math") or []
-            math_items.extend(entries)
-            rich_runs.append({"type": "math", "text": token.get("text") or "", "math": entries})
-        elif kind == "note_ref":
-            note_run = {
-                "type": "note_ref",
-                "note_type": token.get("note_type") or "footnote",
-                "source_id": token.get("source_id") or "",
-                "text": token.get("text") or "",
-            }
-            note_items.append(note_run)
-            rich_runs.append(note_run)
-
-    if (math_items or note_items) and rich_runs:
-        rich_item: Dict[str, Any] = {
-            "role": "rich_text",
-            "location": "table_cell",
-            "replace_paragraph_index": replace_index,
-            "text": plain_text,
-            "runs": rich_runs,
-        }
-        if math_items:
-            rich_item["math"] = math_items
-        if note_items:
-            rich_item["notes"] = [
-                {
-                    "type": note.get("note_type") or "footnote",
-                    "source_id": note.get("source_id") or "",
-                    "text": note.get("text") or "",
+        rich_runs: List[Dict[str, Any]] = []
+        math_items: List[Dict[str, Any]] = []
+        note_items: List[Dict[str, Any]] = []
+        for token in segment_tokens:
+            kind = token.get("type")
+            if kind == "text":
+                _append_text_with_inline_formula_runs(rich_runs, math_items, str(token.get("text") or ""))
+            elif kind == "math":
+                entries = token.get("math") or []
+                math_items.extend(entries)
+                rich_runs.append({"type": "math", "text": token.get("text") or "", "math": entries})
+            elif kind == "note_ref":
+                note_run = {
+                    "type": "note_ref",
+                    "note_type": token.get("note_type") or "footnote",
+                    "source_id": token.get("source_id") or "",
+                    "text": token.get("text") or "",
                 }
-                for note in note_items
-            ]
-        items.append(rich_item)
+                note_items.append(note_run)
+                rich_runs.append(note_run)
 
-    seen_textish = False
+        if (math_items or note_items) and rich_runs:
+            rich_item: Dict[str, Any] = {
+                "role": "rich_text",
+                "location": "table_cell",
+                "replace_paragraph_index": replace_index,
+                "text": plain_text,
+                "runs": rich_runs,
+            }
+            if math_items:
+                rich_item["math"] = math_items
+            if note_items:
+                rich_item["notes"] = [
+                    {
+                        "type": note.get("note_type") or "footnote",
+                        "source_id": note.get("source_id") or "",
+                        "text": note.get("text") or "",
+                    }
+                    for note in note_items
+                ]
+            items.append(rich_item)
+
+    segment: List[Dict[str, Any]] = []
     for token in tokens:
         kind = token.get("type")
         if kind == "image":
-            image_index = replace_index + (1 if seen_textish and plain_text else 0)
+            flush_segment(segment)
+            segment = []
             for image_item in token.get("items") or []:
-                image_item.setdefault("after_paragraph_index", image_index)
+                image_item.setdefault("after_paragraph_index", len(text_parts))
                 items.append(image_item)
-        elif kind in {"text", "math", "note_ref"} and str(token.get("text") or "").strip():
-            seen_textish = True
+        else:
+            segment.append(token)
+    flush_segment(segment)
     return items
 
 
@@ -419,7 +467,11 @@ def _extract_ordered_paragraph_text_and_media(
         return []
 
     def add_media_from_run(run_elem: Any) -> None:
-        _append_clean_text_part(text_parts, buf, clean_text_func=clean_text_func)
+        appended_text = _append_clean_text_part(text_parts, buf, clean_text_func=clean_text_func)
+        if appended_text is not None:
+            rich_item = _rich_text_replacement_for_text(appended_text[0], appended_text[1])
+            if rich_item:
+                media_items.append(rich_item)
         for image_item in extract_run_images(run_elem):
             if isinstance(image_item, dict):
                 image_item = dict(image_item)
@@ -447,7 +499,11 @@ def _extract_ordered_paragraph_text_and_media(
             for run in list(child):
                 if str(run.tag).rsplit("}", 1)[-1] == "r":
                     consume_run(run)
-    _append_clean_text_part(text_parts, buf, clean_text_func=clean_text_func)
+    appended_text = _append_clean_text_part(text_parts, buf, clean_text_func=clean_text_func)
+    if appended_text is not None:
+        rich_item = _rich_text_replacement_for_text(appended_text[0], appended_text[1])
+        if rich_item:
+            media_items.append(rich_item)
 
     if not media_items and len(text_parts) == start_text_count:
         raw = paragraph_plain_text_from_ooxml(p_elem)
@@ -456,7 +512,11 @@ def _extract_ordered_paragraph_text_and_media(
         else:
             txt = raw.rstrip()
         if txt:
+            idx = len(text_parts)
             text_parts.append(txt)
+            rich_item = _rich_text_replacement_for_text(idx, txt)
+            if rich_item:
+                media_items.append(rich_item)
     return media_items
 
 
