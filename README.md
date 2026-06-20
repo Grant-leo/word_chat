@@ -150,7 +150,9 @@ build_generated.py ─────────→ 最终论文.docx
 ## 公式、图片和 QA
 
 - Markdown 的 `$...$` / `$$...$$` 会转成 Word 原生 OOXML Math。
-- DOCX 中的文本公式会尽量识别并重建为可编辑公式；DOCX 表格单元格里的 inline OMML 公式也会作为原生 Word 公式保留，脚注引用也会留在表格单元格内，不会压成普通字符串或丢到表格外。
+- DOCX 中的文本公式会尽量识别并重建为可编辑公式；DOCX 表格单元格里的 block-level/inline/嵌套 inline 内容控件文字、`w:fldSimple` 可见字段结果、`w:customXml` / `w:smartTag` 透明容器里的绑定/下拉显示值、内容控件内 hyperlink 包裹的图片、inline OMML/LaTeX 公式和脚注引用会留在原表格单元格内，不会压成普通字符串、丢到表格外或重复追加到正文末尾。
+- DOCX 正文级 `w:sdtContent` 内容控件包住段落和表格时，会按源顺序进入正文流；表格仍保持为表格，单元格文字不会散落成普通正文。
+- DOCX 正文级 `w:customXml` / `w:smartTag` 包住的段落和表格会按源顺序展开，后续正常段落不会因为包装节点而错位或丢失。
 - 图片会复制到本次输出目录的 `figures/`，不会污染 `Inputs/`；Markdown 本地图片路径支持 `%20` 空格编码、`<带空格路径>` 包裹写法、文件名括号、可选图片 title（如 `![图](path "title")`）、复制链接时常见的 `?query` / `#fragment` 后缀，以及引用式图片 `![图][id]` + `[id]: path`、引用定义下一行 title、shortcut 引用式图片 `![图]` + `[图]: path`、HTML 图片标签 `<img src="path" alt="图">`、懒加载 `data-src` / `data-original`、`srcset` 首候选和 PNG/JPG data URI。本地图片只把 `.png` / `.jpg` / `.jpeg` 作为稳定可生成格式；GIF、WebP、SVG、无扩展名图片，或扩展名和真实格式不一致的图片，会用 `CONTENT_IMAGE_UNREADABLE` 提示重新导出普通 PNG/JPG/JPEG 后更新 Markdown 链接并重跑。内联 data URI 也会核对 MIME 声明和真实图片格式，`data:image/png` 里实际是 JPEG 这类标错内容会作为 `CONTENT_IMAGE_UNREADABLE` 阻断，不会按错误扩展名写入 `figures/`。Markdown 表格单元格里的图片会记录到 `table_cell_items`、标记 `markdown_table_cell` 并渲染在生成的 Word 表格单元格内，缺失时同样进入 QA；损坏、打不开、不支持的本地图片或坏 data URI 会用 `CONTENT_IMAGE_UNREADABLE` 提示重新导出普通 PNG/JPG；远程 `http://` / `https://` 图片不会自动下载，QA 会用 `CONTENT_IMAGE_REMOTE_UNSUPPORTED` 明确提示先下载到本地并改成相对路径后重跑。
 - DOCX 表格单元格里的正文图片会挂到对应 `table_cell_items` 并渲染在原 Word 表格单元格内；同一单元格段落里的“图片在文字前/后”顺序会按 OOXML run 顺序保留。二层嵌套表中的单元格图片也会保留在嵌套表内，QA 与 strict 预期计数会递归统计这些图片，避免“渲染成功但图片跑到表格外”或“QA 少数图片”的静默误排。DOCX 图片关系如果是损坏字节、特殊嵌入对象、扩展名和真实格式不一致或不支持的图片格式，会以 `IMAGE_EXTRACT_FAILED` 阻断并提示用户把源图重新导出/插入为普通 PNG/JPG 后重跑，不会把坏图片写进 `figures/`；Markdown 表格单元格图片也会保留在原表格单元格中渲染，缺失时同样进入 QA；源文件页眉/页脚图片属于 non-body 内容，会以 `NON_BODY_IMAGE_UNSUPPORTED` 提示用户移到正文或确认忽略。
 - Markdown 开头的 YAML/front matter、第一行 H1 题名支持 UTF-8 BOM，题名也支持 Setext `Title` + `===`；中文题名写入 `title_cn`，英文/非 CJK 题名写入 `title_en`，避免有效标题触发 `TITLE_MISSING`。
@@ -179,10 +181,11 @@ build_generated.py ─────────→ 最终论文.docx
 
 ## 当前验证基线
 
-截至 2026-06-18：
+截至 2026-06-20：
 
-- 合成回归：`302 passed, 0 failed`
-- DOCX 表格/嵌套表注释边界：二层嵌套表单元格会保持同段文字、图片、LaTeX、OMML 和脚注的源顺序；表格单元格中“图片后只有脚注锚点、没有可见文字”的情况也会在图片后原位渲染为 Word 原生脚注引用。
+- 合成回归：`318 passed, 0 failed`
+- DOCX 表格/嵌套表注释边界：二层嵌套表单元格会保持同段文字、图片、LaTeX、OMML 和脚注的源顺序；表格单元格中“图片后只有脚注锚点、没有可见文字”的情况也会在图片后原位渲染为 Word 原生脚注引用；表格单元格里的 block-level、inline 和嵌套 inline 内容控件文字会原位进入该单元格，内容控件内 `w:fldSimple` 的可见字段结果、`w:customXml` / `w:smartTag` 透明容器里的显示值也会按源顺序保留，内容控件内 hyperlink 包住图片、LaTeX、OMML 和脚注时也会保留原顺序，并在正文级内容控件兜底恢复时去重，避免重复正文；表格外正文级内容控件即使与表格单元格文本部分重叠或完全相同，也不会被误判为表格重复项；正文级 `w:sdtContent` 同时包住段落和表格时也会原位展开，元数据只统计正文段落，表格单元格文本不会被当成散落正文；正文级内容控件段落里的 inline `w:sdt` / `w:fldSimple` / hyperlink / `w:customXml` / `w:smartTag` 会递归保留图片、OMML/LaTeX 公式和脚注/尾注锚点顺序；带 `w:ins` / `w:moveTo` 的修订插入内容会按 Word 最终视图进入正文、表格、修订包裹的整行表格/单元格、标题路由和文本框恢复通道，`w:del` / `w:moveFrom` 删除内容与批注正文不会混入最终论文。
+- DOCX 正文透明容器边界：正文级 `w:customXml` / `w:smartTag` 包住段落和表格时，内容会原位进入正文流，后续普通段落不会被包装节点造成的索引差异替换或丢失。
 - 自动修复闭环回归：可修复 QA error、连续无改善停止、重建失败停止、needs_user_file 停止、strict/visual QA 依赖缺失、visual 参数保持、报告路径脱敏、停止后 `agent_summary` 汇总下一步均已覆盖
 - Agent-first 自动入口：`--agent-auto` 可自动扫描单候选模板/内容；多候选时预检报告会把每个候选转成可直接回复给 Agent 的句子，并在 Markdown/JSON 中列出 `Templates/` 与 `Inputs/` 的放置位置和支持格式；默认普通用户自动修复，并写出 `agent_summary.md/json`
 - 小白中断体验：交互取消、EOF、预检失败、生成脚本构建失败、QA/依赖失败都会给出下一步，`agent_summary.md/json` 会聚合结构/strict/visual QA 的问题码和具体修复动作，构建失败也会生成 `qa_report.md/json`、`qa_repair_plan.md/json` 和 `qa_fix_prompt.txt`；`qa_report.md/json` 顶部会点名首个结构 QA 问题码和动作；strict/visual 报告顶部下一步也会点名 leading issue code，并针对占位符、Word 域、PDF 页数无效、页面图片不可读等问题给出更具体的下一步；外部绝对路径输入不会生成失效的 basename 重跑命令，即使外部路径中也有同名 `Inputs` / `Templates` 目录，而会提示放入本项目 `Inputs/` / `Templates/` 后按文件名重跑；Markdown 图片路径已覆盖 `%20` 空格编码、`<带空格路径>` 本地写法、文件名括号、可选图片 title、本地图片 `?query` / `#fragment` 后缀、引用式图片 `![图][id]` + `[id]: path`、引用定义下一行 title、shortcut 引用式图片 `![图]` + `[图]: path`、HTML `<img src>`、HTML 懒加载 `data-src`、`srcset` 首候选、PNG/JPG data URI 图片和 Markdown 表格单元格图片，未定义图片引用会以 `CONTENT_IMAGE_MISSING` 阻断，损坏图片、GIF/WebP/SVG 等不支持本地格式、扩展名不匹配、坏 data URI 或 data URI MIME/真实格式不一致会以 `CONTENT_IMAGE_UNREADABLE` 提示重新导出 PNG/JPG，远程图片 URL 会以 `CONTENT_IMAGE_REMOTE_UNSUPPORTED` 提示下载到本地并改相对路径，UTF-8 BOM 开头的 YAML/front matter、Markdown H1、Setext 一级英文题名，以及“格式块 + 公式 + 缺图”的组合边界已覆盖；DOCX 表格单元格图和二层嵌套表内图片原位渲染、同段落图文 run 顺序保留、DOCX 表格单元格 inline OMML/LaTeX 行内公式原生渲染、DOCX 表格单元格图片 + LaTeX + OMML 混排顺序保真、DOCX 表格单元格同段落图片 + 公式 + 脚注顺序保真、DOCX 表格单元格脚注引用原位渲染、QA/strict 图片计数递归覆盖、DOCX 损坏/不支持图片关系的 `IMAGE_EXTRACT_FAILED` 阻断、Markdown 表格单元格图原位渲染、页眉/页脚 non-body 图、正文表格合并/列宽/行高/重复表头/单元格边距/垂直对齐/显式边框/二层嵌套表保真、嵌套表前后段落顺序保真、三层及以上嵌套风险审计、异常合并网格审计、横向宽表风险计数、嵌套宽表去重、`gridBefore` 纵向合并误报防护和 `gridBefore` 纵向合并解析保真、`内容提取.md` 图片摘要也有回归覆盖，strict QA 已覆盖默认正文段落出现在第一个显式标题前的场景，visual/WPS 样张对比会优先抽封面、目录/正文锚点和图表公式风险页

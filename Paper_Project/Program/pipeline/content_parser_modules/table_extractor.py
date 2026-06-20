@@ -23,6 +23,9 @@ _MARGIN_SIDE_MAP = {
 }
 _BORDER_SIDES = {"top", "left", "bottom", "right", "insideH", "insideV", "tl2br", "tr2bl", "start", "end"}
 _BORDER_ATTRS = ("val", "sz", "color", "space")
+_TRANSPARENT_CONTENT_CONTAINERS = {"customXml", "smartTag"}
+_ACCEPTED_REVISION_CONTAINERS = {"ins", "moveTo"}
+_DELETED_REVISION_CONTAINERS = {"del", "moveFrom"}
 
 
 def paragraph_plain_text_from_ooxml(p_elem: Any) -> str:
@@ -165,9 +168,9 @@ def _row_grid_before(tr_elem: Any) -> int:
 def _fallback_row_widths_twips(tbl_elem: Any, ncols: int) -> List[int]:
     best: List[int] = []
     best_positive = 0
-    for tr in tbl_elem.findall(f"{{{W_NS}}}tr"):
+    for tr in _iter_table_row_elements(tbl_elem):
         widths: List[int] = [0] * _row_grid_before(tr)
-        for tc in tr.findall(f"{{{W_NS}}}tc"):
+        for tc in _iter_table_cell_elements(tr):
             colspan = _cell_grid_span(tc)
             width = _cell_width_twips(tc)
             if width > 0 and colspan > 1:
@@ -232,6 +235,43 @@ def _clean_cell_text(raw: str, clean_text_func: Optional[Callable[..., str]] = N
 
 def _local_name(elem: Any) -> str:
     return str(elem.tag).rsplit("}", 1)[-1]
+
+
+def _sdt_content_children(elem: Any) -> List[Any]:
+    content = elem.find(f"{{{W_NS}}}sdtContent") if elem is not None else None
+    return list(content) if content is not None else []
+
+
+def _iter_table_row_elements(container_elem: Any) -> List[Any]:
+    rows: List[Any] = []
+    for child in list(container_elem):
+        local_name = _local_name(child)
+        if local_name == "tr":
+            rows.append(child)
+        elif local_name == "sdt":
+            for nested in _sdt_content_children(child):
+                rows.extend(_iter_table_row_elements(nested))
+        elif local_name in _TRANSPARENT_CONTENT_CONTAINERS or local_name in _ACCEPTED_REVISION_CONTAINERS:
+            rows.extend(_iter_table_row_elements(child))
+        elif local_name in _DELETED_REVISION_CONTAINERS:
+            continue
+    return rows
+
+
+def _iter_table_cell_elements(row_elem: Any) -> List[Any]:
+    cells: List[Any] = []
+    for child in list(row_elem):
+        local_name = _local_name(child)
+        if local_name == "tc":
+            cells.append(child)
+        elif local_name == "sdt":
+            for nested in _sdt_content_children(child):
+                cells.extend(_iter_table_cell_elements(nested))
+        elif local_name in _TRANSPARENT_CONTENT_CONTAINERS or local_name in _ACCEPTED_REVISION_CONTAINERS:
+            cells.extend(_iter_table_cell_elements(child))
+        elif local_name in _DELETED_REVISION_CONTAINERS:
+            continue
+    return cells
 
 
 def _paragraph_has_structured_runs(p_elem: Any) -> bool:
@@ -347,17 +387,185 @@ def _extract_structured_paragraph_items(
                 buf.append("\t")
             elif local_name in {"br", "cr"}:
                 buf.append("\n")
+            elif local_name in _ACCEPTED_REVISION_CONTAINERS:
+                consume_transparent_container(part)
+            elif local_name in _DELETED_REVISION_CONTAINERS or local_name == "delText":
+                continue
+
+    def consume_hyperlink(hyperlink_elem: Any) -> None:
+        for part in list(hyperlink_elem):
+            local_name = _local_name(part)
+            if local_name == "r":
+                consume_run(part)
+            elif local_name == "hyperlink":
+                consume_hyperlink(part)
+            elif local_name == "sdt":
+                consume_inline_sdt(part)
+            elif local_name == "fldSimple":
+                consume_field(part)
+            elif local_name in _TRANSPARENT_CONTENT_CONTAINERS:
+                consume_transparent_container(part)
+            elif local_name in _ACCEPTED_REVISION_CONTAINERS:
+                consume_transparent_container(part)
+            elif local_name in _DELETED_REVISION_CONTAINERS:
+                continue
+            elif local_name in {"oMath", "oMathPara"}:
+                append_math(part, "display" if local_name == "oMathPara" else "inline")
+            elif local_name == "p":
+                for nested in list(part):
+                    nested_name = _local_name(nested)
+                    if nested_name == "r":
+                        consume_run(nested)
+                    elif nested_name == "hyperlink":
+                        consume_hyperlink(nested)
+                    elif nested_name == "sdt":
+                        consume_inline_sdt(nested)
+                    elif nested_name == "fldSimple":
+                        consume_field(nested)
+                    elif nested_name in _TRANSPARENT_CONTENT_CONTAINERS:
+                        consume_transparent_container(nested)
+                    elif nested_name in _ACCEPTED_REVISION_CONTAINERS:
+                        consume_transparent_container(nested)
+                    elif nested_name in _DELETED_REVISION_CONTAINERS:
+                        continue
+                    elif nested_name in {"oMath", "oMathPara"}:
+                        append_math(nested, "display" if nested_name == "oMathPara" else "inline")
+
+    def consume_inline_sdt(sdt_elem: Any) -> None:
+        for part in _sdt_content_children(sdt_elem):
+            local_name = _local_name(part)
+            if local_name == "r":
+                consume_run(part)
+            elif local_name == "hyperlink":
+                consume_hyperlink(part)
+            elif local_name in {"oMath", "oMathPara"}:
+                append_math(part, "display" if local_name == "oMathPara" else "inline")
+            elif local_name == "sdt":
+                consume_inline_sdt(part)
+            elif local_name == "fldSimple":
+                consume_field(part)
+            elif local_name in _TRANSPARENT_CONTENT_CONTAINERS:
+                consume_transparent_container(part)
+            elif local_name in _ACCEPTED_REVISION_CONTAINERS:
+                consume_transparent_container(part)
+            elif local_name in _DELETED_REVISION_CONTAINERS:
+                continue
+            elif local_name == "p":
+                for nested in list(part):
+                    nested_name = _local_name(nested)
+                    if nested_name == "r":
+                        consume_run(nested)
+                    elif nested_name == "hyperlink":
+                        consume_hyperlink(nested)
+                    elif nested_name in {"oMath", "oMathPara"}:
+                        append_math(nested, "display" if nested_name == "oMathPara" else "inline")
+                    elif nested_name == "sdt":
+                        consume_inline_sdt(nested)
+                    elif nested_name == "fldSimple":
+                        consume_field(nested)
+                    elif nested_name in _TRANSPARENT_CONTENT_CONTAINERS:
+                        consume_transparent_container(nested)
+                    elif nested_name in _ACCEPTED_REVISION_CONTAINERS:
+                        consume_transparent_container(nested)
+                    elif nested_name in _DELETED_REVISION_CONTAINERS:
+                        continue
+
+    def consume_field(field_elem: Any) -> None:
+        for part in list(field_elem):
+            local_name = _local_name(part)
+            if local_name == "r":
+                consume_run(part)
+            elif local_name == "hyperlink":
+                consume_hyperlink(part)
+            elif local_name == "sdt":
+                consume_inline_sdt(part)
+            elif local_name == "fldSimple":
+                consume_field(part)
+            elif local_name in _TRANSPARENT_CONTENT_CONTAINERS:
+                consume_transparent_container(part)
+            elif local_name in _ACCEPTED_REVISION_CONTAINERS:
+                consume_transparent_container(part)
+            elif local_name in _DELETED_REVISION_CONTAINERS:
+                continue
+            elif local_name in {"oMath", "oMathPara"}:
+                append_math(part, "display" if local_name == "oMathPara" else "inline")
+            elif local_name == "p":
+                for nested in list(part):
+                    nested_name = _local_name(nested)
+                    if nested_name == "r":
+                        consume_run(nested)
+                    elif nested_name == "hyperlink":
+                        consume_hyperlink(nested)
+                    elif nested_name == "sdt":
+                        consume_inline_sdt(nested)
+                    elif nested_name == "fldSimple":
+                        consume_field(nested)
+                    elif nested_name in _TRANSPARENT_CONTENT_CONTAINERS:
+                        consume_transparent_container(nested)
+                    elif nested_name in _ACCEPTED_REVISION_CONTAINERS:
+                        consume_transparent_container(nested)
+                    elif nested_name in _DELETED_REVISION_CONTAINERS:
+                        continue
+                    elif nested_name in {"oMath", "oMathPara"}:
+                        append_math(nested, "display" if nested_name == "oMathPara" else "inline")
+
+    def consume_transparent_container(container_elem: Any) -> None:
+        for part in list(container_elem):
+            local_name = _local_name(part)
+            if local_name == "r":
+                consume_run(part)
+            elif local_name == "hyperlink":
+                consume_hyperlink(part)
+            elif local_name == "sdt":
+                consume_inline_sdt(part)
+            elif local_name == "fldSimple":
+                consume_field(part)
+            elif local_name in _TRANSPARENT_CONTENT_CONTAINERS:
+                consume_transparent_container(part)
+            elif local_name in _ACCEPTED_REVISION_CONTAINERS:
+                consume_transparent_container(part)
+            elif local_name in _DELETED_REVISION_CONTAINERS:
+                continue
+            elif local_name in {"oMath", "oMathPara"}:
+                append_math(part, "display" if local_name == "oMathPara" else "inline")
+            elif local_name == "p":
+                for nested in list(part):
+                    nested_name = _local_name(nested)
+                    if nested_name == "r":
+                        consume_run(nested)
+                    elif nested_name == "hyperlink":
+                        consume_hyperlink(nested)
+                    elif nested_name == "sdt":
+                        consume_inline_sdt(nested)
+                    elif nested_name == "fldSimple":
+                        consume_field(nested)
+                    elif nested_name in _TRANSPARENT_CONTENT_CONTAINERS:
+                        consume_transparent_container(nested)
+                    elif nested_name in _ACCEPTED_REVISION_CONTAINERS:
+                        consume_transparent_container(nested)
+                    elif nested_name in _DELETED_REVISION_CONTAINERS:
+                        continue
+                    elif nested_name in {"oMath", "oMathPara"}:
+                        append_math(nested, "display" if nested_name == "oMathPara" else "inline")
 
     for child in list(p_elem):
         local_name = _local_name(child)
         if local_name == "r":
             consume_run(child)
         elif local_name == "hyperlink":
-            for run in list(child):
-                if _local_name(run) == "r":
-                    consume_run(run)
+            consume_hyperlink(child)
         elif local_name in {"oMath", "oMathPara"}:
             append_math(child, "display" if local_name == "oMathPara" else "inline")
+        elif local_name == "sdt":
+            consume_inline_sdt(child)
+        elif local_name == "fldSimple":
+            consume_field(child)
+        elif local_name in _TRANSPARENT_CONTENT_CONTAINERS:
+            consume_transparent_container(child)
+        elif local_name in _ACCEPTED_REVISION_CONTAINERS:
+            consume_transparent_container(child)
+        elif local_name in _DELETED_REVISION_CONTAINERS:
+            continue
     flush_text()
 
     def flush_segment(segment_tokens: List[Dict[str, Any]]) -> None:
@@ -490,15 +698,167 @@ def _extract_ordered_paragraph_text_and_media(
                 buf.append("\t")
             elif local_name in {"br", "cr"}:
                 buf.append("\n")
+            elif local_name in _ACCEPTED_REVISION_CONTAINERS:
+                consume_transparent_container(part)
+            elif local_name in _DELETED_REVISION_CONTAINERS or local_name == "delText":
+                continue
+
+    def consume_hyperlink(hyperlink_elem: Any) -> None:
+        for part in list(hyperlink_elem):
+            local_name = _local_name(part)
+            if local_name == "r":
+                consume_run(part)
+            elif local_name == "hyperlink":
+                consume_hyperlink(part)
+            elif local_name == "sdt":
+                consume_inline_sdt(part)
+            elif local_name == "fldSimple":
+                consume_field(part)
+            elif local_name in _TRANSPARENT_CONTENT_CONTAINERS:
+                consume_transparent_container(part)
+            elif local_name in _ACCEPTED_REVISION_CONTAINERS:
+                consume_transparent_container(part)
+            elif local_name in _DELETED_REVISION_CONTAINERS:
+                continue
+            elif local_name == "p":
+                for nested in list(part):
+                    nested_name = _local_name(nested)
+                    if nested_name == "r":
+                        consume_run(nested)
+                    elif nested_name == "hyperlink":
+                        consume_hyperlink(nested)
+                    elif nested_name == "sdt":
+                        consume_inline_sdt(nested)
+                    elif nested_name == "fldSimple":
+                        consume_field(nested)
+                    elif nested_name in _TRANSPARENT_CONTENT_CONTAINERS:
+                        consume_transparent_container(nested)
+                    elif nested_name in _ACCEPTED_REVISION_CONTAINERS:
+                        consume_transparent_container(nested)
+                    elif nested_name in _DELETED_REVISION_CONTAINERS:
+                        continue
+
+    def consume_inline_sdt(sdt_elem: Any) -> None:
+        for part in _sdt_content_children(sdt_elem):
+            local_name = _local_name(part)
+            if local_name == "r":
+                consume_run(part)
+            elif local_name == "hyperlink":
+                consume_hyperlink(part)
+            elif local_name == "sdt":
+                consume_inline_sdt(part)
+            elif local_name == "fldSimple":
+                consume_field(part)
+            elif local_name in _TRANSPARENT_CONTENT_CONTAINERS:
+                consume_transparent_container(part)
+            elif local_name in _ACCEPTED_REVISION_CONTAINERS:
+                consume_transparent_container(part)
+            elif local_name in _DELETED_REVISION_CONTAINERS:
+                continue
+            elif local_name == "p":
+                for nested in list(part):
+                    nested_name = _local_name(nested)
+                    if nested_name == "r":
+                        consume_run(nested)
+                    elif nested_name == "hyperlink":
+                        consume_hyperlink(nested)
+                    elif nested_name == "sdt":
+                        consume_inline_sdt(nested)
+                    elif nested_name == "fldSimple":
+                        consume_field(nested)
+                    elif nested_name in _TRANSPARENT_CONTENT_CONTAINERS:
+                        consume_transparent_container(nested)
+                    elif nested_name in _ACCEPTED_REVISION_CONTAINERS:
+                        consume_transparent_container(nested)
+                    elif nested_name in _DELETED_REVISION_CONTAINERS:
+                        continue
+
+    def consume_field(field_elem: Any) -> None:
+        for part in list(field_elem):
+            local_name = _local_name(part)
+            if local_name == "r":
+                consume_run(part)
+            elif local_name == "hyperlink":
+                consume_hyperlink(part)
+            elif local_name == "sdt":
+                consume_inline_sdt(part)
+            elif local_name == "fldSimple":
+                consume_field(part)
+            elif local_name in _TRANSPARENT_CONTENT_CONTAINERS:
+                consume_transparent_container(part)
+            elif local_name in _ACCEPTED_REVISION_CONTAINERS:
+                consume_transparent_container(part)
+            elif local_name in _DELETED_REVISION_CONTAINERS:
+                continue
+            elif local_name == "p":
+                for nested in list(part):
+                    nested_name = _local_name(nested)
+                    if nested_name == "r":
+                        consume_run(nested)
+                    elif nested_name == "hyperlink":
+                        consume_hyperlink(nested)
+                    elif nested_name == "sdt":
+                        consume_inline_sdt(nested)
+                    elif nested_name == "fldSimple":
+                        consume_field(nested)
+                    elif nested_name in _TRANSPARENT_CONTENT_CONTAINERS:
+                        consume_transparent_container(nested)
+                    elif nested_name in _ACCEPTED_REVISION_CONTAINERS:
+                        consume_transparent_container(nested)
+                    elif nested_name in _DELETED_REVISION_CONTAINERS:
+                        continue
+
+    def consume_transparent_container(container_elem: Any) -> None:
+        for part in list(container_elem):
+            local_name = _local_name(part)
+            if local_name == "r":
+                consume_run(part)
+            elif local_name == "hyperlink":
+                consume_hyperlink(part)
+            elif local_name == "sdt":
+                consume_inline_sdt(part)
+            elif local_name == "fldSimple":
+                consume_field(part)
+            elif local_name in _TRANSPARENT_CONTENT_CONTAINERS:
+                consume_transparent_container(part)
+            elif local_name in _ACCEPTED_REVISION_CONTAINERS:
+                consume_transparent_container(part)
+            elif local_name in _DELETED_REVISION_CONTAINERS:
+                continue
+            elif local_name == "p":
+                for nested in list(part):
+                    nested_name = _local_name(nested)
+                    if nested_name == "r":
+                        consume_run(nested)
+                    elif nested_name == "hyperlink":
+                        consume_hyperlink(nested)
+                    elif nested_name == "sdt":
+                        consume_inline_sdt(nested)
+                    elif nested_name == "fldSimple":
+                        consume_field(nested)
+                    elif nested_name in _TRANSPARENT_CONTENT_CONTAINERS:
+                        consume_transparent_container(nested)
+                    elif nested_name in _ACCEPTED_REVISION_CONTAINERS:
+                        consume_transparent_container(nested)
+                    elif nested_name in _DELETED_REVISION_CONTAINERS:
+                        continue
 
     for child in list(p_elem):
         local_name = str(child.tag).rsplit("}", 1)[-1]
         if local_name == "r":
             consume_run(child)
         elif local_name == "hyperlink":
-            for run in list(child):
-                if str(run.tag).rsplit("}", 1)[-1] == "r":
-                    consume_run(run)
+            consume_hyperlink(child)
+        elif local_name == "sdt":
+            consume_inline_sdt(child)
+        elif local_name == "fldSimple":
+            consume_field(child)
+        elif local_name in _TRANSPARENT_CONTENT_CONTAINERS:
+            consume_transparent_container(child)
+        elif local_name in _ACCEPTED_REVISION_CONTAINERS:
+            consume_transparent_container(child)
+        elif local_name in _DELETED_REVISION_CONTAINERS:
+            continue
     appended_text = _append_clean_text_part(text_parts, buf, clean_text_func=clean_text_func)
     if appended_text is not None:
         rich_item = _rich_text_replacement_for_text(appended_text[0], appended_text[1])
@@ -533,8 +893,9 @@ def _cell_text_and_nested_items_from_ooxml(
 ) -> tuple[str, List[Dict[str, Any]]]:
     text_parts: List[str] = []
     nested_items: List[Dict[str, Any]] = []
-    for child in list(tc_elem):
-        local_name = str(child.tag).rsplit("}", 1)[-1]
+
+    def consume_cell_child(child: Any) -> None:
+        local_name = _local_name(child)
         if local_name == "p":
             nested_items.extend(
                 _extract_ordered_paragraph_text_and_media(
@@ -568,6 +929,20 @@ def _cell_text_and_nested_items_from_ooxml(
                 }
                 nested_item.update(nested_data)
                 nested_items.append(nested_item)
+        elif local_name == "sdt":
+            for sdt_child in _sdt_content_children(child):
+                consume_cell_child(sdt_child)
+        elif local_name in _TRANSPARENT_CONTENT_CONTAINERS:
+            for nested_child in list(child):
+                consume_cell_child(nested_child)
+        elif local_name in _ACCEPTED_REVISION_CONTAINERS:
+            for nested_child in list(child):
+                consume_cell_child(nested_child)
+        elif local_name in _DELETED_REVISION_CONTAINERS:
+            return
+
+    for child in list(tc_elem):
+        consume_cell_child(child)
     return "\n".join(text_parts).strip(), nested_items
 
 
@@ -594,14 +969,14 @@ def extract_table_from_ooxml(
     table_cell_margins = _margins_twips(tbl_pr, "tblCellMar")
     table_borders = _borders_from_elem(tbl_pr, "tblBorders")
 
-    for tr in tbl_elem.findall(f"{{{W_NS}}}tr"):
+    for tr in _iter_table_row_elements(tbl_elem):
         row_idx = len(rows)
         cells: List[str] = [""] * _row_grid_before(tr)
         seen_vmerge_cols = set()
         continued_records = set()
         row_heights.append(_row_height_twips(tr))
         header_flags.append(_row_repeats_header(tr))
-        for tc in tr.findall(f"{{{W_NS}}}tc"):
+        for tc in _iter_table_cell_elements(tr):
             col_idx = len(cells)
             colspan = _cell_grid_span(tc)
             vmerge_kind = _cell_vmerge_kind(tc)

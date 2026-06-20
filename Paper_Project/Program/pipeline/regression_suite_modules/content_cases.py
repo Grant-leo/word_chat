@@ -43,6 +43,7 @@ from formula_semantics import (
 )
 from latex_omath import latex_to_omath
 from qa_checker import check_output, write_reports
+from content_parser_modules.source_audit import audit_docx_source
 
 from regression_suite_modules.generated_docx import make_vml_picture_docx, omath_count, omath_para_count, run_generated_case
 from regression_suite_modules.harness import (
@@ -220,6 +221,546 @@ def body_dispatcher_routes_sections_references_tables_and_appendix_code() -> Non
     assert_true(result.references and result.references[0]["role"] == "table", "reference table was not captured before appendix")
     assert_true(sections[1]["role"] == "appendix", "back matter did not exit reference collection")
     assert_true(sections[1]["paragraphs"][0]["role"] == "code", "appendix command text was not routed as code")
+
+
+@case
+def content_parser_preserves_body_custom_xml_wrapped_paragraph_and_table() -> None:
+    work = new_workdir("parser_body_custom_xml_wrapper")
+    docx = work / "body_custom_xml_wrapper.docx"
+    doc = Document()
+    doc.add_paragraph("1 Wrapped section")
+    doc.add_paragraph("Wrapped paragraph from customXml")
+    table = doc.add_table(rows=1, cols=2)
+    table.cell(0, 0).text = "WrappedTableLeft"
+    table.cell(0, 1).text = "WrappedTableRight"
+    doc.add_paragraph("After wrapper paragraph")
+    doc.save(docx)
+
+    def wrap_body_content(xml: str) -> str:
+        para_marker = "<w:t>Wrapped paragraph from customXml</w:t>"
+        table_marker = "<w:t>WrappedTableLeft</w:t>"
+        assert_true(para_marker in xml, "body customXml paragraph marker not found")
+        assert_true(table_marker in xml, "body customXml table marker not found")
+        para_start = xml.rfind("<w:p", 0, xml.find(para_marker))
+        table_end = xml.find("</w:tbl>", xml.find(table_marker)) + len("</w:tbl>")
+        assert_true(para_start >= 0 and table_end > para_start, "body customXml wrapper bounds not found")
+        wrapped = xml[para_start:table_end]
+        return (
+            xml[:para_start]
+            + '<w:customXml w:element="wrappedBody" w:uri="urn:synthetic">'
+            + wrapped
+            + "</w:customXml>"
+            + xml[table_end:]
+        )
+
+    _rewrite_docx_part(docx, "word/document.xml", wrap_body_content)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    plain = _content_plain_text(content)
+    assert_true("Wrapped paragraph from customXml" in plain, f"customXml-wrapped body paragraph was lost: {content}")
+    assert_true("After wrapper paragraph" in plain, f"paragraph after customXml wrapper was lost or replaced: {content}")
+    table_items = [
+        item
+        for section in content.get("sections") or []
+        for item in section.get("paragraphs") or []
+        if isinstance(item, dict) and item.get("role") == "table"
+    ]
+    assert_true(
+        any(item.get("table_rows") == [["WrappedTableLeft", "WrappedTableRight"]] for item in table_items),
+        f"customXml-wrapped body table was lost: {content}",
+    )
+
+
+@case
+def content_parser_preserves_body_sdt_wrapped_paragraphs_and_table_in_place() -> None:
+    work = new_workdir("parser_body_sdt_wrapper")
+    docx = work / "body_sdt_wrapper.docx"
+    doc = Document()
+    doc.add_paragraph("1 Controlled section")
+    doc.add_paragraph("Before content control wrapper")
+    doc.add_paragraph("Controlled paragraph A")
+    table = doc.add_table(rows=1, cols=2)
+    table.cell(0, 0).text = "ControlledTableLeft"
+    table.cell(0, 1).text = "ControlledTableRight"
+    doc.add_paragraph("Controlled paragraph B")
+    doc.add_paragraph("After content control wrapper")
+    doc.save(docx)
+
+    def wrap_body_content_control(xml: str) -> str:
+        start_marker = "<w:t>Controlled paragraph A</w:t>"
+        table_marker = "<w:t>ControlledTableLeft</w:t>"
+        end_marker = "<w:t>Controlled paragraph B</w:t>"
+        assert_true(start_marker in xml, "body sdt start paragraph marker not found")
+        assert_true(table_marker in xml, "body sdt table marker not found")
+        assert_true(end_marker in xml, "body sdt end paragraph marker not found")
+        start = xml.rfind("<w:p", 0, xml.find(start_marker))
+        end_para_start = xml.rfind("<w:p", 0, xml.find(end_marker))
+        end = xml.find("</w:p>", end_para_start) + len("</w:p>")
+        assert_true(start >= 0 and end > start, "body sdt wrapper bounds not found")
+        wrapped = xml[start:end]
+        return (
+            xml[:start]
+            + '<w:sdt><w:sdtPr><w:tag w:val="body-repeat-section"/></w:sdtPr><w:sdtContent>'
+            + wrapped
+            + "</w:sdtContent></w:sdt>"
+            + xml[end:]
+        )
+
+    _rewrite_docx_part(docx, "word/document.xml", wrap_body_content_control)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    paragraphs = [
+        item
+        for section in content.get("sections") or []
+        for item in section.get("paragraphs") or []
+    ]
+    flow: List[str] = []
+    for item in paragraphs:
+        if isinstance(item, str):
+            flow.append(item)
+        elif isinstance(item, dict) and item.get("role") == "table":
+            flow.append("TABLE:" + "|".join(item.get("table_rows", [[]])[0]))
+
+    expected = [
+        "Before content control wrapper",
+        "Controlled paragraph A",
+        "TABLE:ControlledTableLeft|ControlledTableRight",
+        "Controlled paragraph B",
+        "After content control wrapper",
+    ]
+    cursor = -1
+    for marker in expected:
+        try:
+            cursor = flow.index(marker, cursor + 1)
+        except ValueError:
+            fail(f"body content-control wrapper did not preserve source-order marker {marker!r}: {flow}; content={content}")
+
+    meta = content.get("_meta") or {}
+    assert_true(
+        meta.get("recovered_content_control_paragraphs") == 2,
+        f"body content-control paragraph count should track in-place paragraphs only: {meta}",
+    )
+    assert_true(
+        not any(item in {"ControlledTableLeft", "ControlledTableRight"} for item in flow),
+        f"table-cell text from body content control leaked as loose paragraphs: {flow}",
+    )
+
+
+@case
+def content_parser_preserves_body_sdt_inline_rich_media_formula_note_order() -> None:
+    work = new_workdir("parser_body_sdt_inline_rich")
+    img = work / "body_sdt_inline_image.png"
+    write_sample_png(img, width=120, height=90)
+    docx = work / "body_sdt_inline_rich.docx"
+    doc = Document()
+    doc.add_paragraph("1 Body controlled rich")
+    para = doc.add_paragraph()
+    para.add_run("Lead")
+    para.add_run().add_picture(str(img))
+    para.add_run("Formula line ")
+    para._element.append(etree.fromstring(latex_to_omath(r"y=2", display=False).encode("utf-8")))
+    para.add_run(" noted")
+    doc.add_paragraph("After rich controlled paragraph")
+    doc.save(docx)
+
+    footnote_text = "Body controlled paragraph note must stay after the formula."
+
+    def inject_reference(xml: str) -> str:
+        replacements = [
+            (
+                '<w:t xml:space="preserve"> noted</w:t></w:r></w:p>',
+                '<w:t xml:space="preserve"> noted</w:t></w:r><w:r><w:footnoteReference w:id="8"/></w:r></w:p>',
+            ),
+            (
+                "<w:t> noted</w:t></w:r></w:p>",
+                '<w:t> noted</w:t></w:r><w:r><w:footnoteReference w:id="8"/></w:r></w:p>',
+            ),
+        ]
+        for old, new in replacements:
+            if old in xml:
+                return xml.replace(old, new, 1)
+        return xml
+
+    def wrap_body_sdt_and_inline_tail(xml: str) -> str:
+        w_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        root = etree.fromstring(xml.encode("utf-8"))
+        ns = {"w": w_ns}
+        paragraphs = root.xpath(".//w:body/w:p[.//w:t='Lead']", namespaces=ns)
+        assert_true(paragraphs, "body rich paragraph not found")
+        paragraph = paragraphs[0]
+        children = list(paragraph)
+        lead_idx = next(
+            (
+                idx
+                for idx, child in enumerate(children)
+                if child.xpath(".//w:t[text()='Lead']", namespaces=ns)
+            ),
+            -1,
+        )
+        assert_true(lead_idx >= 0 and lead_idx + 1 < len(children), "body rich inline tail injection point not found")
+        tail = children[lead_idx + 1 :]
+        for child in tail:
+            paragraph.remove(child)
+
+        inline_sdt = etree.Element(f"{{{w_ns}}}sdt")
+        inline_pr = etree.SubElement(inline_sdt, f"{{{w_ns}}}sdtPr")
+        inline_tag = etree.SubElement(inline_pr, f"{{{w_ns}}}tag")
+        inline_tag.set(f"{{{w_ns}}}val", "body-inline-rich")
+        inline_content = etree.SubElement(inline_sdt, f"{{{w_ns}}}sdtContent")
+        hyperlink = etree.SubElement(inline_content, f"{{{w_ns}}}hyperlink")
+        hyperlink.set(f"{{{w_ns}}}anchor", "synthetic-body-controlled-link")
+        for child in tail:
+            hyperlink.append(child)
+        paragraph.append(inline_sdt)
+
+        body = paragraph.getparent()
+        paragraph_index = body.index(paragraph)
+        body.remove(paragraph)
+        block_sdt = etree.Element(f"{{{w_ns}}}sdt")
+        block_pr = etree.SubElement(block_sdt, f"{{{w_ns}}}sdtPr")
+        block_tag = etree.SubElement(block_pr, f"{{{w_ns}}}tag")
+        block_tag.set(f"{{{w_ns}}}val", "body-rich-section")
+        block_content = etree.SubElement(block_sdt, f"{{{w_ns}}}sdtContent")
+        block_content.append(paragraph)
+        body.insert(paragraph_index, block_sdt)
+        return etree.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_reference)
+    _rewrite_docx_part(docx, "word/document.xml", wrap_body_sdt_and_inline_tail)
+    with zipfile.ZipFile(docx, "a") as zf:
+        zf.writestr(
+            "word/footnotes.xml",
+            (
+                '<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                '<w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>'
+                '<w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>'
+                f'<w:footnote w:id="8"><w:p><w:r><w:t>{footnote_text}</w:t></w:r></w:p></w:footnote>'
+                "</w:footnotes>"
+            ),
+        )
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    paragraphs = [
+        item
+        for section in content.get("sections") or []
+        for item in section.get("paragraphs") or []
+    ]
+    image_items = [item for item in paragraphs if isinstance(item, dict) and item.get("role") == "image"]
+    rich_items = [item for item in paragraphs if isinstance(item, dict) and item.get("role") == "rich_text"]
+    assert_true(image_items, f"body inline content-control image was lost: {paragraphs}")
+    assert_true(rich_items, f"body inline content-control formula/note rich text was lost: {paragraphs}")
+    rich_item = rich_items[0]
+    assert_true(
+        [run.get("type") for run in rich_item.get("runs") or []] == ["text", "math", "text", "note_ref"],
+        f"body inline content-control rich run order changed: {rich_item}",
+    )
+    assert_true((rich_item.get("notes") or [{}])[0].get("text") == footnote_text, f"body inline content-control note text lost: {rich_item}")
+    assert_true(
+        not any(item == "LeadFormula line y=2 noted" for item in paragraphs if isinstance(item, str)),
+        f"body inline content-control text was duplicated as flat fallback text: {paragraphs}",
+    )
+    meta = content.get("_meta") or {}
+    assert_true(
+        meta.get("recovered_content_control_paragraphs") == 1,
+        f"body rich content-control paragraph count should count the wrapped body paragraph once: {meta}",
+    )
+
+    result = run_generated_case("body_sdt_inline_rich_render", content, base_format())
+    xml = result["xml"]
+    assert_true(xml.count("<w:drawing>") == 1, f"body inline content-control image did not render exactly once: {result['manifest']}")
+    assert_true(omath_count(xml) >= 1, "body inline content-control formula did not render as native math")
+    assert_true("<w:footnoteReference" in xml, "body inline content-control footnote did not render as native reference")
+    assert_true(
+        xml.find("Lead") < xml.find("<w:drawing>") < xml.find("Formula line") < xml.find("<w:footnoteReference"),
+        "body inline content-control image/formula/footnote source order changed",
+    )
+    assert_true(result["manifest"]["counts"].get("footnote_references_rendered") == 1, f"footnote count missing: {result['manifest']}")
+    assert_true(result["report"]["passed"] is True, f"body inline content-control rich render should pass QA: {result['report']}")
+
+
+@case
+def content_parser_uses_final_view_for_tracked_changes_and_ignores_comments() -> None:
+    work = new_workdir("parser_tracked_changes_final_view")
+    docx = work / "tracked_changes_final_view.docx"
+    doc = Document()
+    doc.add_paragraph("1 Revision boundary")
+    doc.add_paragraph("Body before tail.")
+    table = doc.add_table(rows=1, cols=1)
+    table.cell(0, 0).text = "Cell before tail"
+    doc.save(docx)
+
+    def inject_revisions_and_comment(xml: str) -> str:
+        w_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        root = etree.fromstring(xml.encode("utf-8"))
+        ns = {"w": w_ns}
+        body_para = root.xpath(".//w:body/w:p[.//w:t='Body before tail.']", namespaces=ns)[0]
+        body_run = body_para.xpath("./w:r[.//w:t='Body before tail.']", namespaces=ns)[0]
+        body_run.xpath(".//w:t", namespaces=ns)[0].text = "Body before "
+        insert = etree.Element(f"{{{w_ns}}}ins")
+        insert.set(f"{{{w_ns}}}id", "1")
+        insert.set(f"{{{w_ns}}}author", "Synthetic")
+        insert_run = etree.SubElement(insert, f"{{{w_ns}}}r")
+        insert_text = etree.SubElement(insert_run, f"{{{w_ns}}}t")
+        insert_text.text = "inserted "
+        delete = etree.Element(f"{{{w_ns}}}del")
+        delete.set(f"{{{w_ns}}}id", "2")
+        delete.set(f"{{{w_ns}}}author", "Synthetic")
+        delete_run = etree.SubElement(delete, f"{{{w_ns}}}r")
+        delete_text = etree.SubElement(delete_run, f"{{{w_ns}}}delText")
+        delete_text.text = "deleted "
+        comment_start = etree.Element(f"{{{w_ns}}}commentRangeStart")
+        comment_start.set(f"{{{w_ns}}}id", "3")
+        comment_end = etree.Element(f"{{{w_ns}}}commentRangeEnd")
+        comment_end.set(f"{{{w_ns}}}id", "3")
+        comment_ref_run = etree.Element(f"{{{w_ns}}}r")
+        etree.SubElement(comment_ref_run, f"{{{w_ns}}}commentReference").set(f"{{{w_ns}}}id", "3")
+        tail_run = etree.Element(f"{{{w_ns}}}r")
+        tail_text = etree.SubElement(tail_run, f"{{{w_ns}}}t")
+        tail_text.text = "tail."
+        body_para.extend([insert, delete, comment_start, tail_run, comment_end, comment_ref_run])
+
+        cell_para = root.xpath(".//w:tbl//w:tc/w:p[.//w:t='Cell before tail']", namespaces=ns)[0]
+        cell_run = cell_para.xpath("./w:r[.//w:t='Cell before tail']", namespaces=ns)[0]
+        cell_run.xpath(".//w:t", namespaces=ns)[0].text = "Cell before "
+        cell_insert = etree.Element(f"{{{w_ns}}}ins")
+        cell_insert.set(f"{{{w_ns}}}id", "4")
+        cell_insert.set(f"{{{w_ns}}}author", "Synthetic")
+        cell_insert_run = etree.SubElement(cell_insert, f"{{{w_ns}}}r")
+        cell_insert_text = etree.SubElement(cell_insert_run, f"{{{w_ns}}}t")
+        cell_insert_text.text = "inserted "
+        cell_delete = etree.Element(f"{{{w_ns}}}del")
+        cell_delete.set(f"{{{w_ns}}}id", "5")
+        cell_delete.set(f"{{{w_ns}}}author", "Synthetic")
+        cell_delete_run = etree.SubElement(cell_delete, f"{{{w_ns}}}r")
+        cell_delete_text = etree.SubElement(cell_delete_run, f"{{{w_ns}}}delText")
+        cell_delete_text.text = "deleted "
+        cell_tail_run = etree.Element(f"{{{w_ns}}}r")
+        cell_tail_text = etree.SubElement(cell_tail_run, f"{{{w_ns}}}t")
+        cell_tail_text.text = "tail"
+        cell_para.extend([cell_insert, cell_delete, cell_tail_run])
+        return etree.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_revisions_and_comment)
+    with zipfile.ZipFile(docx, "a") as zf:
+        zf.writestr(
+            "word/comments.xml",
+            (
+                '<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                '<w:comment w:id="3" w:author="Synthetic"><w:p><w:r><w:t>Private reviewer comment</w:t></w:r></w:p></w:comment>'
+                "</w:comments>"
+            ),
+        )
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    text = _content_plain_text(content)
+    assert_true("Body before inserted tail." in text, f"body inserted revision text was not preserved in final-view content: {content}")
+    assert_true("Body before deleted" not in text, f"body deleted revision text leaked into content: {content}")
+    assert_true("Private reviewer comment" not in text, f"comment body leaked into extracted content: {content}")
+    table_items = [
+        item
+        for sec in content.get("sections") or []
+        for item in sec.get("paragraphs") or []
+        if isinstance(item, dict) and item.get("role") == "table"
+    ]
+    assert_true(table_items, f"revision table was lost: {content}")
+    assert_true(
+        table_items[0].get("table_rows") == [["Cell before inserted tail"]],
+        f"table inserted/deleted revision final view changed: {table_items[0]}",
+    )
+    audit = audit_docx_source(str(docx))
+    codes = {issue.get("code") for issue in audit.get("issues") or []}
+    assert_true("TRACKED_CHANGES_PRESENT" in codes, f"tracked change audit issue missing: {audit}")
+    assert_true("COMMENTS_PRESENT" in codes, f"comment audit issue missing: {audit}")
+
+    result = run_generated_case("tracked_changes_final_view_render", content, base_format())
+    xml = result["xml"]
+    assert_true("Body before inserted tail." in xml, "body inserted revision did not render in generated DOCX")
+    assert_true("deleted" not in xml and "Private reviewer comment" not in xml, "deleted/comment text leaked into generated DOCX")
+    assert_true("Cell before inserted tail" in xml, "table inserted revision did not render in generated DOCX")
+
+
+@case
+def content_parser_uses_final_view_text_for_revision_wrapped_headings() -> None:
+    work = new_workdir("parser_revision_wrapped_headings")
+    docx = work / "revision_wrapped_headings.docx"
+    doc = Document()
+    visible_heading = doc.add_paragraph("1 Visible moved heading")
+    visible_heading.style = "Heading 1"
+    doc.add_paragraph("Body under moved heading.")
+    deleted_heading = doc.add_paragraph("2 Deleted old heading")
+    deleted_heading.style = "Heading 1"
+    doc.add_paragraph("Body after deleted heading.")
+    doc.save(docx)
+
+    def wrap_heading_revisions(xml: str) -> str:
+        w_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        root = etree.fromstring(xml.encode("utf-8"))
+        ns = {"w": w_ns}
+
+        moved_para = root.xpath(".//w:body/w:p[.//w:t='1 Visible moved heading']", namespaces=ns)[0]
+        moved_run = moved_para.xpath("./w:r[.//w:t='1 Visible moved heading']", namespaces=ns)[0]
+        moved_para.remove(moved_run)
+        move_to = etree.Element(f"{{{w_ns}}}moveTo")
+        move_to.set(f"{{{w_ns}}}id", "11")
+        move_to.set(f"{{{w_ns}}}author", "Synthetic")
+        move_to.append(moved_run)
+        moved_para.append(move_to)
+
+        deleted_para = root.xpath(".//w:body/w:p[.//w:t='2 Deleted old heading']", namespaces=ns)[0]
+        deleted_run = deleted_para.xpath("./w:r[.//w:t='2 Deleted old heading']", namespaces=ns)[0]
+        deleted_text = deleted_run.xpath(".//w:t", namespaces=ns)[0]
+        deleted_text.tag = f"{{{w_ns}}}delText"
+        deleted_para.remove(deleted_run)
+        move_from = etree.Element(f"{{{w_ns}}}moveFrom")
+        move_from.set(f"{{{w_ns}}}id", "12")
+        move_from.set(f"{{{w_ns}}}author", "Synthetic")
+        move_from.append(deleted_run)
+        deleted_para.append(move_from)
+        return etree.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", wrap_heading_revisions)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    headings = [section.get("heading") for section in content.get("sections") or []]
+    assert_true("1 Visible moved heading" in headings, f"moveTo-wrapped heading was not routed as a section: {content}")
+    assert_true("2 Deleted old heading" not in headings, f"moveFrom-wrapped deleted heading leaked as a section: {content}")
+    visible_section = next(section for section in content.get("sections") or [] if section.get("heading") == "1 Visible moved heading")
+    assert_true(
+        "Body under moved heading." in visible_section.get("paragraphs", []),
+        f"body paragraph was not kept under the moveTo heading: {content}",
+    )
+    text = _content_plain_text(content)
+    assert_true("2 Deleted old heading" not in text, f"deleted revision heading text leaked into content: {content}")
+
+    result = run_generated_case("revision_wrapped_heading_render", content, base_format())
+    xml = result["xml"]
+    assert_true("1 Visible moved heading" in xml, "moveTo-wrapped heading did not render in generated DOCX")
+    assert_true("2 Deleted old heading" not in xml, "moveFrom-wrapped deleted heading rendered in generated DOCX")
+
+
+@case
+def content_parser_uses_final_view_for_revision_wrapped_table_rows() -> None:
+    work = new_workdir("parser_revision_wrapped_table_rows")
+    docx = work / "revision_wrapped_table_rows.docx"
+    doc = Document()
+    doc.add_paragraph("1 Table row revisions")
+    table = doc.add_table(rows=3, cols=2)
+    table.cell(0, 0).text = "Metric"
+    table.cell(0, 1).text = "Value"
+    table.cell(1, 0).text = "VisibleMovedRow"
+    table.cell(1, 1).text = "42"
+    table.cell(2, 0).text = "DeletedMovedRow"
+    table.cell(2, 1).text = "13"
+    doc.save(docx)
+
+    def wrap_table_rows(xml: str) -> str:
+        w_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        root = etree.fromstring(xml.encode("utf-8"))
+        ns = {"w": w_ns}
+        tbl = root.xpath(".//w:tbl[.//w:t='VisibleMovedRow']", namespaces=ns)[0]
+
+        visible_row = tbl.xpath("./w:tr[.//w:t='VisibleMovedRow']", namespaces=ns)[0]
+        visible_index = tbl.index(visible_row)
+        tbl.remove(visible_row)
+        move_to = etree.Element(f"{{{w_ns}}}moveTo")
+        move_to.set(f"{{{w_ns}}}id", "31")
+        move_to.set(f"{{{w_ns}}}author", "Synthetic")
+        move_to.append(visible_row)
+        tbl.insert(visible_index, move_to)
+
+        deleted_row = tbl.xpath("./w:tr[.//w:t='DeletedMovedRow']", namespaces=ns)[0]
+        deleted_index = tbl.index(deleted_row)
+        tbl.remove(deleted_row)
+        move_from = etree.Element(f"{{{w_ns}}}moveFrom")
+        move_from.set(f"{{{w_ns}}}id", "32")
+        move_from.set(f"{{{w_ns}}}author", "Synthetic")
+        move_from.append(deleted_row)
+        tbl.insert(deleted_index, move_from)
+        return etree.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", wrap_table_rows)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    table_items = [
+        item
+        for section in content.get("sections") or []
+        for item in section.get("paragraphs") or []
+        if isinstance(item, dict) and item.get("role") == "table"
+    ]
+    assert_true(table_items, f"revision-wrapped table was lost: {content}")
+    rows = table_items[0].get("table_rows") or []
+    assert_true(["Metric", "Value"] in rows, f"header row changed: {rows}")
+    assert_true(["VisibleMovedRow", "42"] in rows, f"moveTo-wrapped visible row was not preserved: {content}")
+    assert_true(
+        not any("DeletedMovedRow" in cell for row in rows for cell in row),
+        f"moveFrom-wrapped deleted row leaked into table rows: {rows}",
+    )
+
+    result = run_generated_case("revision_wrapped_table_rows_render", content, base_format())
+    xml = result["xml"]
+    assert_true("VisibleMovedRow" in xml and "42" in xml, "moveTo-wrapped table row did not render")
+    assert_true("DeletedMovedRow" not in xml and ">13<" not in xml, "moveFrom-wrapped table row rendered")
+
+
+@case
+def content_parser_uses_final_view_for_revision_wrapped_table_cells() -> None:
+    work = new_workdir("parser_revision_wrapped_table_cells")
+    docx = work / "revision_wrapped_table_cells.docx"
+    doc = Document()
+    doc.add_paragraph("1 Table cell revisions")
+    table = doc.add_table(rows=2, cols=3)
+    table.cell(0, 0).text = "Name"
+    table.cell(0, 1).text = "Current"
+    table.cell(0, 2).text = "Previous"
+    table.cell(1, 0).text = "RowLabel"
+    table.cell(1, 1).text = "VisibleMovedCell"
+    table.cell(1, 2).text = "DeletedMovedCell"
+    doc.save(docx)
+
+    def wrap_table_cells(xml: str) -> str:
+        w_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        root = etree.fromstring(xml.encode("utf-8"))
+        ns = {"w": w_ns}
+        tr = root.xpath(".//w:tr[.//w:t='VisibleMovedCell']", namespaces=ns)[0]
+
+        visible_cell = tr.xpath("./w:tc[.//w:t='VisibleMovedCell']", namespaces=ns)[0]
+        visible_index = tr.index(visible_cell)
+        tr.remove(visible_cell)
+        move_to = etree.Element(f"{{{w_ns}}}moveTo")
+        move_to.set(f"{{{w_ns}}}id", "33")
+        move_to.set(f"{{{w_ns}}}author", "Synthetic")
+        move_to.append(visible_cell)
+        tr.insert(visible_index, move_to)
+
+        deleted_cell = tr.xpath("./w:tc[.//w:t='DeletedMovedCell']", namespaces=ns)[0]
+        deleted_index = tr.index(deleted_cell)
+        tr.remove(deleted_cell)
+        move_from = etree.Element(f"{{{w_ns}}}moveFrom")
+        move_from.set(f"{{{w_ns}}}id", "34")
+        move_from.set(f"{{{w_ns}}}author", "Synthetic")
+        move_from.append(deleted_cell)
+        tr.insert(deleted_index, move_from)
+        return etree.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", wrap_table_cells)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    table_items = [
+        item
+        for section in content.get("sections") or []
+        for item in section.get("paragraphs") or []
+        if isinstance(item, dict) and item.get("role") == "table"
+    ]
+    assert_true(table_items, f"revision-wrapped table-cell table was lost: {content}")
+    rows = table_items[0].get("table_rows") or []
+    flat = [cell for row in rows for cell in row]
+    assert_true("VisibleMovedCell" in flat, f"moveTo-wrapped visible cell was not preserved: {rows}")
+    assert_true("DeletedMovedCell" not in flat, f"moveFrom-wrapped deleted cell leaked into table rows: {rows}")
+
+    result = run_generated_case("revision_wrapped_table_cells_render", content, base_format())
+    xml = result["xml"]
+    assert_true("VisibleMovedCell" in xml, "moveTo-wrapped table cell did not render")
+    assert_true("DeletedMovedCell" not in xml, "moveFrom-wrapped table cell rendered")
 
 
 @case
@@ -1026,6 +1567,536 @@ def content_parser_recovers_textbox_and_content_control_text() -> None:
     assert_true(meta.get("recovered_textbox_paragraphs") == 1, f"textbox recovery count missing: {meta}")
     assert_true(meta.get("recovered_content_control_paragraphs") == 1, f"content-control recovery count missing: {meta}")
     assert_true(textbox_issue.get("severity") == "warning", f"recoverable textbox should require review, not block: {issues}")
+
+
+@case
+def content_parser_uses_final_view_for_revision_wrapped_textbox_text() -> None:
+    work = new_workdir("parser_textbox_revision_final_view")
+    docx = work / "textbox_revision_final_view.docx"
+    doc = Document()
+    doc.add_paragraph("1 Textbox revision")
+    doc.save(docx)
+
+    visible_text = "Visible textbox moved text."
+    deleted_text = "Deleted textbox moved text."
+
+    def inject_revised_textbox(xml: str) -> str:
+        w_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        block = (
+            '<w:p><w:r><w:pict><v:shape xmlns:v="urn:schemas-microsoft-com:vml">'
+            "<v:textbox><w:txbxContent><w:p>"
+            f'<w:moveTo w:id="21" w:author="Synthetic"><w:r><w:t>{visible_text}</w:t></w:r></w:moveTo>'
+            f'<w:moveFrom w:id="22" w:author="Synthetic"><w:r><w:t>{deleted_text}</w:t></w:r></w:moveFrom>'
+            "</w:p></w:txbxContent></v:textbox></v:shape></w:pict></w:r></w:p>"
+        )
+        assert_true(f'xmlns:w="{w_ns}"' in xml or "xmlns:w=" in xml, "document namespace should be present")
+        return xml.replace("</w:body>", block + "</w:body>")
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_revised_textbox)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    body_text = _content_plain_text(content)
+    meta = content.get("_meta") or {}
+    assert_true(visible_text in body_text, f"moveTo textbox text was not recovered: {content}")
+    assert_true(deleted_text not in body_text, f"moveFrom textbox text leaked into final-view content: {content}")
+    assert_true(meta.get("recovered_textbox_paragraphs") == 1, f"textbox recovery count changed unexpectedly: {meta}")
+
+    result = run_generated_case("textbox_revision_final_view_render", content, base_format())
+    xml = result["xml"]
+    assert_true(visible_text in xml, "moveTo textbox text did not render in generated DOCX")
+    assert_true(deleted_text not in xml, "moveFrom textbox text rendered in generated DOCX")
+
+
+@case
+def content_parser_keeps_body_content_control_that_partially_overlaps_table_text() -> None:
+    work = new_workdir("parser_body_content_control_table_overlap")
+    docx = work / "body_content_control_table_overlap.docx"
+    doc = Document()
+    doc.add_paragraph("1 Approval")
+    table = doc.add_table(rows=1, cols=1)
+    table.cell(0, 0).paragraphs[0].add_run("Approved by committee")
+    doc.add_paragraph("Plain paragraph after the table.")
+    doc.save(docx)
+
+    control_text = "Approved"
+
+    def inject_body_content_control(xml: str) -> str:
+        needle = "<w:t>Plain paragraph after the table.</w:t></w:r></w:p>"
+        replacement = (
+            '<w:sdt><w:sdtPr><w:tag w:val="body-control"/></w:sdtPr><w:sdtContent>'
+            f"<w:p><w:r><w:t>{control_text}</w:t></w:r></w:p>"
+            "</w:sdtContent></w:sdt>"
+            + needle
+        )
+        assert_true(needle in xml, "body content-control injection point not found")
+        return xml.replace(needle, replacement, 1)
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_body_content_control)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    loose_body_text = [item for item in paragraphs if isinstance(item, str)]
+    meta = content.get("_meta") or {}
+
+    assert_true(
+        any(item == control_text for item in loose_body_text),
+        f"body content-control text was mistaken for a table duplicate: {paragraphs}",
+    )
+    assert_true(
+        meta.get("recovered_content_control_paragraphs") == 1,
+        f"body content-control recovery count missing after table overlap: {meta}",
+    )
+
+
+@case
+def content_parser_keeps_body_content_control_that_equals_table_cell_text() -> None:
+    work = new_workdir("parser_body_content_control_table_exact")
+    docx = work / "body_content_control_table_exact.docx"
+    doc = Document()
+    doc.add_paragraph("1 Approval")
+    table = doc.add_table(rows=1, cols=1)
+    table.cell(0, 0).paragraphs[0].add_run("Approved")
+    doc.add_paragraph("Plain paragraph after the table.")
+    doc.save(docx)
+
+    control_text = "Approved"
+
+    def inject_body_content_control(xml: str) -> str:
+        needle = "<w:t>Plain paragraph after the table.</w:t></w:r></w:p>"
+        replacement = (
+            '<w:sdt><w:sdtPr><w:tag w:val="body-control-exact"/></w:sdtPr><w:sdtContent>'
+            f"<w:p><w:r><w:t>{control_text}</w:t></w:r></w:p>"
+            "</w:sdtContent></w:sdt>"
+            + needle
+        )
+        assert_true(needle in xml, "exact-match body content-control injection point not found")
+        return xml.replace(needle, replacement, 1)
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_body_content_control)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    loose_body_text = [item for item in paragraphs if isinstance(item, str)]
+    meta = content.get("_meta") or {}
+
+    assert_true(
+        any(item == control_text for item in loose_body_text),
+        f"body content-control text equal to a table cell was dropped: {paragraphs}",
+    )
+    assert_true(
+        meta.get("recovered_content_control_paragraphs") == 1,
+        f"exact-match body content-control recovery count missing: {meta}",
+    )
+
+
+@case
+def content_parser_preserves_table_cell_block_content_control_text() -> None:
+    work = new_workdir("parser_table_cell_content_control")
+    docx = work / "table_cell_content_control.docx"
+    doc = Document()
+    doc.add_paragraph("1 Controlled cell")
+    table = doc.add_table(rows=1, cols=1)
+    cell = table.cell(0, 0)
+    cell.paragraphs[0].add_run("Before")
+    cell.add_paragraph("After")
+    doc.save(docx)
+
+    control_text = "Controlled cell value must stay inside the table cell."
+
+    def inject_cell_content_control(xml: str) -> str:
+        needle = "<w:t>Before</w:t></w:r></w:p><w:p><w:r><w:t>After</w:t>"
+        replacement = (
+            "<w:t>Before</w:t></w:r></w:p>"
+            '<w:sdt><w:sdtPr><w:tag w:val="cell-control"/></w:sdtPr><w:sdtContent>'
+            f"<w:p><w:r><w:t>{control_text}</w:t></w:r></w:p>"
+            "</w:sdtContent></w:sdt>"
+            "<w:p><w:r><w:t>After</w:t>"
+        )
+        assert_true(needle in xml, "table-cell content-control injection point not found")
+        return xml.replace(needle, replacement, 1)
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_cell_content_control)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    table_items = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "table"]
+    assert_true(table_items, f"table with block content control was not preserved: {paragraphs}")
+    table_item = table_items[0]
+    expected_rows = [["Before\nControlled cell value must stay inside the table cell.\nAfter"]]
+    assert_true(table_item.get("table_rows") == expected_rows, f"content-control text left the table cell: {table_item}")
+    loose_body_text = [
+        item
+        for sec in content.get("sections") or []
+        for item in sec.get("paragraphs") or []
+        if isinstance(item, str)
+    ]
+    assert_true(
+        not any(control_text in item for item in loose_body_text),
+        f"content-control text was duplicated outside the source table cell: {paragraphs}",
+    )
+
+    result = run_generated_case("table_cell_content_control_render", content, base_format())
+    xml = result["xml"]
+    assert_true(xml.find("Before") < xml.find(control_text) < xml.find("After"), "content-control text rendered outside its source cell order")
+    assert_true(result["report"]["passed"] is True, f"table-cell content-control render should pass QA: {result['report']}")
+
+
+@case
+def content_parser_preserves_table_cell_inline_content_control_text() -> None:
+    work = new_workdir("parser_table_cell_inline_content_control")
+    docx = work / "table_cell_inline_content_control.docx"
+    doc = Document()
+    doc.add_paragraph("1 Inline controlled cell")
+    table = doc.add_table(rows=1, cols=1)
+    para = table.cell(0, 0).paragraphs[0]
+    para.add_run("Left")
+    para.add_run("Right")
+    doc.save(docx)
+
+    control_text = "InlineCellValue"
+
+    def inject_inline_content_control(xml: str) -> str:
+        needle = "<w:t>Left</w:t></w:r><w:r><w:t>Right</w:t>"
+        replacement = (
+            "<w:t>Left</w:t></w:r>"
+            '<w:sdt><w:sdtPr><w:tag w:val="inline-cell-control"/></w:sdtPr><w:sdtContent>'
+            f"<w:r><w:t>{control_text}</w:t></w:r>"
+            "</w:sdtContent></w:sdt>"
+            "<w:r><w:t>Right</w:t>"
+        )
+        assert_true(needle in xml, "inline table-cell content-control injection point not found")
+        return xml.replace(needle, replacement, 1)
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_inline_content_control)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    table_items = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "table"]
+    assert_true(table_items, f"table with inline content control was not preserved: {paragraphs}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [["LeftInlineCellValueRight"]],
+        f"inline content-control text left the source table cell: {table_item}",
+    )
+    loose_body_text = [
+        item
+        for sec in content.get("sections") or []
+        for item in sec.get("paragraphs") or []
+        if isinstance(item, str)
+    ]
+    assert_true(
+        not any(control_text in item for item in loose_body_text),
+        f"inline content-control text was duplicated outside the source table cell: {paragraphs}",
+    )
+
+    result = run_generated_case("table_cell_inline_content_control_render", content, base_format())
+    xml = result["xml"]
+    assert_true(xml.find("Left") < xml.find(control_text) < xml.find("Right"), "inline content-control text rendered outside source order")
+    assert_true(result["report"]["passed"] is True, f"inline table-cell content-control render should pass QA: {result['report']}")
+
+
+@case
+def content_parser_preserves_table_cell_nested_inline_content_control_text() -> None:
+    work = new_workdir("parser_table_cell_nested_inline_content_control")
+    docx = work / "table_cell_nested_inline_content_control.docx"
+    doc = Document()
+    doc.add_paragraph("1 Nested inline controlled cell")
+    table = doc.add_table(rows=1, cols=1)
+    para = table.cell(0, 0).paragraphs[0]
+    para.add_run("OuterLeft")
+    para.add_run("OuterRight")
+    doc.save(docx)
+
+    control_text = "NestedInlineCellValue"
+
+    def inject_nested_inline_content_control(xml: str) -> str:
+        needle = "<w:t>OuterLeft</w:t></w:r><w:r><w:t>OuterRight</w:t>"
+        replacement = (
+            "<w:t>OuterLeft</w:t></w:r>"
+            '<w:sdt><w:sdtPr><w:tag w:val="outer-inline-cell-control"/></w:sdtPr><w:sdtContent>'
+            '<w:sdt><w:sdtPr><w:tag w:val="inner-inline-cell-control"/></w:sdtPr><w:sdtContent>'
+            f"<w:r><w:t>{control_text}</w:t></w:r>"
+            "</w:sdtContent></w:sdt>"
+            "</w:sdtContent></w:sdt>"
+            "<w:r><w:t>OuterRight</w:t>"
+        )
+        assert_true(needle in xml, "nested inline table-cell content-control injection point not found")
+        return xml.replace(needle, replacement, 1)
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_nested_inline_content_control)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    table_items = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "table"]
+    assert_true(table_items, f"table with nested inline content control was not preserved: {paragraphs}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [["OuterLeftNestedInlineCellValueOuterRight"]],
+        f"nested inline content-control text left the source table cell: {table_item}",
+    )
+    loose_body_text = [
+        item
+        for sec in content.get("sections") or []
+        for item in sec.get("paragraphs") or []
+        if isinstance(item, str)
+    ]
+    assert_true(
+        not any(control_text in item for item in loose_body_text),
+        f"nested inline content-control text was duplicated outside the source table cell: {paragraphs}",
+    )
+
+    result = run_generated_case("table_cell_nested_inline_content_control_render", content, base_format())
+    xml = result["xml"]
+    assert_true(
+        xml.find("OuterLeft") < xml.find(control_text) < xml.find("OuterRight"),
+        "nested inline content-control text rendered outside source order",
+    )
+    assert_true(result["report"]["passed"] is True, f"nested inline table-cell content-control render should pass QA: {result['report']}")
+
+
+@case
+def content_parser_preserves_table_cell_content_control_simple_field_value() -> None:
+    work = new_workdir("parser_table_cell_control_simple_field")
+    docx = work / "table_cell_control_simple_field.docx"
+    doc = Document()
+    doc.add_paragraph("1 Field controlled cell")
+    table = doc.add_table(rows=1, cols=1)
+    para = table.cell(0, 0).paragraphs[0]
+    para.add_run("Left")
+    para.add_run("Right")
+    doc.save(docx)
+
+    field_text = "DisplayFieldValue"
+
+    def inject_simple_field_content_control(xml: str) -> str:
+        needle = "<w:t>Left</w:t></w:r><w:r><w:t>Right</w:t>"
+        replacement = (
+            "<w:t>Left</w:t></w:r>"
+            '<w:sdt><w:sdtPr><w:tag w:val="field-cell-control"/></w:sdtPr><w:sdtContent>'
+            '<w:fldSimple w:instr=" DOCPROPERTY SyntheticField ">'
+            f"<w:r><w:t>{field_text}</w:t></w:r>"
+            "</w:fldSimple>"
+            "</w:sdtContent></w:sdt>"
+            "<w:r><w:t>Right</w:t>"
+        )
+        assert_true(needle in xml, "simple-field table-cell content-control injection point not found")
+        return xml.replace(needle, replacement, 1)
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_simple_field_content_control)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    table_items = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "table"]
+    assert_true(table_items, f"table with simple-field content control was not preserved: {paragraphs}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [["LeftDisplayFieldValueRight"]],
+        f"simple-field visible result left the source table cell: {table_item}",
+    )
+    loose_body_text = [
+        item
+        for sec in content.get("sections") or []
+        for item in sec.get("paragraphs") or []
+        if isinstance(item, str)
+    ]
+    assert_true(
+        not any(field_text in item for item in loose_body_text),
+        f"simple-field visible result was duplicated outside the source table cell: {paragraphs}",
+    )
+
+    result = run_generated_case("table_cell_control_simple_field_render", content, base_format())
+    xml = result["xml"]
+    assert_true(xml.find("Left") < xml.find(field_text) < xml.find("Right"), "simple-field visible result rendered outside source order")
+    assert_true(result["report"]["passed"] is True, f"simple-field content-control render should pass QA: {result['report']}")
+
+
+@case
+def content_parser_preserves_table_cell_content_control_custom_xml_value() -> None:
+    work = new_workdir("parser_table_cell_control_custom_xml")
+    docx = work / "table_cell_control_custom_xml.docx"
+    doc = Document()
+    doc.add_paragraph("1 Bound controlled cell")
+    table = doc.add_table(rows=1, cols=1)
+    para = table.cell(0, 0).paragraphs[0]
+    para.add_run("Left")
+    para.add_run("Right")
+    doc.save(docx)
+
+    bound_text = "BoundDropdownValue"
+
+    def inject_custom_xml_content_control(xml: str) -> str:
+        needle = "<w:t>Left</w:t></w:r><w:r><w:t>Right</w:t>"
+        replacement = (
+            "<w:t>Left</w:t></w:r>"
+            '<w:sdt><w:sdtPr><w:tag w:val="bound-cell-control"/></w:sdtPr><w:sdtContent>'
+            '<w:customXml w:element="boundValue" w:uri="urn:synthetic">'
+            f"<w:r><w:t>{bound_text}</w:t></w:r>"
+            "</w:customXml>"
+            "</w:sdtContent></w:sdt>"
+            "<w:r><w:t>Right</w:t>"
+        )
+        assert_true(needle in xml, "custom-xml table-cell content-control injection point not found")
+        return xml.replace(needle, replacement, 1)
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_custom_xml_content_control)
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    table_items = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "table"]
+    assert_true(table_items, f"table with custom-xml content control was not preserved: {paragraphs}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [["LeftBoundDropdownValueRight"]],
+        f"custom-xml visible value left the source table cell: {table_item}",
+    )
+    loose_body_text = [
+        item
+        for sec in content.get("sections") or []
+        for item in sec.get("paragraphs") or []
+        if isinstance(item, str)
+    ]
+    assert_true(
+        not any(bound_text in item for item in loose_body_text),
+        f"custom-xml visible value was duplicated outside the source table cell: {paragraphs}",
+    )
+
+    result = run_generated_case("table_cell_control_custom_xml_render", content, base_format())
+    xml = result["xml"]
+    assert_true(xml.find("Left") < xml.find(bound_text) < xml.find("Right"), "custom-xml visible value rendered outside source order")
+    assert_true(result["report"]["passed"] is True, f"custom-xml content-control render should pass QA: {result['report']}")
+
+
+@case
+def content_parser_preserves_table_cell_content_control_hyperlink_mixed_media_formula_note() -> None:
+    work = new_workdir("parser_table_cell_control_hyperlink_mixed")
+    img = work / "control_hyperlink_image.png"
+    write_sample_png(img, width=128, height=96)
+    docx = work / "table_cell_control_hyperlink_mixed.docx"
+    doc = Document()
+    doc.add_paragraph("1 Controlled hyperlink cell")
+    table = doc.add_table(rows=1, cols=1)
+    para = table.cell(0, 0).paragraphs[0]
+    para.add_run("Lead")
+    para.add_run().add_picture(str(img))
+    para.add_run(r"Formula line $x=1$ and ")
+    para._element.append(etree.fromstring(latex_to_omath(r"y=2", display=False).encode("utf-8")))
+    para.add_run(" noted")
+    doc.save(docx)
+
+    footnote_text = "Controlled hyperlink cell note must stay after the formula."
+
+    def inject_reference(xml: str) -> str:
+        replacements = [
+            (
+                '<w:t xml:space="preserve"> noted</w:t></w:r></w:p>',
+                '<w:t xml:space="preserve"> noted</w:t></w:r><w:r><w:footnoteReference w:id="7"/></w:r></w:p>',
+            ),
+            (
+                "<w:t> noted</w:t></w:r></w:p>",
+                '<w:t> noted</w:t></w:r><w:r><w:footnoteReference w:id="7"/></w:r></w:p>',
+            ),
+        ]
+        for old, new in replacements:
+            if old in xml:
+                return xml.replace(old, new, 1)
+        return xml
+
+    def wrap_tail_in_content_control_hyperlink(xml: str) -> str:
+        w_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        root = etree.fromstring(xml.encode("utf-8"))
+        ns = {"w": w_ns}
+        paragraphs = root.xpath(".//w:tc//w:p[.//w:t='Lead']", namespaces=ns)
+        assert_true(paragraphs, "controlled hyperlink table-cell paragraph not found")
+        paragraph = paragraphs[0]
+        children = list(paragraph)
+        lead_idx = next(
+            (
+                idx
+                for idx, child in enumerate(children)
+                if child.xpath(".//w:t[text()='Lead']", namespaces=ns)
+            ),
+            -1,
+        )
+        assert_true(lead_idx >= 0 and lead_idx + 1 < len(children), "controlled hyperlink tail injection point not found")
+        tail = children[lead_idx + 1 :]
+        for child in tail:
+            paragraph.remove(child)
+        sdt = etree.Element(f"{{{w_ns}}}sdt")
+        sdt_pr = etree.SubElement(sdt, f"{{{w_ns}}}sdtPr")
+        tag = etree.SubElement(sdt_pr, f"{{{w_ns}}}tag")
+        tag.set(f"{{{w_ns}}}val", "cell-control-hyperlink-mixed")
+        sdt_content = etree.SubElement(sdt, f"{{{w_ns}}}sdtContent")
+        hyperlink = etree.SubElement(sdt_content, f"{{{w_ns}}}hyperlink")
+        hyperlink.set(f"{{{w_ns}}}anchor", "synthetic-controlled-link")
+        for child in tail:
+            hyperlink.append(child)
+        paragraph.append(sdt)
+        return etree.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_reference)
+    _rewrite_docx_part(docx, "word/document.xml", wrap_tail_in_content_control_hyperlink)
+    with zipfile.ZipFile(docx, "a") as zf:
+        zf.writestr(
+            "word/footnotes.xml",
+            (
+                '<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                '<w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>'
+                '<w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>'
+                f'<w:footnote w:id="7"><w:p><w:r><w:t>{footnote_text}</w:t></w:r></w:p></w:footnote>'
+                "</w:footnotes>"
+            ),
+        )
+
+    content = extract_docx_content(str(docx), output_dir=str(work))
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    table_items = [p for p in paragraphs if isinstance(p, dict) and p.get("role") == "table"]
+    assert_true(table_items, f"table with content-control hyperlink mixed cell was not preserved: {paragraphs}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [["Lead\nFormula line $x=1$ and y=2 noted"]],
+        f"content-control hyperlink mixed cell text/order changed: {table_item}",
+    )
+    cell_items = table_item.get("table_cell_items") or []
+    image_item = next(
+        (
+            item
+            for entry in cell_items
+            if entry.get("row") == 0 and entry.get("col") == 0
+            for item in entry.get("items") or []
+            if isinstance(item, dict) and item.get("role") == "image"
+        ),
+        None,
+    )
+    rich_item = next(
+        (
+            item
+            for entry in cell_items
+            if entry.get("row") == 0 and entry.get("col") == 0
+            for item in entry.get("items") or []
+            if isinstance(item, dict) and item.get("role") == "rich_text"
+        ),
+        None,
+    )
+    assert_true(image_item and image_item.get("after_paragraph_index") == 1, f"content-control hyperlink image position changed: {cell_items}")
+    assert_true(rich_item and rich_item.get("replace_paragraph_index") == 1, f"content-control hyperlink rich text missing: {table_item}")
+    assert_true(
+        [run.get("type") for run in rich_item.get("runs") or []] == ["text", "math", "text", "math", "text", "note_ref"],
+        f"content-control hyperlink formula/note run order changed: {rich_item}",
+    )
+
+    result = run_generated_case("table_cell_control_hyperlink_mixed_render", content, base_format())
+    xml = result["xml"]
+    assert_true("$x=1$" not in xml, "content-control hyperlink LaTeX leaked delimiters into generated XML")
+    assert_true(omath_count(xml) >= 2, "content-control hyperlink formulas did not both render as native math")
+    assert_true(xml.count("<w:drawing>") == 1, f"content-control hyperlink image did not render exactly once: {result['manifest']}")
+    assert_true("<w:footnoteReference" in xml, "content-control hyperlink footnote did not render as native reference")
+    assert_true(
+        xml.find("Lead") < xml.find("<w:drawing>") < xml.find("Formula line") < xml.find("<w:footnoteReference"),
+        "content-control hyperlink image/formula/footnote source order changed",
+    )
+    assert_true(result["manifest"]["counts"].get("inline_formulas_rendered", 0) >= 2, f"inline formula count missing: {result['manifest']}")
+    assert_true(result["manifest"]["counts"].get("footnote_references_rendered") == 1, f"footnote count missing: {result['manifest']}")
+    assert_true(result["report"]["passed"] is True, f"content-control hyperlink mixed table-cell render should pass QA: {result['report']}")
 
 
 @case

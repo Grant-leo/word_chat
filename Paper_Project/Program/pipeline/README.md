@@ -101,12 +101,14 @@ CLI, output, verification, and QA details in a focused package:
 
 ## Verification Baseline
 
-Current baseline as of 2026-06-18:
+Current baseline as of 2026-06-21:
 
-- Synthetic regression after private real-data audit/source-audit/comparison-assessment hardening, boxed-content recovery, native note rendering, merged-table preservation, `gridBefore` vertical-merge round-trip preservation, table-column-width preservation, table layout-detail preservation, explicit table/cell border preservation, border/layout property-order hardening, source-order two-level nested table preservation, DOCX table-cell and nested-table image in-cell preservation, table-cell image/text run-order preservation, table-cell inline OMML formula preservation, table-cell inline LaTeX formula preservation, mixed table-cell image/LaTeX/OMML ordering preservation, inline table-cell image/formula/footnote ordering preservation, nested table-cell inline image/LaTeX/OMML/footnote ordering preservation, table-cell footnote reference preservation, table-cell image-before-note-only reference preservation, irregular merge-grid audit, source-audit DOCX fixture rewrite hygiene, and section-scoped/de-duplicated wide-table risk counts: `302 passed, 0 failed`.
+- Synthetic regression after private real-data audit/source-audit/comparison-assessment hardening, boxed-content recovery, native note rendering, merged-table preservation, `gridBefore` vertical-merge round-trip preservation, table-column-width preservation, table layout-detail preservation, explicit table/cell border preservation, border/layout property-order hardening, source-order two-level nested table preservation, DOCX table-cell and nested-table image in-cell preservation, table-cell image/text run-order preservation, table-cell block/inline/nested-inline content-control preservation and de-duplication, content-control simple-field visible-value preservation, content-control transparent-container visible-value preservation, body transparent-container paragraph/table preservation, body content-control paragraph/table in-place preservation, body content-control inline rich media/formula/note preservation, DOCX revision final-view extraction for body/table/table-row/table-cell/heading/textbox-recovery content, content-control hyperlink media/formula/note preservation, body content-control/table-text overlap/exact-match dedupe protection, table-cell inline OMML formula preservation, table-cell inline LaTeX formula preservation, mixed table-cell image/LaTeX/OMML ordering preservation, inline table-cell image/formula/footnote ordering preservation, nested table-cell inline image/LaTeX/OMML/footnote ordering preservation, table-cell footnote reference preservation, table-cell image-before-note-only reference preservation, irregular merge-grid audit, source-audit DOCX fixture rewrite hygiene, and section-scoped/de-duplicated wide-table risk counts: `318 passed, 0 failed`.
 - DOCX textbox/content-control recovery: visible text inside `w:txbxContent`
   and `w:sdtContent` is now recovered into the body stream, deduplicated, and
-  reported in content metadata; textbox position fidelity remains a warning
+  reported in content metadata. The fallback uses the same Word final-view text
+  rules as normal paragraphs, so `w:moveTo`/`w:ins` stays visible while
+  `w:moveFrom`/`w:del` stays out; textbox position fidelity remains a warning
   requiring Word/WPS review.
 - DOCX footnote/endnote coverage: paragraph-level note anchors and visible note
   text are extracted, rendered as native Word footnotes/endnotes, and protected
@@ -132,6 +134,9 @@ Current baseline as of 2026-06-18:
 - DOCX mixed table-cell media/formulas: when a cell contains preceding paragraphs, an image paragraph, and a later paragraph mixing `$...$` LaTeX with inline OMML, the image remains before the formula paragraph and both formula sources render as native Word math.
 - DOCX inline table-cell media/formula/notes: when the same source cell paragraph contains text, an inline image, later LaTeX/OMML formulas, and a footnote reference, extraction splits the cell at the image boundary so the generated table keeps text, image, formulas, and note in source order.
 - DOCX nested table-cell inline media/formula/notes: supported two-level nested tables preserve the same source order when a nested cell paragraph mixes text, an inline image, LaTeX, OMML, and a footnote reference.
+- DOCX table-cell content controls: block-level, inline, and nested inline `w:sdtContent` inside a source table cell are consumed in cell order, rendered back in the same generated table cell, and skipped by the body-level content-control fallback so they are not duplicated after the table. Simple-field containers (`w:fldSimple`) and transparent containers (`w:customXml` / `w:smartTag`) inside those controls keep their visible result text in source order. Hyperlink containers inside those controls keep mixed images, LaTeX/OMML formulas, and note anchors in source order. Body-level content controls that partially overlap or exactly match table-cell text are still recovered as body content.
+- DOCX body content controls: body-level `w:sdtContent` wrappers around paragraphs and tables are recursively dispatched in source order. Wrapped paragraphs count toward `_meta.recovered_content_control_paragraphs`, while wrapped tables remain table items and table-cell text is not leaked as loose body paragraphs. Inline `w:sdt`, `w:fldSimple`, hyperlink, `w:customXml`, and `w:smartTag` containers inside body paragraphs are recursively consumed so images, OMML/LaTeX formulas, and footnote/endnote anchors keep paragraph order.
+- DOCX body transparent containers: body-level `w:customXml` / `w:smartTag` wrappers around paragraphs and tables are recursively expanded by the body dispatcher, so wrapped content keeps source order and following direct paragraphs do not get displaced by python-docx paragraph/table indexing differences.
 - DOCX table-cell footnote references: note references in table-cell paragraphs are attached to the same `rich_text` cell item, carry extracted note text, render as native Word footnote references inside the generated table cell, and participate in recursive note-count QA.
 - DOCX table-cell note-only anchors: an image followed only by a footnote anchor, with no visible text after the image, still renders as a native footnote reference after the image instead of being dropped.
 - DOCX relationship-image fail-closed handoff: corrupt or unsupported image bytes in source DOCX relationships are validated before copying into `figures/`; invalid images are not counted as extracted, do not leak into the content stream, and surface `IMAGE_EXTRACT_FAILED` with a beginner-facing step to re-export/reinsert the source image as a normal PNG/JPG before rerunning.
@@ -217,11 +222,19 @@ normal reports. P0 fail-closed / review codes include:
 `content_parser_modules/boxed_content.py` provides the first P1 fallback for
 real DOCX structures that python-docx skips: visible text inside textboxes and
 content controls is recovered into the normal body stream, deduplicated against
-already extracted content, and counted in `_meta.recovered_textbox_paragraphs`
-and `_meta.recovered_content_control_paragraphs`. Textbox QA remains a warning
+already extracted content, including table rows and nested table-cell items,
+and counted in `_meta.recovered_textbox_paragraphs` and
+`_meta.recovered_content_control_paragraphs`. Textbox QA remains a warning
 because the floating anchor/position still needs Word/WPS visual review, but
 ordinary users should no longer be asked to copy visible textbox text into
 regular paragraphs before rerunning.
+Containment-based table dedupe is limited to recovered content-control records
+tagged as table-cell context, so a body-level content control is not dropped
+just because its text is a substring of an existing table cell.
+Body-level `w:sdtContent` that wraps ordinary paragraphs or tables is handled
+by `content_parser_modules/body_dispatcher.py` first; the boxed-content fallback
+only contributes remaining recoverable text and duplicate counts, so original
+table structure and source order are preserved.
 
 `content_parser_modules/notes.py` extracts visible `footnotes.xml` /
 `endnotes.xml` note bodies and preserves `footnoteReference` /
@@ -246,8 +259,11 @@ images inside table-cell paragraphs are also attached as cell media with
 `location="table_cell"`, including inside supported nested tables, so they do
 not become ordinary body images after the table. When an image shares a source
 paragraph with text, the extractor records whether the image appeared before
-or after the visible text from OOXML run order. Inline OMML formulas and
-footnote/endnote references inside table-cell paragraphs are recorded as
+or after the visible text from OOXML run order. Block-level, inline, and nested
+inline content controls inside source cells are consumed through their
+`w:sdtContent` children in cell order, including hyperlink containers that mix
+images, LaTeX/OMML formulas, and footnote/endnote anchors. Inline OMML formulas
+and footnote/endnote references inside table-cell paragraphs are recorded as
 replaceable `rich_text` cell items so the cell keeps native formula/note markup
 instead of only the formula's plain text.
 `script_generator_modules/runtime_media_tables.py` applies those merges back

@@ -44,6 +44,55 @@ def run_text_preserve_breaks(run_elem):
     return ''.join(parts)
 
 
+W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+_TRANSPARENT_CONTENT_CONTAINERS = {'customXml', 'smartTag'}
+_ACCEPTED_REVISION_CONTAINERS = {'ins', 'moveTo'}
+_DELETED_REVISION_CONTAINERS = {'del', 'moveFrom'}
+
+
+def _sdt_content_children(sdt_elem):
+    for part in list(sdt_elem):
+        if local_name(part) == 'sdtContent':
+            return list(part)
+    return []
+
+
+def visible_text_from_ooxml(element):
+    """Return deterministic Word final-view text from a paragraph-like OOXML element."""
+    parts = []
+
+    def consume(node):
+        name = local_name(node)
+        if name in _DELETED_REVISION_CONTAINERS or name in ('delText', 'delInstrText'):
+            return
+        if name == 'txbxContent':
+            return
+        if name == 'sdt':
+            for part in _sdt_content_children(node):
+                consume(part)
+            return
+        if name == 't':
+            parts.append(node.text or '')
+            return
+        if name == 'tab':
+            parts.append('\t')
+            return
+        if name in ('br', 'cr'):
+            parts.append('\n')
+            return
+        if name in ('instrText',):
+            return
+        for child in list(node):
+            consume(child)
+
+    consume(element)
+    return ''.join(parts)
+
+
+def paragraph_visible_text(para):
+    return visible_text_from_ooxml(para._element)
+
+
 def math_entry_from_ooxml(math_elem, math_type='inline'):
     raw = etree.tounicode(math_elem, with_tail=False)
     clean_xml, clean_text, had_label = _strip_trailing_formula_labels_from_xml(raw)
@@ -103,6 +152,16 @@ def paragraph_stream_items(para, registry, notes=None):
                 'math': [entry],
             })
 
+    def append_note_ref(note_elem, note_type):
+        flush_text()
+        note_id = str(note_elem.get(f'{{{W_NS}}}id') or '').strip()
+        items.append({
+            'role': 'note_ref',
+            'note_type': note_type,
+            'source_id': note_id,
+            'text': (notes.get(note_type) or {}).get(note_id, ''),
+        })
+
     def consume_run(run_elem):
         for part in run_elem:
             name = local_name(part)
@@ -112,15 +171,7 @@ def paragraph_stream_items(para, registry, notes=None):
             elif name == 'oMath':
                 append_math(part, 'inline')
             elif name in ('footnoteReference', 'endnoteReference'):
-                flush_text()
-                note_type = 'footnote' if name == 'footnoteReference' else 'endnote'
-                note_id = str(part.get('{http://schemas.openxmlformats.org/wordprocessingml/2006/main}id') or '').strip()
-                items.append({
-                    'role': 'note_ref',
-                    'note_type': note_type,
-                    'source_id': note_id,
-                    'text': (notes.get(note_type) or {}).get(note_id, ''),
-                })
+                append_note_ref(part, 'footnote' if name == 'footnoteReference' else 'endnote')
             elif name == 't':
                 if part.text:
                     buf.append(part.text)
@@ -128,18 +179,48 @@ def paragraph_stream_items(para, registry, notes=None):
                 buf.append('\t')
             elif name in ('br', 'cr'):
                 buf.append('\n')
+            elif name in _ACCEPTED_REVISION_CONTAINERS:
+                consume_children(part)
+            elif name in _DELETED_REVISION_CONTAINERS or name == 'delText':
+                continue
+            elif name in ('hyperlink', 'fldSimple'):
+                consume_children(part)
+            elif name == 'sdt':
+                consume_inline_sdt(part)
+            elif name in _TRANSPARENT_CONTENT_CONTAINERS:
+                consume_children(part)
+            elif name == 'oMathPara':
+                append_math(part, 'display')
 
-    for child in para._element:
+    def consume_inline_sdt(sdt_elem):
+        for part in _sdt_content_children(sdt_elem):
+            consume_child(part)
+
+    def consume_children(parent_elem):
+        for part in list(parent_elem):
+            consume_child(part)
+
+    def consume_child(child):
         name = local_name(child)
         if name == 'r':
             consume_run(child)
-        elif name in ('hyperlink',):
-            for run in child:
-                if local_name(run) != 'r':
-                    continue
-                consume_run(run)
+        elif name == 'sdt':
+            consume_inline_sdt(child)
+        elif name in ('hyperlink', 'fldSimple'):
+            consume_children(child)
+        elif name in _TRANSPARENT_CONTENT_CONTAINERS:
+            consume_children(child)
+        elif name in _ACCEPTED_REVISION_CONTAINERS:
+            consume_children(child)
+        elif name in _DELETED_REVISION_CONTAINERS:
+            return
         elif name in ('oMath', 'oMathPara'):
             append_math(child, 'display' if name == 'oMathPara' else 'inline')
+        elif name == 'p':
+            consume_children(child)
+
+    for child in para._element:
+        consume_child(child)
     flush_text()
     return items
 

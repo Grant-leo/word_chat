@@ -203,12 +203,17 @@ def extract(docx_path, output_dir=None):
             content['_meta']['late_front_matter_recovered'] = True
 
     boxed_records = recover_boxed_text_records(docx_path)
+    in_place_content_controls = int(getattr(body_result, 'content_control_paragraphs_in_place', 0) or 0)
     if boxed_records:
         recovery_counts = append_recovered_boxed_text(content, boxed_records, append_text_or_code)
         content['_meta']['recovered_textbox_paragraphs'] = recovery_counts.get('textbox', 0)
-        content['_meta']['recovered_content_control_paragraphs'] = recovery_counts.get('content_control', 0)
+        content['_meta']['recovered_content_control_paragraphs'] = (
+            recovery_counts.get('content_control', 0) + in_place_content_controls
+        )
         if recovery_counts.get('duplicates'):
             content['_meta']['recovered_boxed_text_duplicates'] = recovery_counts.get('duplicates', 0)
+    elif in_place_content_controls:
+        content['_meta']['recovered_content_control_paragraphs'] = in_place_content_controls
 
     mark_first_body_page_break(content['sections'])
     postprocess_section_paragraphs(content['sections'])

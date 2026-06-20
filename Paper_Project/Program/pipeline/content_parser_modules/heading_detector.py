@@ -28,11 +28,9 @@ def _numbered_line_looks_like_body_sentence(text: str) -> bool:
     return False
 
 
-def detect_heading_level(para):
+def detect_heading_level(para, text_override=None):
     """Detect heading level using OOXML-direct size + heuristics."""
-    if not para.runs:
-        return 0
-    text = para.text.strip()
+    text = str(text_override if text_override is not None else (para.text or '')).strip()
     if not text:
         return 0
     # Figure/table captions are captions, not outline headings or TOC entries.
