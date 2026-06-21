@@ -1154,6 +1154,83 @@ def content_parser_preserves_two_level_nested_tables_in_cells() -> None:
 
 
 @case
+def content_parser_preserves_three_level_nested_tables_in_cells() -> None:
+    work = new_workdir("parser_three_level_nested_table_cell")
+    docx = work / "three_level_nested_table_cell.docx"
+    doc = Document()
+    outer = doc.add_table(rows=1, cols=1)
+    outer_host = outer.cell(0, 0)
+    outer_host.text = "Outer before"
+    nested = outer_host.add_table(rows=1, cols=1)
+    nested_host = nested.cell(0, 0)
+    nested_host.text = "Nested before"
+    deeper = nested_host.add_table(rows=1, cols=1)
+    deeper_host = deeper.cell(0, 0)
+    deeper_host.text = "Deeper before"
+    deepest = deeper_host.add_table(rows=1, cols=1)
+    deepest.cell(0, 0).text = "Deepest value"
+    deeper_host.add_paragraph("Deeper after")
+    nested_host.add_paragraph("Nested after")
+    outer_host.add_paragraph("Outer after")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    assert_true(content.get("_meta", {}).get("tables_count") == 4, f"three-level nested table count missing: {content.get('_meta')}")
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"deeply nested tables should stay inside the outer table cell: {items}")
+    outer_item = table_items[0]
+    assert_true(
+        outer_item.get("table_rows") == [["Outer before\nOuter after"]],
+        f"outer cell direct text changed: {outer_item}",
+    )
+    nested_item = next(
+        (
+            item
+            for entry in outer_item.get("table_cell_items") or []
+            if entry.get("row") == 0 and entry.get("col") == 0
+            for item in entry.get("items") or []
+            if isinstance(item, dict) and item.get("role") == "table"
+        ),
+        None,
+    )
+    assert_true(nested_item, f"first nested table was not attached to the outer cell: {outer_item}")
+    assert_true(nested_item.get("table_rows") == [["Nested before\nNested after"]], f"first nested table text changed: {nested_item}")
+    deeper_item = next(
+        (
+            item
+            for entry in nested_item.get("table_cell_items") or []
+            if entry.get("row") == 0 and entry.get("col") == 0
+            for item in entry.get("items") or []
+            if isinstance(item, dict) and item.get("role") == "table"
+        ),
+        None,
+    )
+    assert_true(deeper_item, f"second nested table was not attached to the nested cell: {nested_item}")
+    assert_true(deeper_item.get("table_rows") == [["Deeper before\nDeeper after"]], f"second nested table text changed: {deeper_item}")
+    deepest_item = next(
+        (
+            item
+            for entry in deeper_item.get("table_cell_items") or []
+            if entry.get("row") == 0 and entry.get("col") == 0
+            for item in entry.get("items") or []
+            if isinstance(item, dict) and item.get("role") == "table"
+        ),
+        None,
+    )
+    assert_true(deepest_item, f"third nested table was not attached to the deeper cell: {deeper_item}")
+    assert_true(deepest_item.get("table_rows") == [["Deepest value"]], f"third nested table rows changed: {deepest_item}")
+
+    result = run_generated_case("parser_three_level_nested_table_cell_generated", content, base_format())
+    assert_true("Deepest value" in result["xml"], "third-level nested table text did not render")
+    assert_true(
+        result["manifest"]["counts"].get("content_nested_tables_rendered", 0) >= 3,
+        f"three nested table render count missing: {result['manifest']}",
+    )
+    assert_true(result["report"]["passed"] is True, f"three-level nested table render should pass QA: {result['report']}")
+
+
+@case
 def content_parser_preserves_nested_table_cell_inline_image_formula_and_footnote_order() -> None:
     work = new_workdir("parser_nested_table_cell_inline_image_formula_note")
     img = work / "nested_inline_image.png"

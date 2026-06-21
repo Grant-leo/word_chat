@@ -140,7 +140,7 @@ def complex_table_and_image_format_boundaries_are_structural_qa_visible() -> Non
 
 
 @case
-def source_audit_allows_two_level_nested_tables_and_flags_deeper_nesting() -> None:
+def source_audit_allows_three_level_nested_tables_and_flags_deeper_nesting() -> None:
     from content_parser_modules.source_audit import audit_docx_source
 
     work = new_workdir("source_audit_nested_tables")
@@ -184,8 +184,25 @@ def source_audit_allows_two_level_nested_tables_and_flags_deeper_nesting() -> No
     doc.save(three_level)
     three_audit = audit_docx_source(str(three_level))
     three_codes = {issue["code"] for issue in three_audit["issues"]}
-    assert_true("COMPLEX_TABLE_UNSUPPORTED" in three_codes, f"three-level nested table was not reported: {three_audit}")
+    assert_true(
+        "COMPLEX_TABLE_UNSUPPORTED" not in three_codes,
+        f"three-level nested table should be handled by the engine, not blocked as complex: {three_audit}",
+    )
     assert_true(three_audit["counts"].get("nested_table_max_depth") == 3, f"three-level nested depth missing: {three_audit}")
+
+    four_level = work / "four_level_nested.docx"
+    doc = Document()
+    outer = doc.add_table(rows=1, cols=1)
+    nested = outer.cell(0, 0).add_table(rows=1, cols=1)
+    deeper = nested.cell(0, 0).add_table(rows=1, cols=1)
+    deepest = deeper.cell(0, 0).add_table(rows=1, cols=1)
+    too_deep = deepest.cell(0, 0).add_table(rows=1, cols=1)
+    too_deep.cell(0, 0).text = "Too deep"
+    doc.save(four_level)
+    four_audit = audit_docx_source(str(four_level))
+    four_codes = {issue["code"] for issue in four_audit["issues"]}
+    assert_true("COMPLEX_TABLE_UNSUPPORTED" in four_codes, f"four-level nested table was not reported: {four_audit}")
+    assert_true(four_audit["counts"].get("nested_table_max_depth") == 4, f"four-level nested depth missing: {four_audit}")
 
 
 @case
