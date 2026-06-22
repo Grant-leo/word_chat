@@ -43,17 +43,7 @@ def render_paragraph_item(item, code_sensitive=False, chapter=None):
         if item.get('role') == 'code' or rows_look_like_code(rows):
             add_code_block(item.get('code') or code_text_from_rows(rows))
         else:
-            render_table(
-                rows,
-                item.get('table_cell_items') or [],
-                item.get('table_merges') or [],
-                item.get('table_col_widths_twips') or [],
-                item.get('table_row_heights_twips') or [],
-                item.get('table_repeat_header_rows'),
-                item.get('table_cell_margins_twips') or {},
-                item.get('table_cell_overrides') or [],
-                item.get('table_borders') or {},
-            )
+            render_table_item(item)
         return
     if isinstance(item, dict) and (item.get('role') == 'figure_caption'):
         add_caption(item.get('text') or '', 'figure_caption')
@@ -77,6 +67,67 @@ def render_paragraph_item(item, code_sensitive=False, chapter=None):
         add_caption(text, 'table_caption')
     else:
         add_text(text, role='body', first_indent=True)
+
+
+def is_landscape_table_item(item):
+    return is_table_item(item) and bool(table_source_section_page_setup(item))
+
+
+def table_group_at(paragraphs, idx):
+    if idx >= len(paragraphs):
+        return None
+    para = paragraphs[idx]
+    nxt = paragraphs[idx + 1] if idx + 1 < len(paragraphs) else None
+    if isinstance(para, dict) and para.get('role') == 'table_caption' and is_landscape_table_item(nxt):
+        return {'caption_item': para, 'table_item': nxt, 'next_idx': idx + 2}
+    if isinstance(para, str) and is_landscape_table_item(nxt) and looks_like_table_title(para):
+        return {'title_text': para, 'table_item': nxt, 'next_idx': idx + 2}
+    if is_landscape_table_item(para):
+        return {'table_item': para, 'next_idx': idx + 1}
+    return None
+
+
+def is_short_landscape_table_bridge(item, next_group):
+    if not next_group:
+        return False
+    if not isinstance(item, str):
+        return False
+    text = clean_text_artifacts(item).strip()
+    if not text or len(text) > 180:
+        return False
+    if looks_like_table_title(text) or is_figure_caption_text(text) or is_table_caption_text(text):
+        return False
+    return True
+
+
+def render_landscape_table_group(paragraphs, idx, current_chapter):
+    first_group = table_group_at(paragraphs, idx)
+    if not first_group:
+        return idx
+    started = begin_table_source_section(first_group.get('table_item'))
+    try:
+        while True:
+            group = table_group_at(paragraphs, idx)
+            if not group:
+                break
+            caption_item = group.get('caption_item')
+            title_text = group.get('title_text')
+            if isinstance(caption_item, dict):
+                add_caption(caption_item.get('text') or '', 'table_caption')
+            elif title_text:
+                add_caption(next_table_caption(title_text, current_chapter), 'table_caption')
+            render_table_from_item(group.get('table_item') or {})
+            idx = group.get('next_idx') or (idx + 1)
+            bridge = paragraphs[idx] if idx < len(paragraphs) else None
+            next_group = table_group_at(paragraphs, idx + 1) if idx + 1 < len(paragraphs) else None
+            if is_short_landscape_table_bridge(bridge, next_group):
+                render_paragraph_item(bridge, code_sensitive=False, chapter=current_chapter)
+                idx += 1
+                continue
+            break
+    finally:
+        end_table_source_section(started)
+    return idx
 
 
 def render_body():
@@ -113,19 +164,21 @@ def render_body():
         while idx < len(paragraphs):
             para = paragraphs[idx]
             nxt = paragraphs[idx + 1] if idx + 1 < len(paragraphs) else None
+            if table_group_at(paragraphs, idx):
+                idx = render_landscape_table_group(paragraphs, idx, current_chapter)
+                continue
+            if isinstance(para, dict) and para.get('role') == 'table_caption' and is_table_item(nxt):
+                started = begin_table_source_section(nxt)
+                add_caption(para.get('text') or '', 'table_caption')
+                render_table_from_item(nxt)
+                end_table_source_section(started)
+                idx += 2
+                continue
             if isinstance(para, str) and is_table_item(nxt) and looks_like_table_title(para):
+                started = begin_table_source_section(nxt)
                 add_caption(next_table_caption(para, current_chapter), 'table_caption')
-                render_table(
-                    nxt.get('table_rows') or [],
-                    nxt.get('table_cell_items') or [],
-                    nxt.get('table_merges') or [],
-                    nxt.get('table_col_widths_twips') or [],
-                    nxt.get('table_row_heights_twips') or [],
-                    nxt.get('table_repeat_header_rows'),
-                    nxt.get('table_cell_margins_twips') or {},
-                    nxt.get('table_cell_overrides') or [],
-                    nxt.get('table_borders') or {},
-                )
+                render_table_from_item(nxt)
+                end_table_source_section(started)
                 idx += 2
                 continue
             if is_table_item(para):

@@ -251,6 +251,110 @@ def parse_body_sections(doc: Any, text_start: int, image_registry: Any, notes: D
     def local_name(elem: Any) -> str:
         return elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
 
+    def child_by_local_name(elem: Any, name: str) -> Any | None:
+        for child in list(elem):
+            if local_name(child) == name:
+                return child
+        return None
+
+    def attr_value(elem: Any | None, name: str) -> str | None:
+        if elem is None:
+            return None
+        value = elem.get(name)
+        if value is not None:
+            return value
+        for key, val in elem.attrib.items():
+            if str(key).split("}")[-1] == name:
+                return val
+        return None
+
+    def int_attr(elem: Any | None, name: str) -> int | None:
+        value = attr_value(elem, name)
+        try:
+            parsed = int(value or 0)
+        except Exception:
+            return None
+        return parsed if parsed > 0 else None
+
+    def paragraph_section_properties(elem: Any) -> Any | None:
+        if local_name(elem) != "p":
+            return None
+        p_pr = child_by_local_name(elem, "pPr")
+        if p_pr is None:
+            return None
+        return child_by_local_name(p_pr, "sectPr")
+
+    def section_page_setup(sect_pr: Any | None) -> Dict[str, Any]:
+        if sect_pr is None:
+            return {}
+        pg_sz = child_by_local_name(sect_pr, "pgSz")
+        pg_mar = child_by_local_name(sect_pr, "pgMar")
+        width = int_attr(pg_sz, "w")
+        height = int_attr(pg_sz, "h")
+        orientation = str(attr_value(pg_sz, "orient") or "").strip().lower()
+        if orientation not in ("landscape", "portrait"):
+            orientation = ""
+        if not orientation and width and height:
+            orientation = "landscape" if width > height else "portrait"
+        margins: Dict[str, int] = {}
+        for side in ("top", "bottom", "left", "right", "header", "footer", "gutter"):
+            value = int_attr(pg_mar, side)
+            if value:
+                margins[side] = value
+        setup: Dict[str, Any] = {}
+        if orientation:
+            setup["orientation"] = orientation
+        if width:
+            setup["page_width_twips"] = width
+        if height:
+            setup["page_height_twips"] = height
+        if margins:
+            setup["margins_twips"] = margins
+        return setup
+
+    section_page_by_elem: Dict[int, Dict[str, Any]] = {}
+
+    def assign_section_page_setup(elem: Any, setup: Dict[str, Any]) -> None:
+        tag = local_name(elem)
+        if tag in ("p", "tbl"):
+            section_page_by_elem[id(elem)] = setup
+        elif tag in _BODY_TRANSPARENT_CONTAINERS or tag in _BODY_ACCEPTED_REVISION_CONTAINERS or tag == "sdt":
+            for child in list(elem):
+                assign_section_page_setup(child, setup)
+        else:
+            for child in list(elem):
+                if local_name(child) in ("p", "tbl", "sdt") or local_name(child) in _BODY_TRANSPARENT_CONTAINERS | _BODY_ACCEPTED_REVISION_CONTAINERS:
+                    assign_section_page_setup(child, setup)
+
+    def build_section_page_map() -> None:
+        pending: List[Any] = []
+
+        def flush(sect_pr: Any | None) -> None:
+            nonlocal pending
+            setup = section_page_setup(sect_pr)
+            if setup:
+                for elem in pending:
+                    assign_section_page_setup(elem, setup)
+            pending = []
+
+        for child in body_children:
+            if local_name(child) == "sectPr":
+                flush(child)
+                continue
+            pending.append(child)
+            sect_pr = paragraph_section_properties(child)
+            if sect_pr is not None:
+                flush(sect_pr)
+        if pending:
+            fallback_sect_pr = None
+            try:
+                fallback_sect_pr = doc.sections[-1]._sectPr
+            except Exception:
+                fallback_sect_pr = None
+            flush(fallback_sect_pr)
+
+    build_section_page_map()
+
     def sdt_content_children(elem: Any) -> List[Any]:
         for part in list(elem):
             if local_name(part) == "sdtContent":
@@ -325,6 +429,9 @@ def parse_body_sections(doc: Any, text_start: int, image_registry: Any, notes: D
                 )
             else:
                 table_item = {"role": "table", "table_rows": rows}
+                source_section_setup = section_page_by_elem.get(id(tbl_elem)) or {}
+                if source_section_setup.get("orientation") == "landscape":
+                    table_item["source_section_page_setup"] = source_section_setup
                 if table_data.get("table_merges"):
                     table_item["table_merges"] = table_data.get("table_merges")
                 if table_data.get("table_col_widths_twips"):

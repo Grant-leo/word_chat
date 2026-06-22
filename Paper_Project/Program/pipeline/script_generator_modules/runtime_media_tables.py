@@ -178,6 +178,24 @@ def prevent_row_split(row):
         pass
 
 
+def estimate_table_row_lines(row):
+    estimated = 1
+    for cell in row or []:
+        parts = str(cell or '').split('\n') or ['']
+        cell_lines = sum(max(1, math.ceil(len(part) / 14)) for part in parts)
+        estimated = max(estimated, cell_lines)
+    return estimated
+
+
+def should_prevent_row_split(row, is_header=False):
+    if is_header:
+        return True
+    text_cells = [str(cell or '') for cell in row or []]
+    if any(len(cell) > 420 for cell in text_cells):
+        return False
+    return estimate_table_row_lines(row) <= 12
+
+
 def should_keep_table_together(rows):
     if not rows or len(rows) > 10:
         return False
@@ -186,12 +204,7 @@ def should_keep_table_together(rows):
         return False
     estimated_lines = 0
     for row in rows:
-        row_lines = 1
-        for cell in row:
-            parts = str(cell or '').split('\n') or ['']
-            cell_lines = sum(max(1, math.ceil(len(part) / 14)) for part in parts)
-            row_lines = max(row_lines, cell_lines)
-        estimated_lines += row_lines
+        estimated_lines += estimate_table_row_lines(row)
     return estimated_lines <= 18
 
 
@@ -264,7 +277,7 @@ def table_cell_media_map(cell_items):
     return by_cell
 
 
-def normalize_table_col_widths(table_col_widths, ncols):
+def normalize_table_col_widths(table_col_widths, ncols, max_total_twips=None):
     widths = []
     for value in table_col_widths or []:
         try:
@@ -279,10 +292,12 @@ def normalize_table_col_widths(table_col_widths, ncols):
     if not any(widths):
         return []
     total = sum(widths)
-    try:
-        max_total = int(text_width_cm() * 567)
-    except Exception:
-        max_total = 0
+    max_total = safe_positive_int(max_total_twips)
+    if not max_total:
+        try:
+            max_total = int(text_width_cm() * 567)
+        except Exception:
+            max_total = 0
     if total > 0 and max_total > 0 and total > max_total:
         scale = max_total / float(total)
         widths = [max(120, int(width * scale)) if width > 0 else 0 for width in widths]
@@ -773,7 +788,127 @@ def render_table_cell_media_item(cell, media, ncols, prof, force_new_paragraph=F
     return False
 
 
-def render_table(rows, cell_items=None, table_merges=None, table_col_widths_twips=None, table_row_heights_twips=None, table_repeat_header_rows=None, table_cell_margins_twips=None, table_cell_overrides=None, table_borders=None, container=None, nested=False):
+def safe_positive_int(value):
+    try:
+        parsed = int(value or 0)
+    except Exception:
+        return 0
+    return parsed if parsed > 0 else 0
+
+
+def twips_to_cm(value):
+    return float(value) / 567.0
+
+
+def table_source_section_page_setup(item):
+    if not isinstance(item, dict):
+        return {}
+    setup = item.get('source_section_page_setup') or {}
+    if not isinstance(setup, dict):
+        return {}
+    width = safe_positive_int(setup.get('page_width_twips'))
+    height = safe_positive_int(setup.get('page_height_twips'))
+    orientation = str(setup.get('orientation') or '').strip().lower()
+    if orientation != 'landscape' and not (width and height and width > height):
+        return {}
+    return setup
+
+
+def table_source_section_text_width_twips(item):
+    setup = table_source_section_page_setup(item)
+    if not setup:
+        return 0
+    width = safe_positive_int(setup.get('page_width_twips'))
+    if not width:
+        return 0
+    margins = setup.get('margins_twips') or {}
+    left = safe_positive_int(margins.get('left')) if isinstance(margins, dict) else 0
+    right = safe_positive_int(margins.get('right')) if isinstance(margins, dict) else 0
+    available = width - left - right
+    return available if available > 0 else width
+
+
+def apply_source_section_page_setup(sec, setup):
+    width = safe_positive_int(setup.get('page_width_twips'))
+    height = safe_positive_int(setup.get('page_height_twips'))
+    if width and height:
+        sec.page_width = Cm(twips_to_cm(width))
+        sec.page_height = Cm(twips_to_cm(height))
+    margins = setup.get('margins_twips') or {}
+    if isinstance(margins, dict):
+        for attr, key in (
+            ('top_margin', 'top'),
+            ('bottom_margin', 'bottom'),
+            ('left_margin', 'left'),
+            ('right_margin', 'right'),
+            ('header_distance', 'header'),
+            ('footer_distance', 'footer'),
+            ('gutter', 'gutter'),
+        ):
+            value = safe_positive_int(margins.get(key))
+            if value:
+                try:
+                    setattr(sec, attr, Cm(twips_to_cm(value)))
+                except Exception:
+                    pass
+    try:
+        pg_sz = sec._sectPr.find(qn('w:pgSz'))
+        if pg_sz is None:
+            pg_sz = OxmlElement('w:pgSz')
+            sec._sectPr.insert(0, pg_sz)
+        pg_sz.set(qn('w:orient'), 'landscape')
+    except Exception:
+        pass
+
+
+def begin_table_source_section(item):
+    setup = table_source_section_page_setup(item)
+    if not setup:
+        return False
+    remove_trailing_empty_body_paragraphs()
+    sec = doc.add_section(WD_SECTION.NEW_PAGE)
+    setup_section(sec)
+    apply_header_footer(sec, 'decimal', None)
+    apply_source_section_page_setup(sec, setup)
+    BUILD_STATS['content_landscape_table_sections_rendered'] = BUILD_STATS.get('content_landscape_table_sections_rendered', 0) + 1
+    return True
+
+
+def end_table_source_section(started):
+    if not started:
+        return
+    remove_trailing_empty_body_paragraphs()
+    sec = doc.add_section(WD_SECTION.NEW_PAGE)
+    setup_section(sec)
+    apply_header_footer(sec, 'decimal', None)
+
+
+def render_table_from_item(item, container=None, nested=False):
+    return render_table(
+        item.get('table_rows') or [],
+        item.get('table_cell_items') or [],
+        item.get('table_merges') or [],
+        item.get('table_col_widths_twips') or [],
+        item.get('table_row_heights_twips') or [],
+        item.get('table_repeat_header_rows'),
+        item.get('table_cell_margins_twips') or {},
+        item.get('table_cell_overrides') or [],
+        item.get('table_borders') or {},
+        container=container,
+        nested=nested,
+        max_width_twips=table_source_section_text_width_twips(item) if not nested else None,
+    )
+
+
+def render_table_item(item):
+    started = begin_table_source_section(item)
+    try:
+        return render_table_from_item(item)
+    finally:
+        end_table_source_section(started)
+
+
+def render_table(rows, cell_items=None, table_merges=None, table_col_widths_twips=None, table_row_heights_twips=None, table_repeat_header_rows=None, table_cell_margins_twips=None, table_cell_overrides=None, table_borders=None, container=None, nested=False, max_width_twips=None):
     if not rows:
         return
     container = container or doc
@@ -789,13 +924,21 @@ def render_table(rows, cell_items=None, table_merges=None, table_col_widths_twip
     if nested:
         BUILD_STATS['content_nested_tables_rendered'] = BUILD_STATS.get('content_nested_tables_rendered', 0) + 1
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    col_widths = normalize_table_col_widths(table_col_widths_twips, ncols)
+    col_widths = normalize_table_col_widths(table_col_widths_twips, ncols, max_total_twips=max_width_twips)
     if col_widths and set_table_grid_widths(table, col_widths):
         BUILD_STATS['content_table_widths_rendered'] = BUILD_STATS.get('content_table_widths_rendered', 0) + 1
     if set_table_default_cell_margins(table, table_cell_margins_twips or {}):
         BUILD_STATS['content_table_cell_margins_rendered'] = BUILD_STATS.get('content_table_cell_margins_rendered', 0) + 1
+    try:
+        repeat_header_count = int(table_repeat_header_rows or 0)
+    except Exception:
+        repeat_header_count = 0
+    if table_repeat_header_rows is None and len(rows):
+        repeat_header_count = 1
+    repeat_header_count = max(0, min(repeat_header_count, len(rows)))
     for ri, row in enumerate(rows):
-        prevent_row_split(table.rows[ri])
+        if should_prevent_row_split(row, is_header=ri < repeat_header_count):
+            prevent_row_split(table.rows[ri])
         prof = profile('table_header' if ri == 0 else 'table_body')
         for ci in range(ncols):
             text = row[ci] if ci < len(row) else ''

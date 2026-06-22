@@ -101,9 +101,9 @@ CLI, output, verification, and QA details in a focused package:
 
 ## Verification Baseline
 
-Current baseline as of 2026-06-21:
+Current baseline as of 2026-06-22:
 
-- Synthetic regression after private real-data audit/source-audit/comparison-assessment hardening, boxed-content recovery, native note rendering, merged-table preservation, `gridBefore` vertical-merge round-trip preservation, table-column-width preservation, table layout-detail preservation, explicit table/cell border preservation, border/layout property-order hardening, source-order three-level nested table preservation, DOCX table-cell and nested-table image in-cell preservation, table-cell image/text run-order preservation, table-cell block/inline/nested-inline content-control preservation and de-duplication, content-control simple-field visible-value preservation, content-control transparent-container visible-value preservation, body transparent-container paragraph/table preservation, body content-control paragraph/table in-place preservation, body content-control inline rich media/formula/note preservation, DOCX revision final-view extraction for body/table/table-row/table-cell/heading/textbox-recovery content, content-control hyperlink media/formula/note preservation, body content-control/table-text overlap/exact-match dedupe protection, table-cell inline OMML formula preservation, table-cell inline LaTeX formula preservation, mixed table-cell image/LaTeX/OMML ordering preservation, inline table-cell image/formula/footnote ordering preservation, nested table-cell inline image/LaTeX/OMML/footnote ordering preservation, table-cell footnote reference preservation, table-cell image-before-note-only reference preservation, irregular merge-grid audit, source-audit DOCX fixture rewrite hygiene, and section-scoped/de-duplicated wide-table risk counts: `319 passed, 0 failed`.
+- Synthetic regression after private real-data audit/source-audit/comparison-assessment hardening, boxed-content recovery, native note rendering, merged-table preservation, `gridBefore` vertical-merge round-trip preservation, table-column-width preservation, table layout-detail preservation, explicit table/cell border preservation, border/layout property-order hardening, source-order three-level nested table preservation, DOCX table-cell and nested-table image in-cell preservation, table-cell image/text run-order preservation, table-cell block/inline/nested-inline content-control preservation and de-duplication, content-control simple-field visible-value preservation, content-control transparent-container visible-value preservation, body transparent-container paragraph/table preservation, body content-control paragraph/table in-place preservation, body content-control inline rich media/formula/note preservation, DOCX revision final-view extraction for body/table/table-row/table-cell/heading/textbox-recovery content, content-control hyperlink media/formula/note preservation, body content-control/table-text overlap/exact-match dedupe protection, table-cell inline OMML formula preservation, table-cell inline LaTeX formula preservation, mixed table-cell image/LaTeX/OMML ordering preservation, inline table-cell image/formula/footnote ordering preservation, nested table-cell inline image/LaTeX/OMML/footnote ordering preservation, table-cell footnote reference preservation, table-cell image-before-note-only reference preservation, irregular merge-grid audit, orphan/mismatched `vMerge` visible-text repair, `gridSpan` overflow width repair, tall table body-row split pagination, structured table-caption landscape-section grouping, adjacent landscape-table short-note grouping, source-audit DOCX fixture rewrite hygiene, section-scoped/de-duplicated wide-table risk counts, and DOCX landscape-section wide-table page setup plus source-width preservation: `326 passed, 0 failed`.
 - DOCX textbox/content-control recovery: visible text inside `w:txbxContent`
   and `w:sdtContent` is now recovered into the body stream, deduplicated, and
   reported in content metadata. The fallback uses the same Word final-view text
@@ -116,6 +116,24 @@ Current baseline as of 2026-06-21:
 - DOCX body table fidelity: basic merged cells, column widths, row heights,
   repeated header rows, default cell margins, cell-level margins, and vertical
   alignment now round-trip through `content.json` and generated DOCX XML.
+  Orphaned or span-mismatched `vMerge continue` cells keep their visible text
+  as normal cells instead of being cleared as invisible merge placeholders;
+  source audit still marks the table for Word/WPS visual review.
+  If a `gridSpan` extends beyond an incomplete `tblGrid`, missing generated
+  grid widths are repaired from source cell-width evidence instead of producing
+  zero-width columns.
+  Repeated header rows keep `tblHeader`/`cantSplit`; unusually tall non-header
+  rows omit `cantSplit` so Word/WPS can split them across pages instead of
+  forcing large blank areas or row overflow.
+- DOCX landscape-section wide tables: tables extracted from landscape sections
+  carry source page setup into `content.json`; generated DOCX creates a
+  landscape section around the table and uses the source landscape text width
+  before scaling columns. Structured `table_caption` items immediately before
+  a landscape table are rendered inside the same landscape section so captions
+  do not stay behind on the portrait page. Adjacent landscape tables separated
+  only by a short note share the same landscape section, so the note stays with
+  the table group and the document avoids unnecessary portrait/landscape page
+  flips.
 - Private real-data inventory smoke: local-only private corpus scans stay under ignored output folders, report structural classifications only, and must not publish source file contents, local paths, or corpus statistics.
 - Agent-first flow: `--agent-auto` scans local inputs, auto-selects only single candidates, defaults to user auto-repair, and writes `agent_summary.md/json`.
 - Novice interruption coverage: interactive cancellation/EOF, missing preflight inputs, generated-script build failures, QA dependency failures, and auto-repair blockers all route to a next action.
@@ -280,7 +298,13 @@ overwide / irregular
 tables. Source audit details now include irregular merge-grid counts and
 section-scoped landscape wide-table risk counts; nested wide tables are counted
 once, and valid `gridBefore` vertical-merge continuations are not treated as
-orphaned merges or dropped during table extraction. QA can therefore point users to the specific tables that need
+orphaned merges or dropped during table extraction. Orphaned or
+span-mismatched `vMerge continue` cells keep their visible text as normal
+cells instead of creating a fake vertical merge. Incomplete `tblGrid` data for
+overflowing `gridSpan` cells is repaired with nonzero inferred column widths
+so generated tables do not silently collapse extra columns. Repeated header
+rows stay together, while tall body rows are allowed to split across pages by
+omitting row-level `cantSplit`. QA can therefore point users to the specific tables that need
 Word/WPS visual review instead of asking them to flatten simple merged,
 bordered, or three-level nested tables.
 
