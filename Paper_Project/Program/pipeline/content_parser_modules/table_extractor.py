@@ -196,6 +196,25 @@ def _normalized_widths(widths: List[int], ncols: int) -> List[int]:
     return out if any(value > 0 for value in out) else []
 
 
+def _table_widths_twips(tbl_elem: Any, ncols: int) -> List[int]:
+    grid_widths = _normalized_widths(_table_grid_widths_twips(tbl_elem), ncols)
+    fallback_widths = _normalized_widths(_fallback_row_widths_twips(tbl_elem, ncols), ncols)
+    if not grid_widths:
+        return fallback_widths
+    if not any(width <= 0 for width in grid_widths):
+        return grid_widths
+
+    repaired = list(grid_widths)
+    positive = [width for width in fallback_widths + grid_widths if width > 0]
+    default_width = max(1, sum(positive) // len(positive)) if positive else 0
+    for idx, width in enumerate(repaired):
+        if width > 0:
+            continue
+        fallback = fallback_widths[idx] if idx < len(fallback_widths) else 0
+        repaired[idx] = fallback if fallback > 0 else default_width
+    return repaired if any(width > 0 for width in repaired) else []
+
+
 def _run_text_preserve_breaks(run_elem: Any) -> str:
     parts: List[str] = []
     for child in list(run_elem):
@@ -884,7 +903,7 @@ def _cell_text_and_nested_items_from_ooxml(
     tc_elem: Any,
     clean_text_func: Optional[Callable[..., str]] = None,
     nested_depth: int = 0,
-    max_nested_depth: int = 3,
+    max_nested_depth: int = 4,
     image_rels: Any = None,
     image_registry: Any = None,
     image_items_func: Optional[Callable[..., List[Dict[str, Any]]]] = None,
@@ -950,7 +969,7 @@ def extract_table_from_ooxml(
     tbl_elem: Any,
     clean_text_func: Optional[Callable[..., str]] = None,
     nested_depth: int = 0,
-    max_nested_depth: int = 3,
+    max_nested_depth: int = 4,
     image_rels: Any = None,
     image_registry: Any = None,
     image_items_func: Optional[Callable[..., List[Dict[str, Any]]]] = None,
@@ -962,6 +981,7 @@ def extract_table_from_ooxml(
     merges: List[Dict[str, int]] = []
     row_heights: List[Dict[str, Any]] = []
     header_flags: List[bool] = []
+    row_grid_before: List[int] = []
     cell_overrides: List[Dict[str, Any]] = []
     table_cell_items: List[Dict[str, Any]] = []
     active_vmerges: Dict[int, Dict[str, int]] = {}
@@ -971,7 +991,9 @@ def extract_table_from_ooxml(
 
     for tr in _iter_table_row_elements(tbl_elem):
         row_idx = len(rows)
-        cells: List[str] = [""] * _row_grid_before(tr)
+        grid_before = _row_grid_before(tr)
+        row_grid_before.append(grid_before)
+        cells: List[str] = [""] * grid_before
         seen_vmerge_cols = set()
         continued_records = set()
         row_heights.append(_row_height_twips(tr))
@@ -980,7 +1002,15 @@ def extract_table_from_ooxml(
             col_idx = len(cells)
             colspan = _cell_grid_span(tc)
             vmerge_kind = _cell_vmerge_kind(tc)
-            is_vmerge_continue = vmerge_kind == "continue"
+            vmerge_record = active_vmerges.get(col_idx) if vmerge_kind == "continue" else None
+            vmerge_record_colspan = int((vmerge_record or {}).get("colspan") or 1)
+            is_vmerge_continue = (
+                vmerge_kind == "continue"
+                and vmerge_record is not None
+                and vmerge_record_colspan == colspan
+                and id(vmerge_record) not in continued_records
+                and all(active_vmerges.get(col_idx + offset) is vmerge_record for offset in range(colspan))
+            )
             if is_vmerge_continue:
                 text = ""
                 nested_items = []
@@ -1023,14 +1053,11 @@ def extract_table_from_ooxml(
                     active_vmerges[col_idx + offset] = record
                     seen_vmerge_cols.add(col_idx + offset)
             elif is_vmerge_continue:
-                record = active_vmerges.get(col_idx)
-                if record is not None:
-                    record_id = id(record)
-                    if record_id not in continued_records:
-                        record["rowspan"] = int(record.get("rowspan") or 1) + 1
-                        continued_records.add(record_id)
-                    for offset in range(int(record.get("colspan") or colspan or 1)):
-                        seen_vmerge_cols.add(col_idx + offset)
+                record_id = id(vmerge_record)
+                vmerge_record["rowspan"] = int(vmerge_record.get("rowspan") or 1) + 1
+                continued_records.add(record_id)
+                for offset in range(vmerge_record_colspan):
+                    seen_vmerge_cols.add(col_idx + offset)
             elif colspan > 1:
                 merges.append({"row": row_idx, "col": col_idx, "rowspan": 1, "colspan": colspan})
 
@@ -1045,10 +1072,10 @@ def extract_table_from_ooxml(
         if int(merge.get("rowspan") or 1) > 1 or int(merge.get("colspan") or 1) > 1
     ]
     ncols = max((len(row) for row in rows), default=0)
-    widths = _normalized_widths(_table_grid_widths_twips(tbl_elem), ncols)
-    if not widths:
-        widths = _normalized_widths(_fallback_row_widths_twips(tbl_elem, ncols), ncols)
+    widths = _table_widths_twips(tbl_elem, ncols)
     table_data: Dict[str, Any] = {"table_rows": rows, "table_merges": merges}
+    if any(row_grid_before):
+        table_data["table_row_grid_before"] = row_grid_before
     if widths:
         table_data["table_col_widths_twips"] = widths
     if table_borders:

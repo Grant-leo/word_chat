@@ -369,7 +369,7 @@ def audit_docx_source(docx_path: str) -> Dict[str, Any]:
                 issues.append(_safe_issue("CONTENT_IMAGE_FORMAT_UNSUPPORTED", "error", detail))
             if counts["merged_cell_count"]:
                 issues.append(_safe_issue("TABLE_MERGE_UNSUPPORTED", "warning", f"merged_cells={counts['merged_cell_count']}"))
-            if counts["nested_table_max_depth"] > 3 or counts["max_table_columns"] > 8 or counts["irregular_table_count"]:
+            if counts["nested_table_max_depth"] > 4 or counts["max_table_columns"] > 8 or counts["irregular_table_count"]:
                 detail = (
                     f"nested_tables={counts['nested_table_count']}; "
                     f"nested_depth={counts['nested_table_max_depth']}; "

@@ -375,12 +375,24 @@ def fit_picture_dimensions(path, has_caption=True):
 
 def setup_section(sec):
     page = DATA['page']
-    sec.page_width = Cm(float(page.get('page_w') or 21.0))
-    sec.page_height = Cm(float(page.get('page_h') or 29.7))
+    page_w = float(page.get('page_w') or 21.0)
+    page_h = float(page.get('page_h') or 29.7)
+    sec.page_width = Cm(page_w)
+    sec.page_height = Cm(page_h)
     sec.top_margin = Cm(float(page.get('mt') or 2.54))
     sec.bottom_margin = Cm(float(page.get('mb') or 2.54))
     sec.left_margin = Cm(float(page.get('ml') or 2.54))
     sec.right_margin = Cm(float(page.get('mr') or 2.54))
+    try:
+        pg_sz = sec._sectPr.find(qn('w:pgSz'))
+        if pg_sz is not None:
+            orient_attr = qn('w:orient')
+            if page_w > page_h:
+                pg_sz.set(orient_attr, 'landscape')
+            elif orient_attr in pg_sz.attrib:
+                del pg_sz.attrib[orient_attr]
+    except Exception:
+        pass
 
 
 def add_page_field(paragraph):

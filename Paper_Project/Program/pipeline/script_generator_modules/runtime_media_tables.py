@@ -178,6 +178,24 @@ def prevent_row_split(row):
         pass
 
 
+def estimate_table_row_lines(row):
+    estimated = 1
+    for cell in row or []:
+        parts = str(cell or '').split('\n') or ['']
+        cell_lines = sum(max(1, math.ceil(len(part) / 14)) for part in parts)
+        estimated = max(estimated, cell_lines)
+    return estimated
+
+
+def should_prevent_row_split(row, is_header=False):
+    if is_header:
+        return True
+    text_cells = [str(cell or '') for cell in row or []]
+    if any(len(cell) > 420 for cell in text_cells):
+        return False
+    return estimate_table_row_lines(row) <= 12
+
+
 def should_keep_table_together(rows):
     if not rows or len(rows) > 10:
         return False
@@ -186,12 +204,7 @@ def should_keep_table_together(rows):
         return False
     estimated_lines = 0
     for row in rows:
-        row_lines = 1
-        for cell in row:
-            parts = str(cell or '').split('\n') or ['']
-            cell_lines = sum(max(1, math.ceil(len(part) / 14)) for part in parts)
-            row_lines = max(row_lines, cell_lines)
-        estimated_lines += row_lines
+        estimated_lines += estimate_table_row_lines(row)
     return estimated_lines <= 18
 
 
@@ -264,7 +277,7 @@ def table_cell_media_map(cell_items):
     return by_cell
 
 
-def normalize_table_col_widths(table_col_widths, ncols):
+def normalize_table_col_widths(table_col_widths, ncols, max_total_twips=None):
     widths = []
     for value in table_col_widths or []:
         try:
@@ -276,16 +289,33 @@ def normalize_table_col_widths(table_col_widths, ncols):
             break
     if len(widths) < ncols:
         widths.extend([0] * (ncols - len(widths)))
-    if not any(widths):
+    positive_widths = [width for width in widths if width > 0]
+    if not positive_widths:
         return []
+    fallback_width = max(120, int(sum(positive_widths) / len(positive_widths)))
+    widths = [width if width > 0 else fallback_width for width in widths]
     total = sum(widths)
-    try:
-        max_total = int(text_width_cm() * 567)
-    except Exception:
-        max_total = 0
+    max_total = safe_positive_int(max_total_twips)
+    if not max_total:
+        try:
+            max_total = int(text_width_cm() * 567)
+        except Exception:
+            max_total = 0
     if total > 0 and max_total > 0 and total > max_total:
         scale = max_total / float(total)
-        widths = [max(120, int(width * scale)) if width > 0 else 0 for width in widths]
+        min_width = 120
+        if len(widths) * min_width > max_total:
+            min_width = max(1, int(max_total / max(len(widths), 1)))
+        widths = [max(min_width, int(width * scale)) for width in widths]
+        overflow = sum(widths) - max_total
+        while overflow > 0 and widths:
+            idx = max(range(len(widths)), key=lambda i: widths[i])
+            reducible = max(0, widths[idx] - 1)
+            if reducible <= 0:
+                break
+            delta = min(reducible, overflow)
+            widths[idx] -= delta
+            overflow -= delta
     return widths
 
 
@@ -688,6 +718,54 @@ def apply_table_merges(table, table_merges):
     return rendered
 
 
+def apply_row_grid_before(table, row_grid_before, rows=None, col_widths=None):
+    if not row_grid_before:
+        return 0
+    rendered = 0
+    rows = rows or []
+    col_widths = col_widths or []
+    for row_idx, value in enumerate(row_grid_before or []):
+        try:
+            count = int(value or 0)
+        except Exception:
+            count = 0
+        if count <= 0 or row_idx >= len(table.rows):
+            continue
+        source_row = rows[row_idx] if row_idx < len(rows) and isinstance(rows[row_idx], (list, tuple)) else []
+        if any(str(source_row[idx] or '').strip() for idx in range(min(count, len(source_row)))):
+            continue
+        tr = table.rows[row_idx]._tr
+        tr_pr = tr.find(qn('w:trPr'))
+        if tr_pr is None:
+            tr_pr = OxmlElement('w:trPr')
+            tr.insert(0, tr_pr)
+        grid_before = tr_pr.find(qn('w:gridBefore'))
+        if grid_before is None:
+            grid_before = OxmlElement('w:gridBefore')
+            tr_pr.append(grid_before)
+        grid_before.set(qn('w:val'), str(count))
+        width_before = sum(int(width or 0) for width in col_widths[:count]) if col_widths else 0
+        if width_before > 0:
+            w_before = tr_pr.find(qn('w:wBefore'))
+            if w_before is None:
+                w_before = OxmlElement('w:wBefore')
+                tr_pr.append(w_before)
+            w_before.set(qn('w:w'), str(width_before))
+            w_before.set(qn('w:type'), 'dxa')
+        removed = 0
+        while removed < count:
+            tc_elems = tr.findall(qn('w:tc'))
+            if len(tc_elems) <= 1:
+                break
+            tr.remove(tc_elems[0])
+            removed += 1
+        if removed:
+            rendered += 1
+    if rendered:
+        BUILD_STATS['content_table_grid_before_rows_rendered'] = BUILD_STATS.get('content_table_grid_before_rows_rendered', 0) + rendered
+    return rendered
+
+
 def media_after_paragraph_index(media):
     if not isinstance(media, dict) or 'after_paragraph_index' not in media:
         return None
@@ -753,6 +831,7 @@ def render_table_cell_media_item(cell, media, ncols, prof, force_new_paragraph=F
             media.get('table_cell_items') or [],
             media.get('table_merges') or [],
             media.get('table_col_widths_twips') or [],
+            media.get('table_row_grid_before') or [],
             media.get('table_row_heights_twips') or [],
             media.get('table_repeat_header_rows'),
             media.get('table_cell_margins_twips') or {},
@@ -773,7 +852,232 @@ def render_table_cell_media_item(cell, media, ncols, prof, force_new_paragraph=F
     return False
 
 
-def render_table(rows, cell_items=None, table_merges=None, table_col_widths_twips=None, table_row_heights_twips=None, table_repeat_header_rows=None, table_cell_margins_twips=None, table_cell_overrides=None, table_borders=None, container=None, nested=False):
+def safe_positive_int(value):
+    try:
+        parsed = int(value or 0)
+    except Exception:
+        return 0
+    return parsed if parsed > 0 else 0
+
+
+def twips_to_cm(value):
+    return float(value) / 567.0
+
+
+def cm_to_twips(value):
+    return int(round(float(value or 0) * 567.0))
+
+
+def current_page_setup_twips():
+    page = DATA.get('page') or {}
+
+    def cm_value(key, default):
+        try:
+            return float(page.get(key) or default)
+        except Exception:
+            return float(default)
+
+    page_w = cm_value('page_w', 21.0)
+    page_h = cm_value('page_h', 29.7)
+    margins = {
+        'left': cm_to_twips(cm_value('ml', 2.54)),
+        'right': cm_to_twips(cm_value('mr', 2.54)),
+        'top': cm_to_twips(cm_value('mt', 2.54)),
+        'bottom': cm_to_twips(cm_value('mb', 2.54)),
+    }
+    return {
+        'page_width_twips': cm_to_twips(page_w),
+        'page_height_twips': cm_to_twips(page_h),
+        'margins_twips': margins,
+    }
+
+
+def table_source_section_page_setup(item):
+    if not isinstance(item, dict):
+        return {}
+    setup = item.get('source_section_page_setup') or {}
+    if not isinstance(setup, dict):
+        return {}
+    width = safe_positive_int(setup.get('page_width_twips'))
+    height = safe_positive_int(setup.get('page_height_twips'))
+    orientation = str(setup.get('orientation') or '').strip().lower()
+    if orientation != 'landscape' and not (width and height and width > height):
+        return {}
+    return setup
+
+
+def table_column_count(item):
+    if not isinstance(item, dict):
+        return 0
+    rows = item.get('table_rows') or []
+    try:
+        return max(len(row) for row in rows if isinstance(row, (list, tuple)))
+    except Exception:
+        return 0
+
+
+def table_declared_width_twips(item, ncols):
+    if not isinstance(item, dict) or ncols <= 0:
+        return 0
+    widths = []
+    for value in item.get('table_col_widths_twips') or []:
+        try:
+            width = int(value or 0)
+        except Exception:
+            width = 0
+        if width > 0:
+            widths.append(width)
+        if len(widths) >= ncols:
+            break
+    if not widths:
+        return 0
+    fallback = max(120, int(sum(widths) / len(widths)))
+    if len(widths) < ncols:
+        widths.extend([fallback] * (ncols - len(widths)))
+    return sum(widths[:ncols])
+
+
+def table_auto_landscape_page_setup(item):
+    if not isinstance(item, dict) or item.get('source_section_page_setup'):
+        return {}
+    ncols = table_column_count(item)
+    if ncols <= 0:
+        return {}
+    current = current_page_setup_twips()
+    page_w = safe_positive_int(current.get('page_width_twips'))
+    page_h = safe_positive_int(current.get('page_height_twips'))
+    if not page_w or not page_h or page_w >= page_h:
+        return {}
+    margins = current.get('margins_twips') or {}
+    left = safe_positive_int(margins.get('left')) if isinstance(margins, dict) else 0
+    right = safe_positive_int(margins.get('right')) if isinstance(margins, dict) else 0
+    portrait_text_width = max(0, page_w - left - right)
+    landscape_text_width = max(0, page_h - left - right)
+    if landscape_text_width <= portrait_text_width:
+        return {}
+    declared_width = table_declared_width_twips(item, ncols)
+    wide_by_width = bool(declared_width and declared_width > int(portrait_text_width * 1.08))
+    wide_by_columns = ncols >= 9
+    if not (wide_by_width or wide_by_columns):
+        return {}
+    return {
+        'orientation': 'landscape',
+        'page_width_twips': page_h,
+        'page_height_twips': page_w,
+        'margins_twips': margins,
+        'generated_auto_landscape': True,
+    }
+
+
+def table_render_section_page_setup(item):
+    return table_source_section_page_setup(item) or table_auto_landscape_page_setup(item)
+
+
+def table_source_section_text_width_twips(item):
+    return table_section_text_width_twips(table_source_section_page_setup(item))
+
+
+def table_render_section_text_width_twips(item):
+    return table_section_text_width_twips(table_render_section_page_setup(item))
+
+
+def table_section_text_width_twips(setup):
+    if not setup:
+        return 0
+    width = safe_positive_int(setup.get('page_width_twips'))
+    if not width:
+        return 0
+    margins = setup.get('margins_twips') or {}
+    left = safe_positive_int(margins.get('left')) if isinstance(margins, dict) else 0
+    right = safe_positive_int(margins.get('right')) if isinstance(margins, dict) else 0
+    available = width - left - right
+    return available if available > 0 else width
+
+
+def apply_source_section_page_setup(sec, setup):
+    width = safe_positive_int(setup.get('page_width_twips'))
+    height = safe_positive_int(setup.get('page_height_twips'))
+    if width and height:
+        sec.page_width = Cm(twips_to_cm(width))
+        sec.page_height = Cm(twips_to_cm(height))
+    margins = setup.get('margins_twips') or {}
+    if isinstance(margins, dict):
+        for attr, key in (
+            ('top_margin', 'top'),
+            ('bottom_margin', 'bottom'),
+            ('left_margin', 'left'),
+            ('right_margin', 'right'),
+            ('header_distance', 'header'),
+            ('footer_distance', 'footer'),
+            ('gutter', 'gutter'),
+        ):
+            value = safe_positive_int(margins.get(key))
+            if value:
+                try:
+                    setattr(sec, attr, Cm(twips_to_cm(value)))
+                except Exception:
+                    pass
+    try:
+        pg_sz = sec._sectPr.find(qn('w:pgSz'))
+        if pg_sz is None:
+            pg_sz = OxmlElement('w:pgSz')
+            sec._sectPr.insert(0, pg_sz)
+        pg_sz.set(qn('w:orient'), 'landscape')
+    except Exception:
+        pass
+
+
+def begin_table_source_section(item):
+    setup = table_render_section_page_setup(item)
+    if not setup:
+        return False
+    remove_trailing_empty_body_paragraphs()
+    sec = doc.add_section(WD_SECTION.NEW_PAGE)
+    setup_section(sec)
+    apply_header_footer(sec, 'decimal', None)
+    apply_source_section_page_setup(sec, setup)
+    BUILD_STATS['content_landscape_table_sections_rendered'] = BUILD_STATS.get('content_landscape_table_sections_rendered', 0) + 1
+    if setup.get('generated_auto_landscape'):
+        BUILD_STATS['content_auto_landscape_table_sections_rendered'] = BUILD_STATS.get('content_auto_landscape_table_sections_rendered', 0) + 1
+    return True
+
+
+def end_table_source_section(started):
+    if not started:
+        return
+    remove_trailing_empty_body_paragraphs()
+    sec = doc.add_section(WD_SECTION.NEW_PAGE)
+    setup_section(sec)
+    apply_header_footer(sec, 'decimal', None)
+
+
+def render_table_from_item(item, container=None, nested=False):
+    return render_table(
+        item.get('table_rows') or [],
+        item.get('table_cell_items') or [],
+        item.get('table_merges') or [],
+        item.get('table_col_widths_twips') or [],
+        item.get('table_row_grid_before') or [],
+        item.get('table_row_heights_twips') or [],
+        item.get('table_repeat_header_rows'),
+        item.get('table_cell_margins_twips') or {},
+        item.get('table_cell_overrides') or [],
+        item.get('table_borders') or {},
+        container=container,
+        nested=nested,
+        max_width_twips=table_render_section_text_width_twips(item) if not nested else None,
+    )
+
+
+def render_table_item(item):
+    started = begin_table_source_section(item)
+    try:
+        return render_table_from_item(item)
+    finally:
+        end_table_source_section(started)
+
+
+def render_table(rows, cell_items=None, table_merges=None, table_col_widths_twips=None, table_row_grid_before=None, table_row_heights_twips=None, table_repeat_header_rows=None, table_cell_margins_twips=None, table_cell_overrides=None, table_borders=None, container=None, nested=False, max_width_twips=None):
     if not rows:
         return
     container = container or doc
@@ -789,13 +1093,21 @@ def render_table(rows, cell_items=None, table_merges=None, table_col_widths_twip
     if nested:
         BUILD_STATS['content_nested_tables_rendered'] = BUILD_STATS.get('content_nested_tables_rendered', 0) + 1
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    col_widths = normalize_table_col_widths(table_col_widths_twips, ncols)
+    col_widths = normalize_table_col_widths(table_col_widths_twips, ncols, max_total_twips=max_width_twips)
     if col_widths and set_table_grid_widths(table, col_widths):
         BUILD_STATS['content_table_widths_rendered'] = BUILD_STATS.get('content_table_widths_rendered', 0) + 1
     if set_table_default_cell_margins(table, table_cell_margins_twips or {}):
         BUILD_STATS['content_table_cell_margins_rendered'] = BUILD_STATS.get('content_table_cell_margins_rendered', 0) + 1
+    try:
+        repeat_header_count = int(table_repeat_header_rows or 0)
+    except Exception:
+        repeat_header_count = 0
+    if table_repeat_header_rows is None and len(rows):
+        repeat_header_count = 1
+    repeat_header_count = max(0, min(repeat_header_count, len(rows)))
     for ri, row in enumerate(rows):
-        prevent_row_split(table.rows[ri])
+        if should_prevent_row_split(row, is_header=ri < repeat_header_count):
+            prevent_row_split(table.rows[ri])
         prof = profile('table_header' if ri == 0 else 'table_body')
         for ci in range(ncols):
             text = row[ci] if ci < len(row) else ''
@@ -861,6 +1173,7 @@ def render_table(rows, cell_items=None, table_merges=None, table_col_widths_twip
     apply_cell_overrides(table, table_cell_overrides)
     if should_keep_table_together(rows):
         keep_table_together(table)
+    apply_row_grid_before(table, table_row_grid_before, rows=rows, col_widths=col_widths)
     return table
 
 

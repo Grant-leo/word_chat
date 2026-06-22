@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 from xml.etree import ElementTree as ET
 
 from docx import Document
-from docx.enum.section import WD_SECTION
+from docx.enum.section import WD_ORIENT, WD_SECTION
 from docx.shared import Pt
 from lxml import etree
 
@@ -832,6 +832,126 @@ def content_parser_preserves_merged_table_cells() -> None:
 
 
 @case
+def content_parser_repairs_orphan_vmerge_without_losing_text() -> None:
+    work = new_workdir("parser_orphan_vmerge_repair")
+    docx = work / "orphan_vmerge.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Top left"
+    table.cell(0, 1).text = "Top right"
+    table.cell(1, 0).text = "Orphan continue should stay visible"
+    table.cell(1, 1).text = "Bottom right"
+    doc.save(docx)
+
+    def inject_orphan_vmerge(xml: str) -> str:
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + w_ns + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(w_ns + "tr")
+        assert_true(len(rows) == 2, "test rows missing")
+        second_row_cells = rows[1].findall(w_ns + "tc")
+        assert_true(len(second_row_cells) == 2, "test second row changed")
+        tc_pr = second_row_cells[0].find(w_ns + "tcPr")
+        if tc_pr is None:
+            tc_pr = ET.Element(w_ns + "tcPr")
+            second_row_cells[0].insert(0, tc_pr)
+        ET.SubElement(tc_pr, w_ns + "vMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_orphan_vmerge)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"orphan-vMerge table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [
+            ["Top left", "Top right"],
+            ["Orphan continue should stay visible", "Bottom right"],
+        ],
+        f"orphan vMerge visible text was not repaired into a normal cell: {table_item}",
+    )
+    assert_true(not table_item.get("table_merges"), f"orphan vMerge should not create a fake merge: {table_item}")
+
+    result = run_generated_case("parser_orphan_vmerge_repair_generated", content, base_format())
+    assert_true(
+        "Orphan continue should stay visible" in result["xml"],
+        "generated DOCX lost visible text from repaired orphan vMerge cell",
+    )
+    assert_true(result["report"]["passed"] is True, f"orphan vMerge repair render should pass QA: {result['report']}")
+
+
+@case
+def content_parser_repairs_mismatched_vmerge_span_without_losing_text() -> None:
+    work = new_workdir("parser_mismatched_vmerge_span_repair")
+    docx = work / "mismatched_vmerge_span.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=3)
+    table.cell(0, 0).merge(table.cell(0, 1)).text = "Wide vertical start"
+    table.cell(0, 2).text = "Top right"
+    table.cell(1, 0).text = "Mismatched continuation should stay visible"
+    table.cell(1, 1).text = "Bottom middle"
+    table.cell(1, 2).text = "Bottom right"
+    doc.save(docx)
+
+    def inject_mismatched_vmerge(xml: str) -> str:
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + w_ns + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(w_ns + "tr")
+        assert_true(len(rows) == 2, "test rows missing")
+        first_row_cells = rows[0].findall(w_ns + "tc")
+        second_row_cells = rows[1].findall(w_ns + "tc")
+        assert_true(len(first_row_cells) == 2 and len(second_row_cells) == 3, "test merge grid changed")
+
+        def ensure_tc_pr(cell):
+            tc_pr = cell.find(w_ns + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(w_ns + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        restart = ET.SubElement(ensure_tc_pr(first_row_cells[0]), w_ns + "vMerge")
+        restart.set(w_ns + "val", "restart")
+        ET.SubElement(ensure_tc_pr(second_row_cells[0]), w_ns + "vMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_mismatched_vmerge)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"mismatched-vMerge table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [
+            ["Wide vertical start", "", "Top right"],
+            ["Mismatched continuation should stay visible", "Bottom middle", "Bottom right"],
+        ],
+        f"mismatched vMerge visible text was not repaired into a normal cell: {table_item}",
+    )
+    merges = table_item.get("table_merges") or []
+    assert_true(
+        {"row": 0, "col": 0, "rowspan": 1, "colspan": 2} in merges,
+        f"valid horizontal part of mismatched table should still be preserved: {table_item}",
+    )
+    assert_true(
+        not any(int(merge.get("rowspan") or 1) > 1 for merge in merges),
+        f"mismatched vMerge should not create a fake vertical merge: {table_item}",
+    )
+
+    result = run_generated_case("parser_mismatched_vmerge_span_repair_generated", content, base_format())
+    assert_true(
+        "Mismatched continuation should stay visible" in result["xml"],
+        "generated DOCX lost visible text from repaired mismatched vMerge cell",
+    )
+    assert_true(result["report"]["passed"] is True, f"mismatched vMerge repair render should pass QA: {result['report']}")
+
+
+@case
 def content_parser_preserves_grid_before_vmerge_cells() -> None:
     work = new_workdir("parser_grid_before_vmerge")
     docx = work / "grid_before_vmerge.docx"
@@ -885,6 +1005,26 @@ def content_parser_preserves_grid_before_vmerge_cells() -> None:
         {"row": 0, "col": 1, "rowspan": 2, "colspan": 1} in (table_item.get("table_merges") or []),
         f"gridBefore vertical merge was not captured: {table_item}",
     )
+    assert_true(
+        table_item.get("table_row_grid_before") == [0, 1],
+        f"gridBefore row omission metadata was not preserved: {table_item}",
+    )
+
+    result = run_generated_case("parser_grid_before_vmerge_generated", content, base_format())
+    root = etree.fromstring(result["xml"].encode("utf-8"))
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    tables = root.xpath(".//w:tbl[.//w:t='Vertical start']", namespaces=ns)
+    assert_true(len(tables) == 1, f"generated gridBefore table missing or duplicated: {len(tables)}")
+    rows = tables[0].xpath("./w:tr", namespaces=ns)
+    assert_true(len(rows) == 2, f"generated gridBefore table should have two rows: {len(rows)}")
+    second_grid_before = rows[1].xpath("./w:trPr/w:gridBefore/@w:val", namespaces=ns)
+    assert_true(second_grid_before == ["1"], f"generated second row did not restore w:gridBefore=1: {result['xml']}")
+    second_row_cells = rows[1].xpath("./w:tc", namespaces=ns)
+    assert_true(
+        len(second_row_cells) == 1,
+        "generated gridBefore row should omit the leading cell instead of rendering a visible empty cell",
+    )
+    assert_true(result["report"]["passed"] is True, f"gridBefore vMerge render should pass QA: {result['report']}")
 
 
 @case
@@ -915,6 +1055,132 @@ def content_parser_preserves_table_column_widths() -> None:
         table_items[0].get("table_col_widths_twips") == [1200, 2800, 1600],
         f"table column widths were not extracted: {table_items[0]}",
     )
+
+
+@case
+def content_parser_repairs_gridspan_beyond_tblgrid_widths() -> None:
+    work = new_workdir("parser_gridspan_beyond_tblgrid")
+    docx = work / "gridspan_beyond_tblgrid.docx"
+    doc = Document()
+    table = doc.add_table(rows=1, cols=3)
+    table.cell(0, 0).text = "Overflow span should stay readable"
+    table.cell(0, 1).text = "removed"
+    table.cell(0, 2).text = "removed"
+    doc.save(docx)
+
+    def inject_overflow_span(xml: str) -> str:
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + w_ns + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        old_grid = table_el.find(w_ns + "tblGrid")
+        if old_grid is not None:
+            table_el.remove(old_grid)
+        tbl_grid = ET.Element(w_ns + "tblGrid")
+        for width in (2000, 2000):
+            grid_col = ET.SubElement(tbl_grid, w_ns + "gridCol")
+            grid_col.set(w_ns + "w", str(width))
+        insert_at = 1 if len(list(table_el)) and table_el[0].tag == w_ns + "tblPr" else 0
+        table_el.insert(insert_at, tbl_grid)
+
+        row = table_el.find(w_ns + "tr")
+        assert_true(row is not None, "test row missing")
+        cells = row.findall(w_ns + "tc")
+        assert_true(len(cells) == 3, "test cells missing")
+        tc_pr = cells[0].find(w_ns + "tcPr")
+        if tc_pr is None:
+            tc_pr = ET.Element(w_ns + "tcPr")
+            cells[0].insert(0, tc_pr)
+        tc_w = tc_pr.find(w_ns + "tcW")
+        if tc_w is None:
+            tc_w = ET.SubElement(tc_pr, w_ns + "tcW")
+        tc_w.set(w_ns + "type", "dxa")
+        tc_w.set(w_ns + "w", "8400")
+        grid_span = tc_pr.find(w_ns + "gridSpan")
+        if grid_span is None:
+            grid_span = ET.SubElement(tc_pr, w_ns + "gridSpan")
+        grid_span.set(w_ns + "val", "3")
+        row.remove(cells[2])
+        row.remove(cells[1])
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_overflow_span)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"gridSpan-overflow table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [["Overflow span should stay readable", "", ""]],
+        f"gridSpan overflow did not expand to a stable visible grid: {table_item}",
+    )
+    assert_true(
+        {"row": 0, "col": 0, "rowspan": 1, "colspan": 3} in (table_item.get("table_merges") or []),
+        f"overflow gridSpan merge was not preserved: {table_item}",
+    )
+    widths = table_item.get("table_col_widths_twips") or []
+    assert_true(len(widths) == 3 and all(int(width or 0) > 0 for width in widths), f"overflow gridSpan produced zero-width columns: {table_item}")
+
+    result = run_generated_case("parser_gridspan_beyond_tblgrid_generated", content, base_format())
+    grid_widths = [int(value) for value in re.findall(r"<w:gridCol\b[^>]*w:w=\"(\d+)\"", result["xml"])]
+    assert_true(
+        len(grid_widths) >= 3 and all(width > 0 for width in grid_widths[:3]),
+        f"generated DOCX kept a zero-width repaired overflow grid column: {grid_widths[:3]}",
+    )
+    assert_true(
+        "Overflow span should stay readable" in result["xml"],
+        "generated DOCX lost visible text from gridSpan-overflow cell",
+    )
+    assert_true(result["report"]["passed"] is True, f"gridSpan overflow repair render should pass QA: {result['report']}")
+
+
+@case
+def content_parser_preserves_landscape_section_for_wide_table() -> None:
+    work = new_workdir("parser_landscape_section_wide_table")
+    docx = work / "landscape_section_wide_table.docx"
+    doc = Document()
+    doc.add_paragraph("1 Landscape table")
+    section = doc.add_section(WD_SECTION.NEW_PAGE)
+    section.orientation = WD_ORIENT.LANDSCAPE
+    section.page_width, section.page_height = section.page_height, section.page_width
+    table = doc.add_table(rows=2, cols=9)
+    for ci in range(9):
+        table.cell(0, ci).text = f"H{ci + 1}"
+        table.cell(1, ci).text = f"Wide cell {ci + 1}"
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"landscape-section table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    source_setup = table_item.get("source_section_page_setup") or {}
+    assert_true(
+        source_setup.get("orientation") == "landscape",
+        f"landscape section setup was not attached to the table: {table_item}",
+    )
+    assert_true(
+        int(source_setup.get("page_width_twips") or 0) > int(source_setup.get("page_height_twips") or 0),
+        f"landscape page dimensions were not preserved: {source_setup}",
+    )
+
+    result = run_generated_case("parser_landscape_section_wide_table_generated", content, base_format())
+    assert_true('w:orient="landscape"' in result["xml"], "generated DOCX did not contain a landscape table section")
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 1,
+        "generated DOCX should restore portrait template orientation after the landscape table",
+    )
+    grid_widths = [int(value) for value in re.findall(r"<w:gridCol\b[^>]*w:w=\"(\d+)\"", result["xml"])]
+    assert_true(
+        grid_widths[:9] == table_item.get("table_col_widths_twips"),
+        f"landscape table widths should use source landscape text width, got {grid_widths[:9]}",
+    )
+    assert_true(
+        result["manifest"]["counts"].get("content_landscape_table_sections_rendered", 0) == 1,
+        f"landscape table section render count missing: {result['manifest']}",
+    )
+    assert_true(result["report"]["passed"] is True, f"landscape wide table render should pass QA: {result['report']}")
 
 
 @case
@@ -1228,6 +1494,73 @@ def content_parser_preserves_three_level_nested_tables_in_cells() -> None:
         f"three nested table render count missing: {result['manifest']}",
     )
     assert_true(result["report"]["passed"] is True, f"three-level nested table render should pass QA: {result['report']}")
+
+
+@case
+def content_parser_preserves_four_level_nested_tables_in_cells() -> None:
+    work = new_workdir("parser_four_level_nested_table_cell")
+    docx = work / "four_level_nested_table_cell.docx"
+    doc = Document()
+    outer = doc.add_table(rows=1, cols=1)
+    outer_host = outer.cell(0, 0)
+    outer_host.text = "Outer before"
+    level1 = outer_host.add_table(rows=1, cols=1)
+    level1_host = level1.cell(0, 0)
+    level1_host.text = "Level 1 before"
+    level2 = level1_host.add_table(rows=1, cols=1)
+    level2_host = level2.cell(0, 0)
+    level2_host.text = "Level 2 before"
+    level3 = level2_host.add_table(rows=1, cols=1)
+    level3_host = level3.cell(0, 0)
+    level3_host.text = "Level 3 before"
+    level4 = level3_host.add_table(rows=1, cols=1)
+    level4.cell(0, 0).text = "Level 4 deepest value"
+    level3_host.add_paragraph("Level 3 after")
+    level2_host.add_paragraph("Level 2 after")
+    level1_host.add_paragraph("Level 1 after")
+    outer_host.add_paragraph("Outer after")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    assert_true(content.get("_meta", {}).get("tables_count") == 5, f"four-level nested table count missing: {content.get('_meta')}")
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"four-level nested tables should stay inside the outer table cell: {items}")
+
+    current = table_items[0]
+    expected_rows = [
+        "Outer before\nOuter after",
+        "Level 1 before\nLevel 1 after",
+        "Level 2 before\nLevel 2 after",
+        "Level 3 before\nLevel 3 after",
+        "Level 4 deepest value",
+    ]
+    for depth, expected_text in enumerate(expected_rows):
+        assert_true(
+            current.get("table_rows") == [[expected_text]],
+            f"nested table depth {depth} text changed: {current}",
+        )
+        if depth == len(expected_rows) - 1:
+            break
+        current = next(
+            (
+                item
+                for entry in current.get("table_cell_items") or []
+                if entry.get("row") == 0 and entry.get("col") == 0
+                for item in entry.get("items") or []
+                if isinstance(item, dict) and item.get("role") == "table"
+            ),
+            None,
+        )
+        assert_true(current, f"nested table depth {depth + 1} was not attached to its parent cell")
+
+    result = run_generated_case("parser_four_level_nested_table_cell_generated", content, base_format())
+    assert_true("Level 4 deepest value" in result["xml"], "fourth-level nested table text did not render")
+    assert_true(
+        result["manifest"]["counts"].get("content_nested_tables_rendered", 0) >= 4,
+        f"four nested table render count missing: {result['manifest']}",
+    )
+    assert_true(result["report"]["passed"] is True, f"four-level nested table render should pass QA: {result['report']}")
 
 
 @case

@@ -101,9 +101,9 @@ CLI, output, verification, and QA details in a focused package:
 
 ## Verification Baseline
 
-Current baseline as of 2026-06-21:
+Current baseline as of 2026-06-22:
 
-- Synthetic regression after private real-data audit/source-audit/comparison-assessment hardening, boxed-content recovery, native note rendering, merged-table preservation, `gridBefore` vertical-merge round-trip preservation, table-column-width preservation, table layout-detail preservation, explicit table/cell border preservation, border/layout property-order hardening, source-order three-level nested table preservation, DOCX table-cell and nested-table image in-cell preservation, table-cell image/text run-order preservation, table-cell block/inline/nested-inline content-control preservation and de-duplication, content-control simple-field visible-value preservation, content-control transparent-container visible-value preservation, body transparent-container paragraph/table preservation, body content-control paragraph/table in-place preservation, body content-control inline rich media/formula/note preservation, DOCX revision final-view extraction for body/table/table-row/table-cell/heading/textbox-recovery content, content-control hyperlink media/formula/note preservation, body content-control/table-text overlap/exact-match dedupe protection, table-cell inline OMML formula preservation, table-cell inline LaTeX formula preservation, mixed table-cell image/LaTeX/OMML ordering preservation, inline table-cell image/formula/footnote ordering preservation, nested table-cell inline image/LaTeX/OMML/footnote ordering preservation, table-cell footnote reference preservation, table-cell image-before-note-only reference preservation, irregular merge-grid audit, source-audit DOCX fixture rewrite hygiene, and section-scoped/de-duplicated wide-table risk counts: `319 passed, 0 failed`.
+- Synthetic regression after private real-data audit/source-audit/comparison-assessment hardening, boxed-content recovery, native note rendering, merged-table preservation, `gridBefore` vertical-merge round-trip preservation with generated row-omission restore, table-column-width preservation, partial/zero table-column-width repair, table layout-detail preservation, explicit table/cell border preservation, border/layout property-order hardening, source-order four-level nested table preservation, DOCX table-cell and nested-table image in-cell preservation, table-cell image/text run-order preservation, table-cell block/inline/nested-inline content-control preservation and de-duplication, content-control simple-field visible-value preservation, content-control transparent-container visible-value preservation, body transparent-container paragraph/table preservation, body content-control paragraph/table in-place preservation, body content-control inline rich media/formula/note preservation, DOCX revision final-view extraction for body/table/table-row/table-cell/heading/textbox-recovery content, content-control hyperlink media/formula/note preservation, body content-control/table-text overlap/exact-match dedupe protection, table-cell inline OMML formula preservation, table-cell inline LaTeX formula preservation, mixed table-cell image/LaTeX/OMML ordering preservation, inline table-cell image/formula/footnote ordering preservation, nested table-cell inline image/LaTeX/OMML/footnote ordering preservation, table-cell footnote reference preservation, table-cell image-before-note-only reference preservation, irregular merge-grid audit, orphan/mismatched `vMerge` visible-text repair, `gridSpan` overflow width repair, tall table body-row split pagination, structured table-caption landscape-section grouping, adjacent landscape-table short-note grouping, bounded rich bridge-note landscape-table grouping, plain overwide-table auto-landscape protection, source-audit DOCX fixture rewrite hygiene, section-scoped/de-duplicated wide-table risk counts, and DOCX landscape-section wide-table page setup plus source-width preservation: `330 passed, 0 failed`.
 - DOCX textbox/content-control recovery: visible text inside `w:txbxContent`
   and `w:sdtContent` is now recovered into the body stream, deduplicated, and
   reported in content metadata. The fallback uses the same Word final-view text
@@ -116,6 +116,30 @@ Current baseline as of 2026-06-21:
 - DOCX body table fidelity: basic merged cells, column widths, row heights,
   repeated header rows, default cell margins, cell-level margins, and vertical
   alignment now round-trip through `content.json` and generated DOCX XML.
+  Orphaned or span-mismatched `vMerge continue` cells keep their visible text
+  as normal cells instead of being cleared as invisible merge placeholders;
+  source audit still marks the table for Word/WPS visual review.
+  If a `gridSpan` extends beyond an incomplete `tblGrid`, missing generated
+  grid widths are repaired from source cell-width evidence instead of producing
+  zero-width columns. Generated table-width data with partial or explicit zero
+  column widths is also repaired before `tblGrid`/`tcW` are written, preserving
+  known positive widths and filling missing columns with a visible fallback.
+  Repeated header rows keep `tblHeader`/`cantSplit`; unusually tall non-header
+  rows omit `cantSplit` so Word/WPS can split them across pages instead of
+  forcing large blank areas or row overflow.
+- DOCX landscape and overwide tables: tables extracted from landscape sections
+  carry source page setup into `content.json`; generated DOCX creates a
+  landscape section around the table and uses the source landscape text width
+  before scaling columns. Plain top-level tables that are clearly too wide for
+  the current portrait text area are also wrapped in a generated landscape
+  section, then the following body returns to the template's portrait section.
+  Structured `table_caption` items immediately before a landscape or
+  auto-landscaped table are rendered inside the same landscape section so
+  captions do not stay behind on the portrait page. Adjacent landscape tables
+  separated only by a short note share the same landscape section, so the note
+  stays with the table group and the document avoids unnecessary
+  portrait/landscape page flips. Complex or extreme wide tables still require
+  Word/WPS visual review before delivery.
 - Private real-data inventory smoke: local-only private corpus scans stay under ignored output folders, report structural classifications only, and must not publish source file contents, local paths, or corpus statistics.
 - Agent-first flow: `--agent-auto` scans local inputs, auto-selects only single candidates, defaults to user auto-repair, and writes `agent_summary.md/json`.
 - Novice interruption coverage: interactive cancellation/EOF, missing preflight inputs, generated-script build failures, QA dependency failures, and auto-repair blockers all route to a next action.
@@ -128,12 +152,12 @@ Current baseline as of 2026-06-21:
 - Markdown reference-style images: `![alt][id]` plus `[id]: path` and shortcut reference images `![alt]` plus `[alt]: path` now copy local images into the content stream; optional title continuation lines after reference definitions are stripped with the definition; undefined image references become `CONTENT_IMAGE_MISSING` instead of staying as ordinary body text, and reference-definition-like lines inside fenced code blocks stay in code.
 - Markdown HTML images: `<img src="path" alt="...">`, lazy `data-src` / `data-original`, the first `srcset` candidate, and PNG/JPG data URI images use the same image routing as Markdown image syntax; malformed/unsupported data URI images and data URI MIME/actual-format mismatches surface as `CONTENT_IMAGE_UNREADABLE`, and raw tags or inline payloads must not leak into generated DOCX text or QA metadata.
 - Markdown table-cell images: images embedded inside GitHub-style Markdown table cells are attached to `table_cell_items`, keep `location="markdown_table_cell"`, and render inside generated Word table cells; missing table-cell images remain QA-visible `CONTENT_IMAGE_MISSING` blockers instead of being stripped by table text cleanup.
-- DOCX table-cell images: images inside DOCX body table cells are attached to the source cell's `table_cell_items` instead of being appended after the table; same-paragraph image-before-text and text-before-image ordering is preserved from OOXML run order; images inside supported three-level nested tables stay inside the nested cell, and structural/strict image counts recurse through nested `table_cell_items`.
+- DOCX table-cell images: images inside DOCX body table cells are attached to the source cell's `table_cell_items` instead of being appended after the table; same-paragraph image-before-text and text-before-image ordering is preserved from OOXML run order; images inside supported four-level nested tables stay inside the nested cell, and structural/strict image counts recurse through nested `table_cell_items`.
 - DOCX table-cell inline OMML formulas: formula-bearing cell paragraphs are attached as replaceable `rich_text` cell items and rendered back as native inline Word math inside the generated table cell instead of being flattened into plain text.
 - DOCX table-cell inline LaTeX formulas: plain cell text such as `Energy $E=mc^2$ model` is split into text/math/text rich runs and rendered as native inline Word math without leaking `$...$` delimiters into the final DOCX.
 - DOCX mixed table-cell media/formulas: when a cell contains preceding paragraphs, an image paragraph, and a later paragraph mixing `$...$` LaTeX with inline OMML, the image remains before the formula paragraph and both formula sources render as native Word math.
 - DOCX inline table-cell media/formula/notes: when the same source cell paragraph contains text, an inline image, later LaTeX/OMML formulas, and a footnote reference, extraction splits the cell at the image boundary so the generated table keeps text, image, formulas, and note in source order.
-- DOCX nested table-cell inline media/formula/notes: supported three-level nested tables preserve the same source order when a nested cell paragraph mixes text, an inline image, LaTeX, OMML, and a footnote reference.
+- DOCX nested table-cell inline media/formula/notes: supported four-level nested tables preserve the same source order when a nested cell paragraph mixes text, an inline image, LaTeX, OMML, and a footnote reference.
 - DOCX table-cell content controls: block-level, inline, and nested inline `w:sdtContent` inside a source table cell are consumed in cell order, rendered back in the same generated table cell, and skipped by the body-level content-control fallback so they are not duplicated after the table. Simple-field containers (`w:fldSimple`) and transparent containers (`w:customXml` / `w:smartTag`) inside those controls keep their visible result text in source order. Hyperlink containers inside those controls keep mixed images, LaTeX/OMML formulas, and note anchors in source order. Body-level content controls that partially overlap or exactly match table-cell text are still recovered as body content.
 - DOCX body content controls: body-level `w:sdtContent` wrappers around paragraphs and tables are recursively dispatched in source order. Wrapped paragraphs count toward `_meta.recovered_content_control_paragraphs`, while wrapped tables remain table items and table-cell text is not leaked as loose body paragraphs. Inline `w:sdt`, `w:fldSimple`, hyperlink, `w:customXml`, and `w:smartTag` containers inside body paragraphs are recursively consumed so images, OMML/LaTeX formulas, and footnote/endnote anchors keep paragraph order.
 - DOCX body transparent containers: body-level `w:customXml` / `w:smartTag` wrappers around paragraphs and tables are recursively expanded by the body dispatcher, so wrapped content keeps source order and following direct paragraphs do not get displaced by python-docx paragraph/table indexing differences.
@@ -252,7 +276,7 @@ stable cell grid and preserves basic horizontal/vertical merged cells as
 `table_merges` (`gridSpan` / `vMerge`) plus source grid/cell widths as
 `table_col_widths_twips`, common row/header/margin/alignment layout details,
 explicit table/cell borders as `table_borders` / cell override `borders`, and
-up to three-level nested tables as `table_cell_items` with
+up to four-level nested tables as `table_cell_items` with
 `location="nested_table_cell"` and `after_paragraph_index` when the nested
 table appears between visible paragraphs inside the same source cell. DOCX
 images inside table-cell paragraphs are also attached as cell media with
@@ -275,14 +299,25 @@ nested `table_cell_items`, so mixed body images plus nested-table images are
 not undercounted.
 The
 historical `TABLE_MERGE_UNSUPPORTED` and `COMPLEX_TABLE_UNSUPPORTED` audit
-codes remain warning/review signals for four-level-and-deeper nested /
+codes remain warning/review signals for five-level-and-deeper nested /
 overwide / irregular
 tables. Source audit details now include irregular merge-grid counts and
 section-scoped landscape wide-table risk counts; nested wide tables are counted
 once, and valid `gridBefore` vertical-merge continuations are not treated as
-orphaned merges or dropped during table extraction. QA can therefore point users to the specific tables that need
+orphaned merges or dropped during table extraction. Generated DOCX now restores
+`w:gridBefore` row omission metadata instead of rendering the omitted leading
+grid columns as visible empty cells. Orphaned or
+span-mismatched `vMerge continue` cells keep their visible text as normal
+cells instead of creating a fake vertical merge. Incomplete `tblGrid` data for
+overflowing `gridSpan` cells is repaired with nonzero inferred column widths
+so generated tables do not silently collapse extra columns. Plain top-level
+overwide tables can be auto-landscaped during generation; warnings remain for
+visual review when the table is extreme, irregular, or part of a complex
+multi-section layout. Repeated header
+rows stay together, while tall body rows are allowed to split across pages by
+omitting row-level `cantSplit`. QA can therefore point users to the specific tables that need
 Word/WPS visual review instead of asking them to flatten simple merged,
-bordered, or three-level nested tables.
+bordered, or four-level nested tables.
 
 Caption detection deliberately separates true captions such as `图 1 xxx 示意图`
 from prose references such as `图 1 展示了...`, so body prose keeps body style
