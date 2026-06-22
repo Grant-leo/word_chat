@@ -815,6 +815,34 @@ def twips_to_cm(value):
     return float(value) / 567.0
 
 
+def cm_to_twips(value):
+    return int(round(float(value or 0) * 567.0))
+
+
+def current_page_setup_twips():
+    page = DATA.get('page') or {}
+
+    def cm_value(key, default):
+        try:
+            return float(page.get(key) or default)
+        except Exception:
+            return float(default)
+
+    page_w = cm_value('page_w', 21.0)
+    page_h = cm_value('page_h', 29.7)
+    margins = {
+        'left': cm_to_twips(cm_value('ml', 2.54)),
+        'right': cm_to_twips(cm_value('mr', 2.54)),
+        'top': cm_to_twips(cm_value('mt', 2.54)),
+        'bottom': cm_to_twips(cm_value('mb', 2.54)),
+    }
+    return {
+        'page_width_twips': cm_to_twips(page_w),
+        'page_height_twips': cm_to_twips(page_h),
+        'margins_twips': margins,
+    }
+
+
 def table_source_section_page_setup(item):
     if not isinstance(item, dict):
         return {}
@@ -829,8 +857,82 @@ def table_source_section_page_setup(item):
     return setup
 
 
+def table_column_count(item):
+    if not isinstance(item, dict):
+        return 0
+    rows = item.get('table_rows') or []
+    try:
+        return max(len(row) for row in rows if isinstance(row, (list, tuple)))
+    except Exception:
+        return 0
+
+
+def table_declared_width_twips(item, ncols):
+    if not isinstance(item, dict) or ncols <= 0:
+        return 0
+    widths = []
+    for value in item.get('table_col_widths_twips') or []:
+        try:
+            width = int(value or 0)
+        except Exception:
+            width = 0
+        if width > 0:
+            widths.append(width)
+        if len(widths) >= ncols:
+            break
+    if not widths:
+        return 0
+    fallback = max(120, int(sum(widths) / len(widths)))
+    if len(widths) < ncols:
+        widths.extend([fallback] * (ncols - len(widths)))
+    return sum(widths[:ncols])
+
+
+def table_auto_landscape_page_setup(item):
+    if not isinstance(item, dict) or item.get('source_section_page_setup'):
+        return {}
+    ncols = table_column_count(item)
+    if ncols <= 0:
+        return {}
+    current = current_page_setup_twips()
+    page_w = safe_positive_int(current.get('page_width_twips'))
+    page_h = safe_positive_int(current.get('page_height_twips'))
+    if not page_w or not page_h or page_w >= page_h:
+        return {}
+    margins = current.get('margins_twips') or {}
+    left = safe_positive_int(margins.get('left')) if isinstance(margins, dict) else 0
+    right = safe_positive_int(margins.get('right')) if isinstance(margins, dict) else 0
+    portrait_text_width = max(0, page_w - left - right)
+    landscape_text_width = max(0, page_h - left - right)
+    if landscape_text_width <= portrait_text_width:
+        return {}
+    declared_width = table_declared_width_twips(item, ncols)
+    wide_by_width = bool(declared_width and declared_width > int(portrait_text_width * 1.08))
+    wide_by_columns = ncols >= 9
+    if not (wide_by_width or wide_by_columns):
+        return {}
+    return {
+        'orientation': 'landscape',
+        'page_width_twips': page_h,
+        'page_height_twips': page_w,
+        'margins_twips': margins,
+        'generated_auto_landscape': True,
+    }
+
+
+def table_render_section_page_setup(item):
+    return table_source_section_page_setup(item) or table_auto_landscape_page_setup(item)
+
+
 def table_source_section_text_width_twips(item):
-    setup = table_source_section_page_setup(item)
+    return table_section_text_width_twips(table_source_section_page_setup(item))
+
+
+def table_render_section_text_width_twips(item):
+    return table_section_text_width_twips(table_render_section_page_setup(item))
+
+
+def table_section_text_width_twips(setup):
     if not setup:
         return 0
     width = safe_positive_int(setup.get('page_width_twips'))
@@ -877,7 +979,7 @@ def apply_source_section_page_setup(sec, setup):
 
 
 def begin_table_source_section(item):
-    setup = table_source_section_page_setup(item)
+    setup = table_render_section_page_setup(item)
     if not setup:
         return False
     remove_trailing_empty_body_paragraphs()
@@ -886,6 +988,8 @@ def begin_table_source_section(item):
     apply_header_footer(sec, 'decimal', None)
     apply_source_section_page_setup(sec, setup)
     BUILD_STATS['content_landscape_table_sections_rendered'] = BUILD_STATS.get('content_landscape_table_sections_rendered', 0) + 1
+    if setup.get('generated_auto_landscape'):
+        BUILD_STATS['content_auto_landscape_table_sections_rendered'] = BUILD_STATS.get('content_auto_landscape_table_sections_rendered', 0) + 1
     return True
 
 
@@ -911,7 +1015,7 @@ def render_table_from_item(item, container=None, nested=False):
         item.get('table_borders') or {},
         container=container,
         nested=nested,
-        max_width_twips=table_source_section_text_width_twips(item) if not nested else None,
+        max_width_twips=table_render_section_text_width_twips(item) if not nested else None,
     )
 
 

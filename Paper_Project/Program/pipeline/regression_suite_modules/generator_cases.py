@@ -796,6 +796,60 @@ def script_generator_keeps_structured_caption_with_landscape_table_section() -> 
 
 
 @case
+def script_generator_auto_landscapes_plain_wide_tables() -> None:
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Auto landscape wide table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Auto header {idx}" for idx in range(1, 10)],
+                    [f"Auto body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+            },
+            "Portrait body after auto landscape table.",
+        ],
+        meta_tables=1,
+    )
+    result = run_generated_case("auto_landscape_plain_wide_table", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 1,
+        "plain overwide tables should be rendered in one generated landscape section",
+    )
+    assert_true(
+        result["manifest"]["counts"].get("content_auto_landscape_table_sections_rendered") == 1,
+        "plain overwide table should be counted as an auto-landscape section",
+    )
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def has_sectpr(child: ET.Element) -> bool:
+        return child.tag == f"{W_NS}sectPr" or child.find(f".//{W_NS}sectPr") is not None
+
+    def has_landscape_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") == "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    table_idx = next((idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Auto header 1" in child_text(child)), -1)
+    caption_idx = max((idx for idx, child in enumerate(children[:table_idx]) if "Auto landscape wide table" in child_text(child)), default=-1)
+    after_idx = next((idx for idx, child in enumerate(children) if "Portrait body after auto landscape table." in child_text(child)), -1)
+    assert_true(caption_idx >= 0 and table_idx >= 0 and after_idx >= 0, "auto landscape caption/table/following body markers missing")
+
+    previous_section_break = max((idx for idx, child in enumerate(children[:table_idx]) if has_sectpr(child)), default=-1)
+    landscape_section_break = next((idx for idx, child in enumerate(children[table_idx + 1 :], start=table_idx + 1) if has_landscape_section(child)), -1)
+    assert_true(
+        previous_section_break < caption_idx < table_idx < landscape_section_break < after_idx,
+        "auto-landscaped table caption should stay with the table, and following body should return to portrait",
+    )
+
+
+@case
 def script_generator_groups_adjacent_landscape_tables_with_short_note() -> None:
     landscape_setup = {
         "orientation": "landscape",

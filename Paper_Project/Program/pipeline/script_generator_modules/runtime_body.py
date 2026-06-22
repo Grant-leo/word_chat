@@ -70,7 +70,7 @@ def render_paragraph_item(item, code_sensitive=False, chapter=None):
 
 
 def is_landscape_table_item(item):
-    return is_table_item(item) and bool(table_source_section_page_setup(item))
+    return is_table_item(item) and bool(table_render_section_page_setup(item))
 
 
 def table_group_at(paragraphs, idx):
