@@ -633,6 +633,33 @@ def script_generator_renders_table_column_widths() -> None:
 
 
 @case
+def script_generator_repairs_partial_table_column_widths() -> None:
+    content = base_content(
+        [
+            {
+                "role": "table",
+                "table_rows": [
+                    ["Metric", "Description", "Unit", "Value"],
+                    ["A", "Longer explanatory text", "kg", "1"],
+                ],
+                "table_col_widths_twips": [1600, 0],
+            }
+        ],
+        meta_tables=1,
+    )
+    result = run_generated_case("table_partial_column_widths", content)
+    grid_widths = [int(value) for value in re.findall(r"<w:gridCol\b[^>]*w:w=\"(\d+)\"", result["xml"])]
+    assert_true(len(grid_widths) >= 4, f"expected four generated grid columns, got {grid_widths}")
+    first_table_widths = grid_widths[:4]
+    assert_true(all(width > 0 for width in first_table_widths), f"partial column widths produced hidden zero-width columns: {first_table_widths}")
+    assert_true(first_table_widths[0] == 1600, f"known positive source width should be preserved before fallback repair: {first_table_widths}")
+
+    tc_widths = [int(value) for value in re.findall(r"<w:tcW\b[^>]*w:w=\"(\d+)\"", result["xml"])]
+    assert_true(len(tc_widths) >= 4, f"expected four generated cell widths, got {tc_widths}")
+    assert_true(all(width > 0 for width in tc_widths[:4]), f"partial column widths produced zero-width cells: {tc_widths[:4]}")
+
+
+@case
 def script_generator_renders_table_layout_details() -> None:
     content = base_content(
         [

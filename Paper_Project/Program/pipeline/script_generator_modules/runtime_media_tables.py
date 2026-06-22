@@ -289,8 +289,11 @@ def normalize_table_col_widths(table_col_widths, ncols, max_total_twips=None):
             break
     if len(widths) < ncols:
         widths.extend([0] * (ncols - len(widths)))
-    if not any(widths):
+    positive_widths = [width for width in widths if width > 0]
+    if not positive_widths:
         return []
+    fallback_width = max(120, int(sum(positive_widths) / len(positive_widths)))
+    widths = [width if width > 0 else fallback_width for width in widths]
     total = sum(widths)
     max_total = safe_positive_int(max_total_twips)
     if not max_total:
@@ -300,7 +303,19 @@ def normalize_table_col_widths(table_col_widths, ncols, max_total_twips=None):
             max_total = 0
     if total > 0 and max_total > 0 and total > max_total:
         scale = max_total / float(total)
-        widths = [max(120, int(width * scale)) if width > 0 else 0 for width in widths]
+        min_width = 120
+        if len(widths) * min_width > max_total:
+            min_width = max(1, int(max_total / max(len(widths), 1)))
+        widths = [max(min_width, int(width * scale)) for width in widths]
+        overflow = sum(widths) - max_total
+        while overflow > 0 and widths:
+            idx = max(range(len(widths)), key=lambda i: widths[i])
+            reducible = max(0, widths[idx] - 1)
+            if reducible <= 0:
+                break
+            delta = min(reducible, overflow)
+            widths[idx] -= delta
+            overflow -= delta
     return widths
 
 
