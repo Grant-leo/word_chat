@@ -87,17 +87,46 @@ def table_group_at(paragraphs, idx):
     return None
 
 
-def is_short_landscape_table_bridge(item, next_group):
-    if not next_group:
-        return False
+def landscape_table_bridge_text(item):
     if not isinstance(item, str):
-        return False
-    text = clean_text_artifacts(item).strip()
-    if not text or len(text) > 180:
-        return False
+        if not isinstance(item, dict):
+            return ''
+        role = str(item.get('role') or '').strip()
+        if role in ('table_caption', 'figure_caption', 'figure', 'image', 'code', 'formula', 'formula_problem'):
+            return ''
+        if paragraph_item_has_image(item) or is_table_item(item) or item.get('code'):
+            return ''
+        text = clean_text_artifacts(item.get('text') or '').strip()
+    else:
+        text = clean_text_artifacts(item).strip()
+    if not text:
+        return ''
     if looks_like_table_title(text) or is_figure_caption_text(text) or is_table_caption_text(text):
-        return False
-    return True
+        return ''
+    if looks_like_code_line(text):
+        return ''
+    return text
+
+
+def landscape_table_bridge_run_at(paragraphs, idx):
+    bridge_items = []
+    total_len = 0
+    pos = idx
+    while pos < len(paragraphs) and len(bridge_items) < 3:
+        if table_group_at(paragraphs, pos):
+            return None
+        bridge = paragraphs[pos]
+        text = landscape_table_bridge_text(bridge)
+        if not text or len(text) > 220:
+            return None
+        total_len += len(text)
+        if total_len > 360:
+            return None
+        bridge_items.append(bridge)
+        pos += 1
+        if table_group_at(paragraphs, pos):
+            return {'items': bridge_items, 'next_idx': pos}
+    return None
 
 
 def render_landscape_table_group(paragraphs, idx, current_chapter):
@@ -118,11 +147,11 @@ def render_landscape_table_group(paragraphs, idx, current_chapter):
                 add_caption(next_table_caption(title_text, current_chapter), 'table_caption')
             render_table_from_item(group.get('table_item') or {})
             idx = group.get('next_idx') or (idx + 1)
-            bridge = paragraphs[idx] if idx < len(paragraphs) else None
-            next_group = table_group_at(paragraphs, idx + 1) if idx + 1 < len(paragraphs) else None
-            if is_short_landscape_table_bridge(bridge, next_group):
-                render_paragraph_item(bridge, code_sensitive=False, chapter=current_chapter)
-                idx += 1
+            bridge_run = landscape_table_bridge_run_at(paragraphs, idx)
+            if bridge_run:
+                for bridge in bridge_run.get('items') or []:
+                    render_paragraph_item(bridge, code_sensitive=False, chapter=current_chapter)
+                idx = bridge_run.get('next_idx') or idx
                 continue
             break
     finally:
