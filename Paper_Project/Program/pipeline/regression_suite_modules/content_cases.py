@@ -1477,6 +1477,73 @@ def content_parser_preserves_three_level_nested_tables_in_cells() -> None:
 
 
 @case
+def content_parser_preserves_four_level_nested_tables_in_cells() -> None:
+    work = new_workdir("parser_four_level_nested_table_cell")
+    docx = work / "four_level_nested_table_cell.docx"
+    doc = Document()
+    outer = doc.add_table(rows=1, cols=1)
+    outer_host = outer.cell(0, 0)
+    outer_host.text = "Outer before"
+    level1 = outer_host.add_table(rows=1, cols=1)
+    level1_host = level1.cell(0, 0)
+    level1_host.text = "Level 1 before"
+    level2 = level1_host.add_table(rows=1, cols=1)
+    level2_host = level2.cell(0, 0)
+    level2_host.text = "Level 2 before"
+    level3 = level2_host.add_table(rows=1, cols=1)
+    level3_host = level3.cell(0, 0)
+    level3_host.text = "Level 3 before"
+    level4 = level3_host.add_table(rows=1, cols=1)
+    level4.cell(0, 0).text = "Level 4 deepest value"
+    level3_host.add_paragraph("Level 3 after")
+    level2_host.add_paragraph("Level 2 after")
+    level1_host.add_paragraph("Level 1 after")
+    outer_host.add_paragraph("Outer after")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    assert_true(content.get("_meta", {}).get("tables_count") == 5, f"four-level nested table count missing: {content.get('_meta')}")
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"four-level nested tables should stay inside the outer table cell: {items}")
+
+    current = table_items[0]
+    expected_rows = [
+        "Outer before\nOuter after",
+        "Level 1 before\nLevel 1 after",
+        "Level 2 before\nLevel 2 after",
+        "Level 3 before\nLevel 3 after",
+        "Level 4 deepest value",
+    ]
+    for depth, expected_text in enumerate(expected_rows):
+        assert_true(
+            current.get("table_rows") == [[expected_text]],
+            f"nested table depth {depth} text changed: {current}",
+        )
+        if depth == len(expected_rows) - 1:
+            break
+        current = next(
+            (
+                item
+                for entry in current.get("table_cell_items") or []
+                if entry.get("row") == 0 and entry.get("col") == 0
+                for item in entry.get("items") or []
+                if isinstance(item, dict) and item.get("role") == "table"
+            ),
+            None,
+        )
+        assert_true(current, f"nested table depth {depth + 1} was not attached to its parent cell")
+
+    result = run_generated_case("parser_four_level_nested_table_cell_generated", content, base_format())
+    assert_true("Level 4 deepest value" in result["xml"], "fourth-level nested table text did not render")
+    assert_true(
+        result["manifest"]["counts"].get("content_nested_tables_rendered", 0) >= 4,
+        f"four nested table render count missing: {result['manifest']}",
+    )
+    assert_true(result["report"]["passed"] is True, f"four-level nested table render should pass QA: {result['report']}")
+
+
+@case
 def content_parser_preserves_nested_table_cell_inline_image_formula_and_footnote_order() -> None:
     work = new_workdir("parser_nested_table_cell_inline_image_formula_note")
     img = work / "nested_inline_image.png"

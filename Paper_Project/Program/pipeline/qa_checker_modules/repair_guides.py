@@ -360,9 +360,9 @@ REPAIR_GUIDES = {
     },
     "COMPLEX_TABLE_UNSUPPORTED": {
         "title": "源正文含复杂表格",
-        "why": "三层嵌套表已经按单元格内结构保留；但四层及以上嵌套、孤立纵向合并、跨度异常、超宽表格或横向页面里的宽表仍容易在重建后出现分页效果或异常网格差异。常规边框已经按源表格结构提取并回写，但复杂表格仍需视觉核对。",
-        "user_action": "生成后重点核对这些表格，尤其是 detail 里出现 irregular_tables、wide_tables、landscape_wide_tables 或 nested_depth 大于 3 的情况；若四层及以上嵌套、异常合并或横向宽表错位，请先把它拆成普通表格、转为清晰图片，或运行 visual QA 后再决定是否放行。",
-        "developer_action": "增强表格保真：四层及以上嵌套结构、异常合并网格自动修复、宽表分页和跨 section 横向表格页面设置传递。",
+        "why": "四层以内嵌套表已经按单元格内结构保留；但五层及以上嵌套、孤立纵向合并、跨度异常、超宽表格或横向页面里的宽表仍容易在重建后出现分页效果或异常网格差异。常规边框已经按源表格结构提取并回写，但复杂表格仍需视觉核对。",
+        "user_action": "生成后重点核对这些表格，尤其是 detail 里出现 irregular_tables、wide_tables、landscape_wide_tables 或 nested_depth 大于 4 的情况；若五层及以上嵌套、异常合并或横向宽表错位，请先把它拆成普通表格、转为清晰图片，或运行 visual QA 后再决定是否放行。",
+        "developer_action": "增强表格保真：五层及以上嵌套结构、异常合并网格自动修复、宽表分页和跨 section 横向表格页面设置传递。",
         "auto_level": "manual_review",
     },
     "TABLE_MERGE_UNSUPPORTED": {
