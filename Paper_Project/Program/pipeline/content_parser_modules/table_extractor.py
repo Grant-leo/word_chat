@@ -165,6 +165,12 @@ def _row_grid_before(tr_elem: Any) -> int:
     return _int_attr(grid_before, "val", 0)
 
 
+def _row_grid_after(tr_elem: Any) -> int:
+    tr_pr = tr_elem.find(f"{{{W_NS}}}trPr")
+    grid_after = tr_pr.find(f"{{{W_NS}}}gridAfter") if tr_pr is not None else None
+    return _int_attr(grid_after, "val", 0)
+
+
 def _fallback_row_widths_twips(tbl_elem: Any, ncols: int) -> List[int]:
     best: List[int] = []
     best_positive = 0
@@ -178,6 +184,7 @@ def _fallback_row_widths_twips(tbl_elem: Any, ncols: int) -> List[int]:
                 widths.extend([per_col] * colspan)
             else:
                 widths.extend([width] + ([0] * (colspan - 1)))
+        widths.extend([0] * _row_grid_after(tr))
         positive = sum(1 for value in widths if value > 0)
         if positive > best_positive:
             best = widths
@@ -982,6 +989,7 @@ def extract_table_from_ooxml(
     row_heights: List[Dict[str, Any]] = []
     header_flags: List[bool] = []
     row_grid_before: List[int] = []
+    row_grid_after: List[int] = []
     cell_overrides: List[Dict[str, Any]] = []
     table_cell_items: List[Dict[str, Any]] = []
     active_vmerges: Dict[int, Dict[str, int]] = {}
@@ -992,7 +1000,9 @@ def extract_table_from_ooxml(
     for tr in _iter_table_row_elements(tbl_elem):
         row_idx = len(rows)
         grid_before = _row_grid_before(tr)
+        grid_after = _row_grid_after(tr)
         row_grid_before.append(grid_before)
+        row_grid_after.append(grid_after)
         cells: List[str] = [""] * grid_before
         seen_vmerge_cols = set()
         continued_records = set()
@@ -1061,6 +1071,8 @@ def extract_table_from_ooxml(
             elif colspan > 1:
                 merges.append({"row": row_idx, "col": col_idx, "rowspan": 1, "colspan": colspan})
 
+        if grid_after > 0:
+            cells.extend([""] * grid_after)
         rows.append(cells)
         for col in list(active_vmerges):
             if col not in seen_vmerge_cols:
@@ -1076,6 +1088,8 @@ def extract_table_from_ooxml(
     table_data: Dict[str, Any] = {"table_rows": rows, "table_merges": merges}
     if any(row_grid_before):
         table_data["table_row_grid_before"] = row_grid_before
+    if any(row_grid_after):
+        table_data["table_row_grid_after"] = row_grid_after
     if widths:
         table_data["table_col_widths_twips"] = widths
     if table_borders:

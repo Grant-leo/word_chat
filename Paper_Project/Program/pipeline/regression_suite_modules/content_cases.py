@@ -1028,6 +1028,69 @@ def content_parser_preserves_grid_before_vmerge_cells() -> None:
 
 
 @case
+def content_parser_preserves_grid_after_row_omissions() -> None:
+    work = new_workdir("parser_grid_after")
+    docx = work / "grid_after.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Left"
+    table.cell(0, 1).text = "Right"
+    table.cell(1, 0).text = "Trailing row"
+    table.cell(1, 1).text = "Omitted tail"
+    doc.save(docx)
+
+    def rewrite(xml: str) -> str:
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + w_ns + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(w_ns + "tr")
+        assert_true(len(rows) == 2, "test rows missing")
+        second_row_cells = rows[1].findall(w_ns + "tc")
+        assert_true(len(second_row_cells) == 2, "test second row grid changed")
+        rows[1].remove(second_row_cells[1])
+        tr_pr = rows[1].find(w_ns + "trPr")
+        if tr_pr is None:
+            tr_pr = ET.Element(w_ns + "trPr")
+            rows[1].insert(0, tr_pr)
+        grid_after = ET.SubElement(tr_pr, w_ns + "gridAfter")
+        grid_after.set(w_ns + "val", "1")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", rewrite)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"gridAfter table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [["Left", "Right"], ["Trailing row", ""]],
+        f"gridAfter row omission did not keep the stable table grid: {table_item}",
+    )
+    assert_true(
+        table_item.get("table_row_grid_after") == [0, 1],
+        f"gridAfter row omission metadata was not preserved: {table_item}",
+    )
+
+    result = run_generated_case("parser_grid_after_generated", content, base_format())
+    root = etree.fromstring(result["xml"].encode("utf-8"))
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    tables = root.xpath(".//w:tbl[.//w:t='Trailing row']", namespaces=ns)
+    assert_true(len(tables) == 1, f"generated gridAfter table missing or duplicated: {len(tables)}")
+    rows = tables[0].xpath("./w:tr", namespaces=ns)
+    assert_true(len(rows) == 2, f"generated gridAfter table should have two rows: {len(rows)}")
+    second_grid_after = rows[1].xpath("./w:trPr/w:gridAfter/@w:val", namespaces=ns)
+    assert_true(second_grid_after == ["1"], f"generated second row did not restore w:gridAfter=1: {result['xml']}")
+    second_row_cells = rows[1].xpath("./w:tc", namespaces=ns)
+    assert_true(
+        len(second_row_cells) == 1,
+        "generated gridAfter row should omit the trailing cell instead of rendering a visible empty cell",
+    )
+    assert_true(result["report"]["passed"] is True, f"gridAfter render should pass QA: {result['report']}")
+
+
+@case
 def content_parser_preserves_table_column_widths() -> None:
     work = new_workdir("parser_table_widths")
     docx = work / "table_widths.docx"
