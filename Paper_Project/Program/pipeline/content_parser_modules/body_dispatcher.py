@@ -437,6 +437,7 @@ def parse_body_sections(doc: Any, text_start: int, image_registry: Any, notes: D
                 if table_data.get("table_col_widths_twips"):
                     table_item["table_col_widths_twips"] = table_data.get("table_col_widths_twips")
                 for layout_key in (
+                    "table_row_grid_before",
                     "table_row_heights_twips",
                     "table_repeat_header_rows",
                     "table_cell_margins_twips",

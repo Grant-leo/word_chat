@@ -1005,6 +1005,26 @@ def content_parser_preserves_grid_before_vmerge_cells() -> None:
         {"row": 0, "col": 1, "rowspan": 2, "colspan": 1} in (table_item.get("table_merges") or []),
         f"gridBefore vertical merge was not captured: {table_item}",
     )
+    assert_true(
+        table_item.get("table_row_grid_before") == [0, 1],
+        f"gridBefore row omission metadata was not preserved: {table_item}",
+    )
+
+    result = run_generated_case("parser_grid_before_vmerge_generated", content, base_format())
+    root = etree.fromstring(result["xml"].encode("utf-8"))
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    tables = root.xpath(".//w:tbl[.//w:t='Vertical start']", namespaces=ns)
+    assert_true(len(tables) == 1, f"generated gridBefore table missing or duplicated: {len(tables)}")
+    rows = tables[0].xpath("./w:tr", namespaces=ns)
+    assert_true(len(rows) == 2, f"generated gridBefore table should have two rows: {len(rows)}")
+    second_grid_before = rows[1].xpath("./w:trPr/w:gridBefore/@w:val", namespaces=ns)
+    assert_true(second_grid_before == ["1"], f"generated second row did not restore w:gridBefore=1: {result['xml']}")
+    second_row_cells = rows[1].xpath("./w:tc", namespaces=ns)
+    assert_true(
+        len(second_row_cells) == 1,
+        "generated gridBefore row should omit the leading cell instead of rendering a visible empty cell",
+    )
+    assert_true(result["report"]["passed"] is True, f"gridBefore vMerge render should pass QA: {result['report']}")
 
 
 @case

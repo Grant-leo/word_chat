@@ -718,6 +718,54 @@ def apply_table_merges(table, table_merges):
     return rendered
 
 
+def apply_row_grid_before(table, row_grid_before, rows=None, col_widths=None):
+    if not row_grid_before:
+        return 0
+    rendered = 0
+    rows = rows or []
+    col_widths = col_widths or []
+    for row_idx, value in enumerate(row_grid_before or []):
+        try:
+            count = int(value or 0)
+        except Exception:
+            count = 0
+        if count <= 0 or row_idx >= len(table.rows):
+            continue
+        source_row = rows[row_idx] if row_idx < len(rows) and isinstance(rows[row_idx], (list, tuple)) else []
+        if any(str(source_row[idx] or '').strip() for idx in range(min(count, len(source_row)))):
+            continue
+        tr = table.rows[row_idx]._tr
+        tr_pr = tr.find(qn('w:trPr'))
+        if tr_pr is None:
+            tr_pr = OxmlElement('w:trPr')
+            tr.insert(0, tr_pr)
+        grid_before = tr_pr.find(qn('w:gridBefore'))
+        if grid_before is None:
+            grid_before = OxmlElement('w:gridBefore')
+            tr_pr.append(grid_before)
+        grid_before.set(qn('w:val'), str(count))
+        width_before = sum(int(width or 0) for width in col_widths[:count]) if col_widths else 0
+        if width_before > 0:
+            w_before = tr_pr.find(qn('w:wBefore'))
+            if w_before is None:
+                w_before = OxmlElement('w:wBefore')
+                tr_pr.append(w_before)
+            w_before.set(qn('w:w'), str(width_before))
+            w_before.set(qn('w:type'), 'dxa')
+        removed = 0
+        while removed < count:
+            tc_elems = tr.findall(qn('w:tc'))
+            if len(tc_elems) <= 1:
+                break
+            tr.remove(tc_elems[0])
+            removed += 1
+        if removed:
+            rendered += 1
+    if rendered:
+        BUILD_STATS['content_table_grid_before_rows_rendered'] = BUILD_STATS.get('content_table_grid_before_rows_rendered', 0) + rendered
+    return rendered
+
+
 def media_after_paragraph_index(media):
     if not isinstance(media, dict) or 'after_paragraph_index' not in media:
         return None
@@ -783,6 +831,7 @@ def render_table_cell_media_item(cell, media, ncols, prof, force_new_paragraph=F
             media.get('table_cell_items') or [],
             media.get('table_merges') or [],
             media.get('table_col_widths_twips') or [],
+            media.get('table_row_grid_before') or [],
             media.get('table_row_heights_twips') or [],
             media.get('table_repeat_header_rows'),
             media.get('table_cell_margins_twips') or {},
@@ -1008,6 +1057,7 @@ def render_table_from_item(item, container=None, nested=False):
         item.get('table_cell_items') or [],
         item.get('table_merges') or [],
         item.get('table_col_widths_twips') or [],
+        item.get('table_row_grid_before') or [],
         item.get('table_row_heights_twips') or [],
         item.get('table_repeat_header_rows'),
         item.get('table_cell_margins_twips') or {},
@@ -1027,7 +1077,7 @@ def render_table_item(item):
         end_table_source_section(started)
 
 
-def render_table(rows, cell_items=None, table_merges=None, table_col_widths_twips=None, table_row_heights_twips=None, table_repeat_header_rows=None, table_cell_margins_twips=None, table_cell_overrides=None, table_borders=None, container=None, nested=False, max_width_twips=None):
+def render_table(rows, cell_items=None, table_merges=None, table_col_widths_twips=None, table_row_grid_before=None, table_row_heights_twips=None, table_repeat_header_rows=None, table_cell_margins_twips=None, table_cell_overrides=None, table_borders=None, container=None, nested=False, max_width_twips=None):
     if not rows:
         return
     container = container or doc
@@ -1123,6 +1173,7 @@ def render_table(rows, cell_items=None, table_merges=None, table_col_widths_twip
     apply_cell_overrides(table, table_cell_overrides)
     if should_keep_table_together(rows):
         keep_table_together(table)
+    apply_row_grid_before(table, table_row_grid_before, rows=rows, col_widths=col_widths)
     return table
 
 

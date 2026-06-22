@@ -981,6 +981,7 @@ def extract_table_from_ooxml(
     merges: List[Dict[str, int]] = []
     row_heights: List[Dict[str, Any]] = []
     header_flags: List[bool] = []
+    row_grid_before: List[int] = []
     cell_overrides: List[Dict[str, Any]] = []
     table_cell_items: List[Dict[str, Any]] = []
     active_vmerges: Dict[int, Dict[str, int]] = {}
@@ -990,7 +991,9 @@ def extract_table_from_ooxml(
 
     for tr in _iter_table_row_elements(tbl_elem):
         row_idx = len(rows)
-        cells: List[str] = [""] * _row_grid_before(tr)
+        grid_before = _row_grid_before(tr)
+        row_grid_before.append(grid_before)
+        cells: List[str] = [""] * grid_before
         seen_vmerge_cols = set()
         continued_records = set()
         row_heights.append(_row_height_twips(tr))
@@ -1071,6 +1074,8 @@ def extract_table_from_ooxml(
     ncols = max((len(row) for row in rows), default=0)
     widths = _table_widths_twips(tbl_elem, ncols)
     table_data: Dict[str, Any] = {"table_rows": rows, "table_merges": merges}
+    if any(row_grid_before):
+        table_data["table_row_grid_before"] = row_grid_before
     if widths:
         table_data["table_col_widths_twips"] = widths
     if table_borders:
