@@ -91,7 +91,7 @@ def _docx_features(path: str) -> Tuple[Dict[str, Any], List[str], bool]:
                     "content_control_count": len(re.findall(r"<w:sdt\b", document_xml)),
                     "landscape_section_count": len(re.findall(r'w:orient=["\']landscape["\']', document_xml)),
                     "embedded_object_count": len([n for n in names if n.startswith("word/embeddings/")]),
-                    "merged_cell_count": len(re.findall(r"<w:gridSpan\b|<w:vMerge\b", document_xml)),
+                    "merged_cell_count": len(re.findall(r"<w:gridSpan\b|<w:hMerge\b|<w:vMerge\b", document_xml)),
                     "text_char_count": len(re.sub(r"<[^>]+>", "", document_xml).strip()),
                 }
             )

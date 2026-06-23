@@ -66,6 +66,14 @@ def _cell_vmerge_kind(tc_elem: Any) -> str:
     return (vmerge.get(f"{{{W_NS}}}val") or "continue").lower()
 
 
+def _cell_hmerge_kind(tc_elem: Any) -> str:
+    tc_pr = tc_elem.find(f"{{{W_NS}}}tcPr")
+    hmerge = tc_pr.find(f"{{{W_NS}}}hMerge") if tc_pr is not None else None
+    if hmerge is None:
+        return ""
+    return (hmerge.get(f"{{{W_NS}}}val") or "continue").lower()
+
+
 def _row_height_twips(tr_elem: Any) -> Dict[str, Any]:
     tr_pr = tr_elem.find(f"{{{W_NS}}}trPr")
     tr_height = tr_pr.find(f"{{{W_NS}}}trHeight") if tr_pr is not None else None
@@ -1006,12 +1014,14 @@ def extract_table_from_ooxml(
         cells: List[str] = [""] * grid_before
         seen_vmerge_cols = set()
         continued_records = set()
+        current_hmerge_record: Optional[Dict[str, int]] = None
         row_heights.append(_row_height_twips(tr))
         header_flags.append(_row_repeats_header(tr))
         for tc in _iter_table_cell_elements(tr):
             col_idx = len(cells)
             colspan = _cell_grid_span(tc)
             vmerge_kind = _cell_vmerge_kind(tc)
+            hmerge_kind = _cell_hmerge_kind(tc)
             vmerge_record = active_vmerges.get(col_idx) if vmerge_kind == "continue" else None
             vmerge_record_colspan = int((vmerge_record or {}).get("colspan") or 1)
             is_vmerge_continue = (
@@ -1021,7 +1031,8 @@ def extract_table_from_ooxml(
                 and id(vmerge_record) not in continued_records
                 and all(active_vmerges.get(col_idx + offset) is vmerge_record for offset in range(colspan))
             )
-            if is_vmerge_continue:
+            is_hmerge_continue = hmerge_kind == "continue" and current_hmerge_record is not None
+            if is_vmerge_continue or is_hmerge_continue:
                 text = ""
                 nested_items = []
             else:
@@ -1068,8 +1079,19 @@ def extract_table_from_ooxml(
                 continued_records.add(record_id)
                 for offset in range(vmerge_record_colspan):
                     seen_vmerge_cols.add(col_idx + offset)
+
+            if hmerge_kind == "restart":
+                current_hmerge_record = {"row": row_idx, "col": col_idx, "rowspan": 1, "colspan": colspan}
+                merges.append(current_hmerge_record)
+            elif is_hmerge_continue:
+                current_hmerge_record["colspan"] = int(current_hmerge_record.get("colspan") or 1) + colspan
+            elif hmerge_kind == "continue":
+                current_hmerge_record = None
             elif colspan > 1:
                 merges.append({"row": row_idx, "col": col_idx, "rowspan": 1, "colspan": colspan})
+                current_hmerge_record = None
+            else:
+                current_hmerge_record = None
 
         if grid_after > 0:
             cells.extend([""] * grid_after)

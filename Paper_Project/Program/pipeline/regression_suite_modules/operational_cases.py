@@ -59,6 +59,36 @@ def private_corpus_inventory_classifies_realdata_without_content_leakage() -> No
     doc.add_paragraph("1 Introduction")
     doc.add_paragraph("Synthetic body text for inventory classification.")
     doc.save(corpus / "paper.docx")
+    hmerge_doc = Document()
+    hmerge_table = hmerge_doc.add_table(rows=1, cols=3)
+    hmerge_table.cell(0, 0).text = "Legacy merged header"
+    hmerge_table.cell(0, 1).text = ""
+    hmerge_table.cell(0, 2).text = "Score"
+    hmerge_path = corpus / "legacy_hmerge.docx"
+    hmerge_doc.save(hmerge_path)
+
+    def inject_legacy_hmerge(xml: str) -> str:
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + W_NS + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        row = table_el.find(W_NS + "tr")
+        assert_true(row is not None, "test row missing")
+        cells = row.findall(W_NS + "tc")
+        assert_true(len(cells) == 3, "test cells missing")
+
+        def ensure_tc_pr(cell):
+            tc_pr = cell.find(W_NS + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(W_NS + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        restart = ET.SubElement(ensure_tc_pr(cells[0]), W_NS + "hMerge")
+        restart.set(W_NS + "val", "restart")
+        ET.SubElement(ensure_tc_pr(cells[1]), W_NS + "hMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(hmerge_path, "word/document.xml", inject_legacy_hmerge)
     (corpus / "legacy.doc").write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1legacy")
     (corpus / "archive.rar").write_bytes(b"Rar!\x1a\x07\x00")
 
@@ -67,6 +97,8 @@ def private_corpus_inventory_classifies_realdata_without_content_leakage() -> No
     assert_true(categories["paper.docx"] in {"content_candidate", "reference_candidate", "template_candidate"}, "valid DOCX was not classified as a document candidate")
     assert_true(categories["legacy.doc"] == "unsupported_or_conversion_needed", "legacy .doc should be isolated")
     assert_true(categories["archive.rar"] == "attachment_or_nonpaper", "archive should not enter document matrix")
+    hmerge_item = next(item for item in result["items"] if item["relative_path"] == "legacy_hmerge.docx")
+    assert_true(hmerge_item["features"].get("merged_cell_count") == 2, f"legacy hMerge was not counted in private inventory: {hmerge_item}")
     assert_true((work / "audit" / "inventory.json").exists(), "inventory.json was not written")
     assert_true((work / "audit" / "inventory.md").exists(), "inventory.md was not written")
     assert_true((work / "audit" / "review_queue.json").exists(), "review_queue.json was not written")
@@ -137,6 +169,49 @@ def complex_table_and_image_format_boundaries_are_structural_qa_visible() -> Non
     codes = {issue["code"] for issue in audit["issues"]}
     assert_true("TABLE_MERGE_UNSUPPORTED" in codes or "COMPLEX_TABLE_UNSUPPORTED" in codes, f"merged table was not reported: {codes}")
     assert_true("CONTENT_IMAGE_FORMAT_UNSUPPORTED" in codes, f"unsupported image format was not reported: {codes}")
+
+
+@case
+def source_audit_counts_legacy_hmerge_as_merged_cells() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_legacy_hmerge")
+    path = work / "legacy_hmerge.docx"
+    doc = Document()
+    table = doc.add_table(rows=1, cols=3)
+    table.cell(0, 0).text = "Legacy merged header"
+    table.cell(0, 1).text = ""
+    table.cell(0, 2).text = "Score"
+    doc.save(path)
+
+    def inject_legacy_hmerge(xml: str) -> str:
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + W_NS + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        row = table_el.find(W_NS + "tr")
+        assert_true(row is not None, "test row missing")
+        cells = row.findall(W_NS + "tc")
+        assert_true(len(cells) == 3, "test cells missing")
+
+        def ensure_tc_pr(cell):
+            tc_pr = cell.find(W_NS + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(W_NS + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        restart = ET.SubElement(ensure_tc_pr(cells[0]), W_NS + "hMerge")
+        restart.set(W_NS + "val", "restart")
+        ET.SubElement(ensure_tc_pr(cells[1]), W_NS + "hMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(path, "word/document.xml", inject_legacy_hmerge)
+
+    audit = audit_docx_source(str(path))
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert_true(audit["counts"].get("hmerge_count") == 2, f"legacy hMerge count missing: {audit}")
+    assert_true(audit["counts"].get("merged_cell_count") == 2, f"legacy hMerge was not included in merged cell count: {audit}")
+    assert_true("TABLE_MERGE_UNSUPPORTED" in codes, f"legacy hMerge should surface merged-table review guidance: {audit}")
 
 
 @case

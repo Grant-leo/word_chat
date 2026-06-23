@@ -24,7 +24,7 @@ ISSUE_MESSAGES = {
     "SOURCE_LANDSCAPE_SECTION_UNSUPPORTED": "Source DOCX contains landscape sections; final pagination needs visual/manual review.",
     "CONTENT_IMAGE_FORMAT_UNSUPPORTED": "Source DOCX contains images in a format outside the stable PNG/JPG path.",
     "COMPLEX_TABLE_UNSUPPORTED": "Source DOCX contains deeply nested, overwide, or irregular table structures that need manual/visual review.",
-    "TABLE_MERGE_UNSUPPORTED": "Source DOCX contains merged table cells; basic gridSpan/vMerge, common table layout details, and explicit borders are preserved, but complex table layout still needs visual review.",
+    "TABLE_MERGE_UNSUPPORTED": "Source DOCX contains merged table cells; basic gridSpan/hMerge/vMerge, common table layout details, and explicit borders are preserved, but complex table layout still needs visual review.",
 }
 
 
@@ -186,7 +186,7 @@ def _wide_table_count(xml_text: str, threshold: int = 8) -> int:
 
 
 def _table_structure_stats(xml_text: str) -> Dict[str, int]:
-    empty = {"table_count": 0, "grid_span_count": 0, "vmerge_count": 0}
+    empty = {"table_count": 0, "grid_span_count": 0, "hmerge_count": 0, "vmerge_count": 0}
     if not xml_text:
         return empty
     try:
@@ -201,6 +201,8 @@ def _table_structure_stats(xml_text: str) -> Dict[str, int]:
             for cell in _iter_table_cell_elements(row):
                 if _table_cell_grid_span(cell) > 1:
                     stats["grid_span_count"] += 1
+                if _table_cell_hmerge_kind(cell):
+                    stats["hmerge_count"] += 1
                 if _table_cell_vmerge_kind(cell):
                     stats["vmerge_count"] += 1
     return stats
@@ -238,6 +240,16 @@ def _table_cell_vmerge_kind(cell: ET.Element) -> str:
     if vmerge is None:
         return ""
     return str(vmerge.attrib.get(W_NS + "val") or "continue").strip() or "continue"
+
+
+def _table_cell_hmerge_kind(cell: ET.Element) -> str:
+    tc_pr = cell.find(W_NS + "tcPr")
+    if tc_pr is None:
+        return ""
+    hmerge = tc_pr.find(W_NS + "hMerge")
+    if hmerge is None:
+        return ""
+    return str(hmerge.attrib.get(W_NS + "val") or "continue").strip() or "continue"
 
 
 def _row_grid_before(row: ET.Element) -> int:
@@ -419,6 +431,7 @@ def audit_docx_source(docx_path: str) -> Dict[str, Any]:
                 "endnote_count": _count_real_notes(xml_parts.get("word/endnotes.xml", ""), "endnote"),
                 "table_count": table_stats["table_count"],
                 "grid_span_count": table_stats["grid_span_count"],
+                "hmerge_count": table_stats["hmerge_count"],
                 "vmerge_count": table_stats["vmerge_count"],
                 "nested_table_count": nested_stats["nested_table_count"],
                 "nested_table_max_depth": nested_stats["nested_table_max_depth"],
@@ -429,7 +442,7 @@ def audit_docx_source(docx_path: str) -> Dict[str, Any]:
                 "irregular_vmerge_count": geometry_stats["irregular_vmerge_count"],
                 "irregular_grid_span_count": geometry_stats["irregular_grid_span_count"],
             }
-            counts["merged_cell_count"] = counts["grid_span_count"] + counts["vmerge_count"]
+            counts["merged_cell_count"] = counts["grid_span_count"] + counts["hmerge_count"] + counts["vmerge_count"]
             formats = _media_formats(names)
             counts["image_format_counts"] = formats
             result["counts"] = counts
@@ -459,7 +472,10 @@ def audit_docx_source(docx_path: str) -> Dict[str, Any]:
                 detail = ", ".join(f"{ext}:{count}" for ext, count in sorted(unsupported_formats.items()))
                 issues.append(_safe_issue("CONTENT_IMAGE_FORMAT_UNSUPPORTED", "error", detail))
             if counts["merged_cell_count"]:
-                issues.append(_safe_issue("TABLE_MERGE_UNSUPPORTED", "warning", f"merged_cells={counts['merged_cell_count']}"))
+                detail = f"merged_cells={counts['merged_cell_count']}"
+                if counts.get("hmerge_count"):
+                    detail += f"; hmerge={counts['hmerge_count']}"
+                issues.append(_safe_issue("TABLE_MERGE_UNSUPPORTED", "warning", detail))
             if counts["nested_table_max_depth"] > 4 or counts["max_table_columns"] > 8 or counts["irregular_table_count"]:
                 detail = (
                     f"nested_tables={counts['nested_table_count']}; "

@@ -832,6 +832,67 @@ def content_parser_preserves_merged_table_cells() -> None:
 
 
 @case
+def content_parser_preserves_legacy_hmerge_table_cells() -> None:
+    work = new_workdir("parser_legacy_hmerge_table")
+    docx = work / "legacy_hmerge_table.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=3)
+    table.cell(0, 0).text = "Legacy merged header"
+    table.cell(0, 1).text = ""
+    table.cell(0, 2).text = "Score"
+    table.cell(1, 0).text = "Alpha"
+    table.cell(1, 1).text = "Beta"
+    table.cell(1, 2).text = "1"
+    doc.save(docx)
+
+    def inject_legacy_hmerge(xml: str) -> str:
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + w_ns + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        first_row = table_el.find(w_ns + "tr")
+        assert_true(first_row is not None, "test first row missing")
+        cells = first_row.findall(w_ns + "tc")
+        assert_true(len(cells) == 3, "test first row cells missing")
+
+        def ensure_tc_pr(cell):
+            tc_pr = cell.find(w_ns + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(w_ns + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        restart = ET.SubElement(ensure_tc_pr(cells[0]), w_ns + "hMerge")
+        restart.set(w_ns + "val", "restart")
+        ET.SubElement(ensure_tc_pr(cells[1]), w_ns + "hMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_legacy_hmerge)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"legacy hMerge table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [
+            ["Legacy merged header", "", "Score"],
+            ["Alpha", "Beta", "1"],
+        ],
+        f"legacy hMerge table did not expand to a stable grid: {table_item}",
+    )
+    assert_true(
+        {"row": 0, "col": 0, "rowspan": 1, "colspan": 2} in (table_item.get("table_merges") or []),
+        f"legacy hMerge was not converted to a generated merge: {table_item}",
+    )
+
+    result = run_generated_case("parser_legacy_hmerge_generated", content, base_format())
+    assert_true(re.search(r"<w:gridSpan\b[^>]*/?w:val=\"2\"", result["xml"]), "legacy hMerge did not render as a Word gridSpan merge")
+    assert_true("Legacy merged header" in result["xml"], "generated DOCX lost legacy hMerge text")
+    assert_true(result["report"]["passed"] is True, f"legacy hMerge render should pass QA: {result['report']}")
+
+
+@case
 def content_parser_repairs_orphan_vmerge_without_losing_text() -> None:
     work = new_workdir("parser_orphan_vmerge_repair")
     docx = work / "orphan_vmerge.docx"
