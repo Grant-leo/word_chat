@@ -278,6 +278,28 @@ def _row_grid_after(row: ET.Element) -> int:
         return 0
 
 
+def _row_hmerge_spans(row: ET.Element) -> Dict[int, int]:
+    spans: Dict[int, int] = {}
+    active_start: int | None = None
+    active_width = 0
+    col_idx = _row_grid_before(row)
+    for cell in _iter_table_cell_elements(row):
+        span = _table_cell_grid_span(cell)
+        hmerge_kind = _table_cell_hmerge_kind(cell)
+        if hmerge_kind == "restart":
+            active_start = col_idx
+            active_width = span
+            spans[active_start] = active_width
+        elif hmerge_kind == "continue" and active_start is not None:
+            active_width += span
+            spans[active_start] = active_width
+        else:
+            active_start = None
+            active_width = 0
+        col_idx += span
+    return spans
+
+
 def _table_geometry_stats(xml_text: str) -> Dict[str, int]:
     empty = {
         "irregular_table_count": 0,
@@ -295,11 +317,12 @@ def _table_geometry_stats(xml_text: str) -> Dict[str, int]:
     for table in _iter_visible_table_elements(root):
         grid = table.find(W_NS + "tblGrid")
         grid_cols = len(grid.findall(W_NS + "gridCol")) if grid is not None else 0
-        active_vmerges: Dict[int, int] = {}
+        active_vmerges: Dict[int, Dict[str, int]] = {}
         table_irregular = False
         for row in _iter_table_row_elements(table):
+            row_hmerge_spans = _row_hmerge_spans(row)
             col_idx = _row_grid_before(row)
-            next_active: Dict[int, int] = {}
+            next_active: Dict[int, Dict[str, int]] = {}
             for cell in _iter_table_cell_elements(row):
                 span = _table_cell_grid_span(cell)
                 if grid_cols and col_idx + span > grid_cols:
@@ -307,18 +330,31 @@ def _table_geometry_stats(xml_text: str) -> Dict[str, int]:
                     table_irregular = True
                 vmerge_kind = _table_cell_vmerge_kind(cell)
                 if vmerge_kind == "restart":
+                    hmerge_width = row_hmerge_spans.get(col_idx, span)
+                    active = {"span": span, "hmerge_width": hmerge_width}
                     for offset in range(span):
-                        next_active[col_idx + offset] = span
+                        next_active[col_idx + offset] = active
                 elif vmerge_kind == "continue":
-                    expected_span = active_vmerges.get(col_idx)
-                    if expected_span is None:
+                    expected = active_vmerges.get(col_idx)
+                    cell_irregular = False
+                    if expected is None:
+                        cell_irregular = True
+                        expected_span = span
+                        expected_hmerge_width = span
+                    else:
+                        expected_span = expected.get("span") or span
+                        expected_hmerge_width = expected.get("hmerge_width") or expected_span
+                    if expected is not None and expected_span != span:
+                        cell_irregular = True
+                    current_hmerge_width = row_hmerge_spans.get(col_idx, span)
+                    if expected is not None and expected_hmerge_width > expected_span and current_hmerge_width != expected_hmerge_width:
+                        cell_irregular = True
+                    if cell_irregular:
                         stats["irregular_vmerge_count"] += 1
                         table_irregular = True
-                    elif expected_span != span:
-                        stats["irregular_vmerge_count"] += 1
-                        table_irregular = True
+                    active = {"span": expected_span, "hmerge_width": expected_hmerge_width}
                     for offset in range(span):
-                        next_active[col_idx + offset] = expected_span or span
+                        next_active[col_idx + offset] = active
                 col_idx += span
             active_vmerges = next_active
         if table_irregular:

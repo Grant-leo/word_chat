@@ -951,6 +951,80 @@ def content_parser_coalesces_legacy_hmerge_vmerge_rectangular_cells() -> None:
 
 
 @case
+def content_parser_repairs_nonrectangular_legacy_hmerge_vmerge_without_overlap() -> None:
+    work = new_workdir("parser_nonrectangular_legacy_hmerge_vmerge")
+    docx = work / "nonrectangular_legacy_hmerge_vmerge.docx"
+    doc = Document()
+    table = doc.add_table(rows=3, cols=3)
+    table.cell(0, 0).text = "Wide top"
+    table.cell(0, 1).text = ""
+    table.cell(0, 2).text = "Score"
+    table.cell(1, 0).text = "Continuation should stay visible"
+    table.cell(1, 1).text = "Beta"
+    table.cell(1, 2).text = "1"
+    table.cell(2, 0).text = "Alpha"
+    table.cell(2, 1).text = "Gamma"
+    table.cell(2, 2).text = "2"
+    doc.save(docx)
+
+    def inject_nonrectangular_legacy_hmerge_vmerge(xml: str) -> str:
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + w_ns + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(w_ns + "tr")
+        assert_true(len(rows) == 3, "test rows missing")
+
+        def ensure_tc_pr(cell):
+            tc_pr = cell.find(w_ns + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(w_ns + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        first_row_cells = rows[0].findall(w_ns + "tc")
+        second_row_cells = rows[1].findall(w_ns + "tc")
+        assert_true(len(first_row_cells) == 3 and len(second_row_cells) == 3, "test row cells missing")
+        first_pr = ensure_tc_pr(first_row_cells[0])
+        hmerge = ET.SubElement(first_pr, w_ns + "hMerge")
+        hmerge.set(w_ns + "val", "restart")
+        vmerge = ET.SubElement(first_pr, w_ns + "vMerge")
+        vmerge.set(w_ns + "val", "restart")
+        ET.SubElement(ensure_tc_pr(first_row_cells[1]), w_ns + "hMerge")
+        ET.SubElement(ensure_tc_pr(second_row_cells[0]), w_ns + "vMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_nonrectangular_legacy_hmerge_vmerge)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"nonrectangular hMerge/vMerge table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [
+            ["Wide top", "", "Score"],
+            ["Continuation should stay visible", "Beta", "1"],
+            ["Alpha", "Gamma", "2"],
+        ],
+        f"nonrectangular hMerge/vMerge continuation text should fail open as visible: {table_item}",
+    )
+    assert_true(
+        table_item.get("table_merges") == [{"row": 0, "col": 0, "rowspan": 1, "colspan": 2}],
+        f"nonrectangular hMerge/vMerge should keep only the safe horizontal merge: {table_item}",
+    )
+
+    result = run_generated_case("parser_nonrectangular_legacy_hmerge_vmerge_generated", content, base_format())
+    assert_true(result["report"]["passed"] is True, f"nonrectangular hMerge/vMerge repair should pass QA: {result['report']}")
+    assert_true("Continuation should stay visible" in result["xml"], "generated DOCX lost repaired continuation text")
+    counts = result["manifest"].get("counts") or {}
+    assert_true(
+        counts.get("content_table_merges_rendered") == 1,
+        f"nonrectangular hMerge/vMerge should render only one safe merge operation: {counts}",
+    )
+
+
+@case
 def content_parser_preserves_legacy_hmerge_table_cells() -> None:
     work = new_workdir("parser_legacy_hmerge_table")
     docx = work / "legacy_hmerge_table.docx"

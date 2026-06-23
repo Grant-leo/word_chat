@@ -332,6 +332,59 @@ def source_audit_flags_irregular_table_merge_grid() -> None:
 
 
 @case
+def source_audit_flags_nonrectangular_legacy_hmerge_vmerge() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_nonrectangular_hmerge_vmerge")
+    path = work / "nonrectangular_hmerge_vmerge.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=3)
+    table.cell(0, 0).text = "Wide top"
+    table.cell(0, 1).text = ""
+    table.cell(0, 2).text = "Score"
+    table.cell(1, 0).text = "Continuation should require review"
+    table.cell(1, 1).text = "Beta"
+    table.cell(1, 2).text = "1"
+    doc.save(path)
+
+    def inject_nonrectangular_hmerge_vmerge(xml: str) -> str:
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + W_NS + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(W_NS + "tr")
+        assert_true(len(rows) == 2, "test rows missing")
+        first_row_cells = rows[0].findall(W_NS + "tc")
+        second_row_cells = rows[1].findall(W_NS + "tc")
+        assert_true(len(first_row_cells) == 3 and len(second_row_cells) == 3, "test row cells missing")
+
+        def ensure_tc_pr(cell: ET.Element) -> ET.Element:
+            tc_pr = cell.find(W_NS + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(W_NS + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        first_pr = ensure_tc_pr(first_row_cells[0])
+        hmerge = ET.SubElement(first_pr, W_NS + "hMerge")
+        hmerge.set(W_NS + "val", "restart")
+        vmerge = ET.SubElement(first_pr, W_NS + "vMerge")
+        vmerge.set(W_NS + "val", "restart")
+        ET.SubElement(ensure_tc_pr(first_row_cells[1]), W_NS + "hMerge")
+        ET.SubElement(ensure_tc_pr(second_row_cells[0]), W_NS + "vMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(path, "word/document.xml", inject_nonrectangular_hmerge_vmerge)
+
+    audit = audit_docx_source(str(path))
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert_true("COMPLEX_TABLE_UNSUPPORTED" in codes, f"nonrectangular hMerge/vMerge was not reported: {audit}")
+    assert_true(audit["counts"].get("irregular_table_count") == 1, f"nonrectangular table count missing: {audit}")
+    assert_true(audit["counts"].get("irregular_vmerge_count") == 1, f"nonrectangular vMerge count missing: {audit}")
+    detail = " ".join(str(issue.get("detail") or "") for issue in audit["issues"] if issue.get("code") == "COMPLEX_TABLE_UNSUPPORTED")
+    assert_true("irregular_vmerges=1" in detail, f"complex table detail did not name irregular vMerge count: {audit}")
+
+
+@case
 def source_audit_flags_landscape_wide_table_risk() -> None:
     from content_parser_modules.source_audit import audit_docx_source
 

@@ -362,6 +362,28 @@ def _iter_table_cell_elements(row_elem: Any) -> List[Any]:
     return cells
 
 
+def _row_hmerge_spans(row_elem: Any, grid_before: int = 0) -> Dict[int, int]:
+    spans: Dict[int, int] = {}
+    active_start: Optional[int] = None
+    active_width = 0
+    col_idx = grid_before
+    for tc in _iter_table_cell_elements(row_elem):
+        colspan = _cell_grid_span(tc)
+        hmerge_kind = _cell_hmerge_kind(tc)
+        if hmerge_kind == "restart":
+            active_start = col_idx
+            active_width = colspan
+            spans[active_start] = active_width
+        elif hmerge_kind == "continue" and active_start is not None:
+            active_width += colspan
+            spans[active_start] = active_width
+        else:
+            active_start = None
+            active_width = 0
+        col_idx += colspan
+    return spans
+
+
 def _paragraph_has_structured_runs(p_elem: Any) -> bool:
     return any(_local_name(elem) in {"oMath", "oMathPara", "footnoteReference", "endnoteReference"} for elem in p_elem.iter())
 
@@ -1065,6 +1087,7 @@ def extract_table_from_ooxml(
         grid_after = _row_grid_after(tr)
         row_grid_before.append(grid_before)
         row_grid_after.append(grid_after)
+        row_hmerge_spans = _row_hmerge_spans(tr, grid_before)
         cells: List[str] = [""] * grid_before
         seen_vmerge_cols = set()
         continued_records = set()
@@ -1078,10 +1101,13 @@ def extract_table_from_ooxml(
             hmerge_kind = _cell_hmerge_kind(tc)
             vmerge_record = active_vmerges.get(col_idx) if vmerge_kind == "continue" else None
             vmerge_record_colspan = int((vmerge_record or {}).get("colspan") or 1)
+            required_hmerge_width = int((vmerge_record or {}).get("hmerge_colspan") or 1)
+            current_hmerge_width = row_hmerge_spans.get(col_idx, colspan)
             is_vmerge_continue = (
                 vmerge_kind == "continue"
                 and vmerge_record is not None
                 and vmerge_record_colspan == colspan
+                and (required_hmerge_width <= 1 or current_hmerge_width == required_hmerge_width)
                 and id(vmerge_record) not in continued_records
                 and all(active_vmerges.get(col_idx + offset) is vmerge_record for offset in range(colspan))
             )
@@ -1123,6 +1149,9 @@ def extract_table_from_ooxml(
 
             if vmerge_kind == "restart":
                 record = {"row": row_idx, "col": col_idx, "rowspan": 1, "colspan": colspan}
+                hmerge_width = row_hmerge_spans.get(col_idx, colspan)
+                if hmerge_width > colspan:
+                    record["hmerge_colspan"] = hmerge_width
                 merges.append(record)
                 for offset in range(colspan):
                     active_vmerges[col_idx + offset] = record
@@ -1155,6 +1184,8 @@ def extract_table_from_ooxml(
                 active_vmerges.pop(col, None)
 
     merges = _coalesce_legacy_hmerge_vmerge_merges(merges)
+    for merge in merges:
+        merge.pop("hmerge_colspan", None)
     merges = [
         merge
         for merge in merges
