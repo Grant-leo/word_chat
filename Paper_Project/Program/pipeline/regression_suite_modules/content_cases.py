@@ -832,6 +832,47 @@ def content_parser_preserves_merged_table_cells() -> None:
 
 
 @case
+def content_parser_coalesces_rectangular_merged_table_cells() -> None:
+    work = new_workdir("parser_rectangular_merged_table")
+    docx = work / "rectangular_merged_table.docx"
+    doc = Document()
+    table = doc.add_table(rows=3, cols=3)
+    table.cell(0, 0).merge(table.cell(1, 1)).text = "Merged block"
+    table.cell(0, 2).text = "Score"
+    table.cell(1, 2).text = "1"
+    table.cell(2, 0).text = "Alpha"
+    table.cell(2, 1).text = "Beta"
+    table.cell(2, 2).text = "2"
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"rectangular merged table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [
+            ["Merged block", "", "Score"],
+            ["", "", "1"],
+            ["Alpha", "Beta", "2"],
+        ],
+        f"rectangular merge did not expand to a stable grid: {table_item}",
+    )
+    assert_true(
+        table_item.get("table_merges") == [{"row": 0, "col": 0, "rowspan": 2, "colspan": 2}],
+        f"rectangular merge should be one coalesced merge, not overlapping merges: {table_item}",
+    )
+
+    result = run_generated_case("parser_rectangular_merge_generated", content, base_format())
+    assert_true(result["report"]["passed"] is True, f"rectangular merge render should pass QA: {result['report']}")
+    counts = result["manifest"].get("counts") or {}
+    assert_true(
+        counts.get("content_table_merges_rendered") == 1,
+        f"rectangular merge should render as one merge operation: {counts}",
+    )
+
+
+@case
 def content_parser_preserves_legacy_hmerge_table_cells() -> None:
     work = new_workdir("parser_legacy_hmerge_table")
     docx = work / "legacy_hmerge_table.docx"

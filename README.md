@@ -183,7 +183,7 @@ build_generated.py ─────────→ 最终论文.docx
 
 截至 2026-06-23：
 
-- 合成回归：`336 passed, 0 failed`
+- 合成回归：`337 passed, 0 failed`
 - DOCX 表格/嵌套表注释边界：四层嵌套表单元格会保持同段文字、图片、LaTeX、OMML 和脚注的源顺序；表格单元格中“图片后只有脚注锚点、没有可见文字”的情况也会在图片后原位渲染为 Word 原生脚注引用；表格单元格里的 block-level、inline 和嵌套 inline 内容控件文字会原位进入该单元格，内容控件内 `w:fldSimple` 的可见字段结果、`w:customXml` / `w:smartTag` 透明容器里的显示值也会按源顺序保留，内容控件内 hyperlink 包住图片、LaTeX、OMML 和脚注时也会保留原顺序，并在正文级内容控件兜底恢复时去重，避免重复正文；表格外正文级内容控件即使与表格单元格文本部分重叠或完全相同，也不会被误判为表格重复项；正文级 `w:sdtContent` 同时包住段落和表格时也会原位展开，元数据只统计正文段落，表格单元格文本不会被当成散落正文；正文级内容控件段落里的 inline `w:sdt` / `w:fldSimple` / hyperlink / `w:customXml` / `w:smartTag` 会递归保留图片、OMML/LaTeX 公式和脚注/尾注锚点顺序；带 `w:ins` / `w:moveTo` 的修订插入内容会按 Word 最终视图进入正文、表格、修订包裹的整行表格/单元格、标题路由和文本框恢复通道，`w:del` / `w:moveFrom` 删除内容与批注正文不会混入最终论文。
 - DOCX 正文透明容器边界：正文级 `w:customXml` / `w:smartTag` 包住段落和表格时，内容会原位进入正文流，后续普通段落不会被包装节点造成的索引差异替换或丢失。
 - 自动修复闭环回归：可修复 QA error、连续无改善停止、重建失败停止、needs_user_file 停止、strict/visual QA 依赖缺失、visual 参数保持、报告路径脱敏、停止后 `agent_summary` 汇总下一步均已覆盖
@@ -192,6 +192,7 @@ build_generated.py ─────────→ 最终论文.docx
 - DOCX 行省略宽表审计：源审计现在会把 `w:gridAfter` 省略的行尾网格列计入 `max_table_columns` / `wide_table_count`，因此“1 个可见单元格 + 多个尾部省略列”的宽表会触发 `COMPLEX_TABLE_UNSUPPORTED` 复核提示，不会因为只数可见单元格而漏警告。
 - DOCX 修订包装表格审计：源审计现在按 Word 最终视图穿透 `w:ins` / `w:moveTo`、内容控件和透明容器中的表格行/单元格，宽表和异常表格风险不会因为行被包装而漏掉 `COMPLEX_TABLE_UNSUPPORTED`。
 - DOCX 删除修订表格审计：源审计的表格数量、合并计数、嵌套深度、宽表和异常合并风险都按 Word 最终视图可见表格计算；`w:del` / `w:moveFrom` 中已经删除的隐藏表格不会制造 `COMPLEX_TABLE_UNSUPPORTED` 假警告，但仍会保留 `TRACKED_CHANGES_PRESENT` 提醒用户确认修订。
+- DOCX 矩形合并单元格：同一单元格同时跨多行、多列时，内容解析会归一成一个矩形 `table_merges`，避免把 `gridSpan` 和 `vMerge` 拆成重叠合并记录后让生成端重复 merge。
 - DOCX 旧式 hMerge 表格合并：兼容旧版/兼容模式 Word 的 `w:hMerge restart/continue`，内容解析会转为 `table_merges`，生成端用标准 `gridSpan` 输出；源审计和私有资料清分会把 `hMerge` 计入合并单元格风险并给出 `TABLE_MERGE_UNSUPPORTED` 复核提示。
 - 模板说明清理：DOCX 模板里的“格式说明”、封面字段说明、源目录样例和 TOC 页码样例不会再进入最终论文；本地脱敏真实样例已通过 developer visual 端到端验证，结构 QA、strict conformance、visual QA 均为 `0` error / `0` warning。
 - 后置章节等价：结构 QA 现在把 `Acknowledgements` / `Acknowledgment` / `致谢`、`References` / `参考文献`、`Appendix` / `附录` 这类语义等价标题视为已覆盖，避免让用户为中英文模板标题差异处理误报的 `CONTENT_HEADING_MISSING`。

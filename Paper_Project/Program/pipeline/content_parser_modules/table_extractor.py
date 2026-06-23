@@ -1087,7 +1087,7 @@ def extract_table_from_ooxml(
                 current_hmerge_record["colspan"] = int(current_hmerge_record.get("colspan") or 1) + colspan
             elif hmerge_kind == "continue":
                 current_hmerge_record = None
-            elif colspan > 1:
+            elif colspan > 1 and vmerge_kind != "restart" and not is_vmerge_continue:
                 merges.append({"row": row_idx, "col": col_idx, "rowspan": 1, "colspan": colspan})
                 current_hmerge_record = None
             else:
