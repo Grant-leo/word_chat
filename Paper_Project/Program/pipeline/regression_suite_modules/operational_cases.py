@@ -14,7 +14,7 @@ from xml.etree import ElementTree as ET
 from docx import Document
 from privacy import sanitize_value
 from qa_checker import check_output
-from regression_suite_modules.harness import assert_true, base_content, base_format, case, new_workdir, write_json
+from regression_suite_modules.harness import assert_true, base_content, base_format, case, new_workdir, write_json, write_sample_png
 
 PIPELINE_DIR = Path(__file__).resolve().parents[1]
 W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -333,6 +333,75 @@ def source_audit_flags_mixed_gridspan_hmerge_vmerge_without_gridspan_noise() -> 
     assert_true(audit["counts"].get("irregular_grid_span_count") == 0, f"mixed 2D merge should not be mislabeled as gridSpan overflow: {audit}")
     detail = " ".join(str(issue.get("detail") or "") for issue in audit["issues"] if issue.get("code") == "COMPLEX_TABLE_UNSUPPORTED")
     assert_true("irregular_hmerges=2" in detail, f"complex table detail did not name mixed 2D hMerge count: {audit}")
+
+
+@case
+def source_audit_counts_visible_mixed_hmerge_continuations_without_content_leakage() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_visible_mixed_hmerge_continuations")
+    image = work / "continuation.png"
+    write_sample_png(image, width=96, height=72)
+    path = work / "visible_mixed_hmerge_continuations.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=4)
+    table.cell(0, 0).text = "Mixed 2D block"
+    table.cell(0, 1).text = "Synthetic duplicate text"
+    table.cell(0, 2).text = "Score"
+    table.cell(0, 3).text = "Note"
+    table.cell(1, 0).text = ""
+    table.cell(1, 1).paragraphs[0].add_run().add_picture(str(image))
+    table.cell(1, 2).text = "1"
+    table.cell(1, 3).text = "Keep"
+    doc.save(path)
+
+    def inject_mixed_gridspan_hmerge_vmerge(xml: str) -> str:
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + W_NS + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(W_NS + "tr")
+        assert_true(len(rows) == 2, "test rows missing")
+
+        def ensure_tc_pr(cell: ET.Element) -> ET.Element:
+            tc_pr = cell.find(W_NS + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(W_NS + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        for row_idx in (0, 1):
+            cells = rows[row_idx].findall(W_NS + "tc")
+            assert_true(len(cells) == 4, "test row cells missing")
+            first_pr = ensure_tc_pr(cells[0])
+            grid_span = first_pr.find(W_NS + "gridSpan")
+            if grid_span is None:
+                grid_span = ET.SubElement(first_pr, W_NS + "gridSpan")
+            grid_span.set(W_NS + "val", "2")
+            hmerge = ET.SubElement(first_pr, W_NS + "hMerge")
+            hmerge.set(W_NS + "val", "restart")
+            vmerge = ET.SubElement(first_pr, W_NS + "vMerge")
+            if row_idx == 0:
+                vmerge.set(W_NS + "val", "restart")
+
+            second_pr = ensure_tc_pr(cells[1])
+            ET.SubElement(second_pr, W_NS + "hMerge")
+            second_vmerge = ET.SubElement(second_pr, W_NS + "vMerge")
+            if row_idx == 0:
+                second_vmerge.set(W_NS + "val", "restart")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(path, "word/document.xml", inject_mixed_gridspan_hmerge_vmerge)
+
+    audit = audit_docx_source(str(path))
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert_true("COMPLEX_TABLE_UNSUPPORTED" in codes, f"visible mixed continuation ambiguity was not reported: {audit}")
+    assert_true(audit["counts"].get("visible_hmerge_continuation_count") == 2, f"visible continuation count missing: {audit}")
+    assert_true(
+        "Synthetic duplicate text" not in str(audit),
+        f"source audit leaked visible duplicate continuation text: {audit}",
+    )
+    detail = " ".join(str(issue.get("detail") or "") for issue in audit["issues"] if issue.get("code") == "COMPLEX_TABLE_UNSUPPORTED")
+    assert_true("visible_hmerge_continuations=2" in detail, f"complex table detail did not name visible continuation count: {audit}")
 
 
 @case
