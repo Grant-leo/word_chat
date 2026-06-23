@@ -215,6 +215,60 @@ def source_audit_counts_legacy_hmerge_as_merged_cells() -> None:
 
 
 @case
+def source_audit_flags_mixed_gridspan_hmerge_as_irregular_table() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_mixed_gridspan_hmerge")
+    path = work / "mixed_gridspan_hmerge.docx"
+    doc = Document()
+    table = doc.add_table(rows=1, cols=4)
+    table.cell(0, 0).text = "Mixed encoded header"
+    table.cell(0, 1).text = ""
+    table.cell(0, 2).text = "Score"
+    table.cell(0, 3).text = "Note"
+    doc.save(path)
+
+    def inject_mixed_gridspan_hmerge(xml: str) -> str:
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + W_NS + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        row = table_el.find(W_NS + "tr")
+        assert_true(row is not None, "test row missing")
+        cells = row.findall(W_NS + "tc")
+        assert_true(len(cells) == 4, "test cells missing")
+
+        def ensure_tc_pr(cell: ET.Element) -> ET.Element:
+            tc_pr = cell.find(W_NS + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(W_NS + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        first_pr = ensure_tc_pr(cells[0])
+        grid_span = first_pr.find(W_NS + "gridSpan")
+        if grid_span is None:
+            grid_span = ET.SubElement(first_pr, W_NS + "gridSpan")
+        grid_span.set(W_NS + "val", "2")
+        hmerge = ET.SubElement(first_pr, W_NS + "hMerge")
+        hmerge.set(W_NS + "val", "restart")
+        ET.SubElement(ensure_tc_pr(cells[1]), W_NS + "hMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(path, "word/document.xml", inject_mixed_gridspan_hmerge)
+
+    audit = audit_docx_source(str(path))
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert_true("TABLE_MERGE_UNSUPPORTED" in codes, f"mixed gridSpan/hMerge should still report merged-table review: {audit}")
+    assert_true("COMPLEX_TABLE_UNSUPPORTED" in codes, f"mixed gridSpan/hMerge ambiguity was not reported: {audit}")
+    assert_true(audit["counts"].get("max_table_columns") == 4, f"mixed gridSpan/hMerge should not double-count table width: {audit}")
+    assert_true(audit["counts"].get("irregular_table_count") == 1, f"irregular table count missing: {audit}")
+    assert_true(audit["counts"].get("irregular_hmerge_count") == 1, f"irregular hMerge count missing: {audit}")
+    assert_true(audit["counts"].get("irregular_grid_span_count") == 0, f"mixed gridSpan/hMerge should not be mislabeled as gridSpan overflow: {audit}")
+    detail = " ".join(str(issue.get("detail") or "") for issue in audit["issues"] if issue.get("code") == "COMPLEX_TABLE_UNSUPPORTED")
+    assert_true("irregular_hmerges=1" in detail, f"complex table detail did not name irregular hMerge count: {audit}")
+
+
+@case
 def source_audit_allows_four_level_nested_tables_and_flags_deeper_nesting() -> None:
     from content_parser_modules.source_audit import audit_docx_source
 

@@ -212,8 +212,23 @@ def _table_max_columns(table: ET.Element) -> int:
     table_max = 0
     for row in _iter_table_row_elements(table):
         cols = _row_grid_before(row)
+        active_hmerge = False
+        gridspan_backed_remaining = 0
         for cell in _iter_table_cell_elements(row):
-            cols += _table_cell_grid_span(cell)
+            span = _table_cell_grid_span(cell)
+            hmerge_kind = _table_cell_hmerge_kind(cell)
+            if hmerge_kind == "continue" and active_hmerge and gridspan_backed_remaining > 0:
+                gridspan_backed_remaining = max(0, gridspan_backed_remaining - span)
+                continue
+            cols += span
+            if hmerge_kind == "restart":
+                active_hmerge = True
+                gridspan_backed_remaining = max(0, span - 1)
+            elif hmerge_kind == "continue" and active_hmerge:
+                gridspan_backed_remaining = 0
+            else:
+                active_hmerge = False
+                gridspan_backed_remaining = 0
         cols += _row_grid_after(row)
         table_max = max(table_max, cols)
     return table_max
@@ -282,22 +297,56 @@ def _row_hmerge_spans(row: ET.Element) -> Dict[int, int]:
     spans: Dict[int, int] = {}
     active_start: int | None = None
     active_width = 0
+    gridspan_backed_remaining = 0
     col_idx = _row_grid_before(row)
     for cell in _iter_table_cell_elements(row):
         span = _table_cell_grid_span(cell)
         hmerge_kind = _table_cell_hmerge_kind(cell)
+        advance = span
         if hmerge_kind == "restart":
             active_start = col_idx
             active_width = span
+            gridspan_backed_remaining = max(0, span - 1)
             spans[active_start] = active_width
         elif hmerge_kind == "continue" and active_start is not None:
-            active_width += span
-            spans[active_start] = active_width
+            if gridspan_backed_remaining > 0:
+                gridspan_backed_remaining = max(0, gridspan_backed_remaining - span)
+                advance = 0
+            else:
+                active_width += span
+                spans[active_start] = active_width
         else:
             active_start = None
             active_width = 0
-        col_idx += span
+            gridspan_backed_remaining = 0
+        col_idx += advance
     return spans
+
+
+def _row_irregular_hmerge_count(row: ET.Element) -> int:
+    count = 0
+    active_hmerge = False
+    gridspan_backed_remaining = 0
+    flagged_group = False
+    for cell in _iter_table_cell_elements(row):
+        span = _table_cell_grid_span(cell)
+        hmerge_kind = _table_cell_hmerge_kind(cell)
+        if hmerge_kind == "restart":
+            active_hmerge = True
+            gridspan_backed_remaining = max(0, span - 1)
+            flagged_group = False
+        elif hmerge_kind == "continue" and active_hmerge and gridspan_backed_remaining > 0:
+            if not flagged_group:
+                count += 1
+                flagged_group = True
+            gridspan_backed_remaining = max(0, gridspan_backed_remaining - span)
+        elif hmerge_kind == "continue" and active_hmerge:
+            gridspan_backed_remaining = 0
+        else:
+            active_hmerge = False
+            gridspan_backed_remaining = 0
+            flagged_group = False
+    return count
 
 
 def _table_geometry_stats(xml_text: str) -> Dict[str, int]:
@@ -305,6 +354,7 @@ def _table_geometry_stats(xml_text: str) -> Dict[str, int]:
         "irregular_table_count": 0,
         "irregular_vmerge_count": 0,
         "irregular_grid_span_count": 0,
+        "irregular_hmerge_count": 0,
     }
     if not xml_text:
         return empty
@@ -320,15 +370,25 @@ def _table_geometry_stats(xml_text: str) -> Dict[str, int]:
         active_vmerges: Dict[int, Dict[str, int]] = {}
         table_irregular = False
         for row in _iter_table_row_elements(table):
+            irregular_hmerges = _row_irregular_hmerge_count(row)
+            if irregular_hmerges:
+                stats["irregular_hmerge_count"] += irregular_hmerges
+                table_irregular = True
             row_hmerge_spans = _row_hmerge_spans(row)
             col_idx = _row_grid_before(row)
             next_active: Dict[int, Dict[str, int]] = {}
+            active_hmerge = False
+            gridspan_backed_remaining = 0
             for cell in _iter_table_cell_elements(row):
                 span = _table_cell_grid_span(cell)
+                hmerge_kind = _table_cell_hmerge_kind(cell)
+                vmerge_kind = _table_cell_vmerge_kind(cell)
+                if hmerge_kind == "continue" and active_hmerge and gridspan_backed_remaining > 0 and not vmerge_kind:
+                    gridspan_backed_remaining = max(0, gridspan_backed_remaining - span)
+                    continue
                 if grid_cols and col_idx + span > grid_cols:
                     stats["irregular_grid_span_count"] += 1
                     table_irregular = True
-                vmerge_kind = _table_cell_vmerge_kind(cell)
                 if vmerge_kind == "restart":
                     hmerge_width = row_hmerge_spans.get(col_idx, span)
                     active = {"span": span, "hmerge_width": hmerge_width}
@@ -355,6 +415,14 @@ def _table_geometry_stats(xml_text: str) -> Dict[str, int]:
                     active = {"span": expected_span, "hmerge_width": expected_hmerge_width}
                     for offset in range(span):
                         next_active[col_idx + offset] = active
+                if hmerge_kind == "restart":
+                    active_hmerge = True
+                    gridspan_backed_remaining = max(0, span - 1)
+                elif hmerge_kind == "continue" and active_hmerge:
+                    gridspan_backed_remaining = 0
+                else:
+                    active_hmerge = False
+                    gridspan_backed_remaining = 0
                 col_idx += span
             active_vmerges = next_active
         if table_irregular:
@@ -477,6 +545,7 @@ def audit_docx_source(docx_path: str) -> Dict[str, Any]:
                 "irregular_table_count": geometry_stats["irregular_table_count"],
                 "irregular_vmerge_count": geometry_stats["irregular_vmerge_count"],
                 "irregular_grid_span_count": geometry_stats["irregular_grid_span_count"],
+                "irregular_hmerge_count": geometry_stats["irregular_hmerge_count"],
             }
             counts["merged_cell_count"] = counts["grid_span_count"] + counts["hmerge_count"] + counts["vmerge_count"]
             formats = _media_formats(names)
@@ -521,7 +590,8 @@ def audit_docx_source(docx_path: str) -> Dict[str, Any]:
                     f"landscape_wide_tables={counts['landscape_wide_table_risk_count']}; "
                     f"irregular_tables={counts['irregular_table_count']}; "
                     f"irregular_vmerges={counts['irregular_vmerge_count']}; "
-                    f"irregular_grid_spans={counts['irregular_grid_span_count']}"
+                    f"irregular_grid_spans={counts['irregular_grid_span_count']}; "
+                    f"irregular_hmerges={counts['irregular_hmerge_count']}"
                 )
                 issues.append(_safe_issue("COMPLEX_TABLE_UNSUPPORTED", "warning", detail))
             result["issues"] = issues

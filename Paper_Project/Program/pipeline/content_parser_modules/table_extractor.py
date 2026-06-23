@@ -366,21 +366,29 @@ def _row_hmerge_spans(row_elem: Any, grid_before: int = 0) -> Dict[int, int]:
     spans: Dict[int, int] = {}
     active_start: Optional[int] = None
     active_width = 0
+    gridspan_backed_remaining = 0
     col_idx = grid_before
     for tc in _iter_table_cell_elements(row_elem):
         colspan = _cell_grid_span(tc)
         hmerge_kind = _cell_hmerge_kind(tc)
+        advance = colspan
         if hmerge_kind == "restart":
             active_start = col_idx
             active_width = colspan
+            gridspan_backed_remaining = max(0, colspan - 1)
             spans[active_start] = active_width
         elif hmerge_kind == "continue" and active_start is not None:
-            active_width += colspan
-            spans[active_start] = active_width
+            if gridspan_backed_remaining > 0:
+                gridspan_backed_remaining = max(0, gridspan_backed_remaining - colspan)
+                advance = 0
+            else:
+                active_width += colspan
+                spans[active_start] = active_width
         else:
             active_start = None
             active_width = 0
-        col_idx += colspan
+            gridspan_backed_remaining = 0
+        col_idx += advance
     return spans
 
 
@@ -1092,6 +1100,7 @@ def extract_table_from_ooxml(
         seen_vmerge_cols = set()
         continued_records = set()
         current_hmerge_record: Optional[Dict[str, int]] = None
+        hmerge_gridspan_remaining = 0
         row_heights.append(_row_height_twips(tr))
         header_flags.append(_row_repeats_header(tr))
         for tc in _iter_table_cell_elements(tr):
@@ -1111,7 +1120,32 @@ def extract_table_from_ooxml(
                 and id(vmerge_record) not in continued_records
                 and all(active_vmerges.get(col_idx + offset) is vmerge_record for offset in range(colspan))
             )
-            is_hmerge_continue = hmerge_kind == "continue" and current_hmerge_record is not None
+            is_gridspan_duplicate_hmerge = (
+                hmerge_kind == "continue"
+                and vmerge_kind == ""
+                and current_hmerge_record is not None
+                and hmerge_gridspan_remaining > 0
+            )
+            if is_gridspan_duplicate_hmerge:
+                probe_text, probe_nested_items = _cell_text_and_nested_items_from_ooxml(
+                    tc,
+                    clean_text_func=clean_text_func,
+                    nested_depth=nested_depth,
+                    max_nested_depth=max_nested_depth,
+                    image_rels=image_rels,
+                    image_registry=image_registry,
+                    image_items_func=image_items_func,
+                    image_run_items_func=image_run_items_func,
+                    notes=notes,
+                )
+                if not probe_text and not probe_nested_items:
+                    hmerge_gridspan_remaining = max(0, hmerge_gridspan_remaining - colspan)
+                    continue
+            is_hmerge_continue = (
+                hmerge_kind == "continue"
+                and current_hmerge_record is not None
+                and hmerge_gridspan_remaining <= 0
+            )
             if is_vmerge_continue or is_hmerge_continue:
                 text = ""
                 nested_items = []
@@ -1165,16 +1199,21 @@ def extract_table_from_ooxml(
 
             if hmerge_kind == "restart":
                 current_hmerge_record = {"row": row_idx, "col": col_idx, "rowspan": 1, "colspan": colspan}
+                hmerge_gridspan_remaining = max(0, colspan - 1)
                 merges.append(current_hmerge_record)
             elif is_hmerge_continue:
                 current_hmerge_record["colspan"] = int(current_hmerge_record.get("colspan") or 1) + colspan
+                hmerge_gridspan_remaining = 0
             elif hmerge_kind == "continue":
                 current_hmerge_record = None
+                hmerge_gridspan_remaining = 0
             elif colspan > 1 and vmerge_kind != "restart" and not is_vmerge_continue:
                 merges.append({"row": row_idx, "col": col_idx, "rowspan": 1, "colspan": colspan})
                 current_hmerge_record = None
+                hmerge_gridspan_remaining = 0
             else:
                 current_hmerge_record = None
+                hmerge_gridspan_remaining = 0
 
         if grid_after > 0:
             cells.extend([""] * grid_after)
