@@ -74,6 +74,60 @@ def _cell_hmerge_kind(tc_elem: Any) -> str:
     return (hmerge.get(f"{{{W_NS}}}val") or "continue").lower()
 
 
+def _merge_int(merge: Dict[str, int], key: str, default: int = 1) -> int:
+    try:
+        return max(default, int(merge.get(key) or default))
+    except Exception:
+        return default
+
+
+def _coalesce_legacy_hmerge_vmerge_merges(merges: List[Dict[str, int]]) -> List[Dict[str, int]]:
+    horizontal_by_start: Dict[tuple, tuple] = {}
+    verticals: List[tuple] = []
+    for idx, merge in enumerate(merges):
+        row = _merge_int(merge, "row", 0)
+        col = _merge_int(merge, "col", 0)
+        rowspan = _merge_int(merge, "rowspan", 1)
+        colspan = _merge_int(merge, "colspan", 1)
+        if rowspan == 1 and colspan > 1:
+            horizontal_by_start.setdefault((row, col), (idx, colspan))
+        if rowspan > 1:
+            verticals.append((idx, row, col, rowspan, colspan))
+
+    consumed = set()
+    for idx, row, col, rowspan, colspan in verticals:
+        if idx in consumed:
+            continue
+        start_horizontal = horizontal_by_start.get((row, col))
+        if not start_horizontal:
+            continue
+        _, width = start_horizontal
+        if width <= colspan:
+            continue
+        row_horizontal_indices = []
+        for row_offset in range(rowspan):
+            horizontal = horizontal_by_start.get((row + row_offset, col))
+            if not horizontal or horizontal[1] != width:
+                row_horizontal_indices = []
+                break
+            row_horizontal_indices.append(horizontal[0])
+        if not row_horizontal_indices:
+            continue
+        merge = merges[idx]
+        merge["colspan"] = width
+        consumed.update(row_horizontal_indices)
+        for other_idx, other_row, other_col, other_rowspan, _ in verticals:
+            if (
+                other_idx != idx
+                and other_row == row
+                and other_rowspan == rowspan
+                and col < other_col < col + width
+            ):
+                consumed.add(other_idx)
+
+    return [merge for idx, merge in enumerate(merges) if idx not in consumed]
+
+
 def _row_height_twips(tr_elem: Any) -> Dict[str, Any]:
     tr_pr = tr_elem.find(f"{{{W_NS}}}trPr")
     tr_height = tr_pr.find(f"{{{W_NS}}}trHeight") if tr_pr is not None else None
@@ -1100,6 +1154,7 @@ def extract_table_from_ooxml(
             if col not in seen_vmerge_cols:
                 active_vmerges.pop(col, None)
 
+    merges = _coalesce_legacy_hmerge_vmerge_merges(merges)
     merges = [
         merge
         for merge in merges
