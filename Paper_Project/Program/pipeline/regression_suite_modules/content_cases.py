@@ -1158,6 +1158,92 @@ def content_parser_does_not_double_count_mixed_gridspan_hmerge() -> None:
 
 
 @case
+def content_parser_coalesces_mixed_gridspan_hmerge_vmerge_rectangle() -> None:
+    work = new_workdir("parser_mixed_gridspan_hmerge_vmerge")
+    docx = work / "mixed_gridspan_hmerge_vmerge.docx"
+    doc = Document()
+    table = doc.add_table(rows=3, cols=4)
+    table.cell(0, 0).text = "Mixed 2D block"
+    table.cell(0, 1).text = ""
+    table.cell(0, 2).text = "Score"
+    table.cell(0, 3).text = "Note"
+    table.cell(1, 0).text = ""
+    table.cell(1, 1).text = ""
+    table.cell(1, 2).text = "1"
+    table.cell(1, 3).text = "Keep"
+    table.cell(2, 0).text = "Alpha"
+    table.cell(2, 1).text = "Beta"
+    table.cell(2, 2).text = "2"
+    table.cell(2, 3).text = "Tail"
+    doc.save(docx)
+
+    def inject_mixed_gridspan_hmerge_vmerge(xml: str) -> str:
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + w_ns + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(w_ns + "tr")
+        assert_true(len(rows) == 3, "test rows missing")
+
+        def ensure_tc_pr(cell):
+            tc_pr = cell.find(w_ns + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(w_ns + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        for row_idx in (0, 1):
+            cells = rows[row_idx].findall(w_ns + "tc")
+            assert_true(len(cells) == 4, "test row cells missing")
+            first_pr = ensure_tc_pr(cells[0])
+            grid_span = first_pr.find(w_ns + "gridSpan")
+            if grid_span is None:
+                grid_span = ET.SubElement(first_pr, w_ns + "gridSpan")
+            grid_span.set(w_ns + "val", "2")
+            hmerge = ET.SubElement(first_pr, w_ns + "hMerge")
+            hmerge.set(w_ns + "val", "restart")
+            vmerge = ET.SubElement(first_pr, w_ns + "vMerge")
+            if row_idx == 0:
+                vmerge.set(w_ns + "val", "restart")
+
+            second_pr = ensure_tc_pr(cells[1])
+            ET.SubElement(second_pr, w_ns + "hMerge")
+            second_vmerge = ET.SubElement(second_pr, w_ns + "vMerge")
+            if row_idx == 0:
+                second_vmerge.set(w_ns + "val", "restart")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_mixed_gridspan_hmerge_vmerge)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"mixed gridSpan/hMerge/vMerge table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [
+            ["Mixed 2D block", "", "Score", "Note"],
+            ["", "", "1", "Keep"],
+            ["Alpha", "Beta", "2", "Tail"],
+        ],
+        f"mixed gridSpan/hMerge/vMerge rectangle did not keep a stable visible grid: {table_item}",
+    )
+    assert_true(
+        table_item.get("table_merges") == [{"row": 0, "col": 0, "rowspan": 2, "colspan": 2}],
+        f"mixed gridSpan/hMerge/vMerge rectangle should be one coalesced merge: {table_item}",
+    )
+
+    result = run_generated_case("parser_mixed_gridspan_hmerge_vmerge_generated", content, base_format())
+    assert_true(result["report"]["passed"] is True, f"mixed gridSpan/hMerge/vMerge render should pass QA: {result['report']}")
+    counts = result["manifest"].get("counts") or {}
+    assert_true(
+        counts.get("content_table_merges_rendered") == 1,
+        f"mixed gridSpan/hMerge/vMerge rectangle should render only one merge operation: {counts}",
+    )
+    assert_true("Score" in result["xml"] and "Keep" in result["xml"], "generated DOCX lost cells after mixed 2D merge")
+
+
+@case
 def content_parser_repairs_orphan_vmerge_without_losing_text() -> None:
     work = new_workdir("parser_orphan_vmerge_repair")
     docx = work / "orphan_vmerge.docx"

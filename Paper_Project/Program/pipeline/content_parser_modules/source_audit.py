@@ -383,7 +383,7 @@ def _table_geometry_stats(xml_text: str) -> Dict[str, int]:
                 span = _table_cell_grid_span(cell)
                 hmerge_kind = _table_cell_hmerge_kind(cell)
                 vmerge_kind = _table_cell_vmerge_kind(cell)
-                if hmerge_kind == "continue" and active_hmerge and gridspan_backed_remaining > 0 and not vmerge_kind:
+                if hmerge_kind == "continue" and active_hmerge and gridspan_backed_remaining > 0:
                     gridspan_backed_remaining = max(0, gridspan_backed_remaining - span)
                     continue
                 if grid_cols and col_idx + span > grid_cols:

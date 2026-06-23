@@ -102,7 +102,7 @@ def _coalesce_legacy_hmerge_vmerge_merges(merges: List[Dict[str, int]]) -> List[
         if not start_horizontal:
             continue
         _, width = start_horizontal
-        if width <= colspan:
+        if width < colspan:
             continue
         row_horizontal_indices = []
         for row_offset in range(rowspan):
@@ -114,7 +114,8 @@ def _coalesce_legacy_hmerge_vmerge_merges(merges: List[Dict[str, int]]) -> List[
         if not row_horizontal_indices:
             continue
         merge = merges[idx]
-        merge["colspan"] = width
+        if width > colspan:
+            merge["colspan"] = width
         consumed.update(row_horizontal_indices)
         for other_idx, other_row, other_col, other_rowspan, _ in verticals:
             if (
@@ -1122,7 +1123,6 @@ def extract_table_from_ooxml(
             )
             is_gridspan_duplicate_hmerge = (
                 hmerge_kind == "continue"
-                and vmerge_kind == ""
                 and current_hmerge_record is not None
                 and hmerge_gridspan_remaining > 0
             )
