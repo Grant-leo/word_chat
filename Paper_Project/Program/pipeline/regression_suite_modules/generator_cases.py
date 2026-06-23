@@ -1002,6 +1002,54 @@ def script_generator_groups_adjacent_landscape_tables_with_rich_bridge_notes() -
 
 
 @case
+def script_generator_does_not_group_landscape_tables_with_different_page_setups() -> None:
+    first_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    second_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 16840,
+        "page_height_twips": 11900,
+        "margins_twips": {"left": 900, "right": 900, "top": 1200, "bottom": 1200},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 First source-section table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"First setup header {idx}" for idx in range(1, 10)],
+                    [f"First setup body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": first_setup,
+            },
+            "Short note between source sections should not force incompatible page setups together.",
+            {"role": "table_caption", "text": "表 2 Second source-section table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Second setup header {idx}" for idx in range(1, 10)],
+                    [f"Second setup body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1300] * 9,
+                "source_section_page_setup": second_setup,
+            },
+            "Portrait body after different source-section tables.",
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("different_landscape_page_setups", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "landscape tables with different source page setups should keep separate landscape sections",
+    )
+
+
+@case
 def script_generator_renders_table_border_details() -> None:
     content = base_content(
         [

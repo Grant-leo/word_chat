@@ -73,6 +73,33 @@ def is_landscape_table_item(item):
     return is_table_item(item) and bool(table_render_section_page_setup(item))
 
 
+def landscape_table_section_signature(item):
+    setup = table_render_section_page_setup(item)
+    if not setup:
+        return ()
+    margins = setup.get('margins_twips') or {}
+    if not isinstance(margins, dict):
+        margins = {}
+    return (
+        str(setup.get('orientation') or '').strip().lower(),
+        safe_positive_int(setup.get('page_width_twips')),
+        safe_positive_int(setup.get('page_height_twips')),
+        safe_positive_int(margins.get('left')),
+        safe_positive_int(margins.get('right')),
+        safe_positive_int(margins.get('top')),
+        safe_positive_int(margins.get('bottom')),
+        safe_positive_int(margins.get('header')),
+        safe_positive_int(margins.get('footer')),
+        safe_positive_int(margins.get('gutter')),
+    )
+
+
+def landscape_table_section_compatible(first_item, next_item):
+    first_sig = landscape_table_section_signature(first_item)
+    next_sig = landscape_table_section_signature(next_item)
+    return bool(first_sig and next_sig and first_sig == next_sig)
+
+
 def table_group_at(paragraphs, idx):
     if idx >= len(paragraphs):
         return None
@@ -108,7 +135,7 @@ def landscape_table_bridge_text(item):
     return text
 
 
-def landscape_table_bridge_run_at(paragraphs, idx):
+def landscape_table_bridge_run_at(paragraphs, idx, anchor_table_item=None):
     bridge_items = []
     total_len = 0
     pos = idx
@@ -124,7 +151,12 @@ def landscape_table_bridge_run_at(paragraphs, idx):
             return None
         bridge_items.append(bridge)
         pos += 1
-        if table_group_at(paragraphs, pos):
+        next_group = table_group_at(paragraphs, pos)
+        if next_group:
+            if anchor_table_item is not None and not landscape_table_section_compatible(
+                anchor_table_item, next_group.get('table_item') or {}
+            ):
+                return None
             return {'items': bridge_items, 'next_idx': pos}
     return None
 
@@ -147,7 +179,11 @@ def render_landscape_table_group(paragraphs, idx, current_chapter):
                 add_caption(next_table_caption(title_text, current_chapter), 'table_caption')
             render_table_from_item(group.get('table_item') or {})
             idx = group.get('next_idx') or (idx + 1)
-            bridge_run = landscape_table_bridge_run_at(paragraphs, idx)
+            bridge_run = landscape_table_bridge_run_at(
+                paragraphs,
+                idx,
+                anchor_table_item=group.get('table_item') or {},
+            )
             if bridge_run:
                 for bridge in bridge_run.get('items') or []:
                     render_paragraph_item(bridge, code_sensitive=False, chapter=current_chapter)
