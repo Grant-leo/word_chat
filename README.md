@@ -183,7 +183,7 @@ build_generated.py ─────────→ 最终论文.docx
 
 截至 2026-06-23：
 
-- 合成回归：`347 passed, 0 failed`
+- 合成回归：`348 passed, 0 failed`
 - DOCX 表格/嵌套表注释边界：四层嵌套表单元格会保持同段文字、图片、LaTeX、OMML 和脚注的源顺序；表格单元格中“图片后只有脚注锚点、没有可见文字”的情况也会在图片后原位渲染为 Word 原生脚注引用；表格单元格里的 block-level、inline 和嵌套 inline 内容控件文字会原位进入该单元格，内容控件内 `w:fldSimple` 的可见字段结果、`w:customXml` / `w:smartTag` 透明容器里的显示值也会按源顺序保留，内容控件内 hyperlink 包住图片、LaTeX、OMML 和脚注时也会保留原顺序，并在正文级内容控件兜底恢复时去重，避免重复正文；表格外正文级内容控件即使与表格单元格文本部分重叠或完全相同，也不会被误判为表格重复项；正文级 `w:sdtContent` 同时包住段落和表格时也会原位展开，元数据只统计正文段落，表格单元格文本不会被当成散落正文；正文级内容控件段落里的 inline `w:sdt` / `w:fldSimple` / hyperlink / `w:customXml` / `w:smartTag` 会递归保留图片、OMML/LaTeX 公式和脚注/尾注锚点顺序；带 `w:ins` / `w:moveTo` 的修订插入内容会按 Word 最终视图进入正文、表格、修订包裹的整行表格/单元格、标题路由和文本框恢复通道，`w:del` / `w:moveFrom` 删除内容与批注正文不会混入最终论文。
 - DOCX 正文透明容器边界：正文级 `w:customXml` / `w:smartTag` 包住段落和表格时，内容会原位进入正文流，后续普通段落不会被包装节点造成的索引差异替换或丢失。
 - 自动修复闭环回归：可修复 QA error、连续无改善停止、重建失败停止、needs_user_file 停止、strict/visual QA 依赖缺失、visual 参数保持、报告路径脱敏、停止后 `agent_summary` 汇总下一步均已覆盖
@@ -197,6 +197,7 @@ build_generated.py ─────────→ 最终论文.docx
 - DOCX 旧式 hMerge + vMerge 矩形合并：兼容旧式横向合并和纵向合并组合成 2D 合并块时，内容解析会归一成一个矩形 `table_merges`，避免生成端重复执行多条重叠 merge。
 - DOCX 非矩形旧式 hMerge + vMerge 冲突：如果旧式横向合并和纵向合并不是同宽矩形，引擎会 fail-open 保留 continuation 可见文本，只保留安全横向合并，并由源审计标记 `COMPLEX_TABLE_UNSUPPORTED` 复核。
 - DOCX 混合 gridSpan + hMerge 重复编码：兼容转换工具同时写入现代 `gridSpan` 和旧式 `hMerge` 的表格，解析端不会把同一横向合并双计为更宽合并；当同一个 2D 合并块还叠加 `vMerge` 时，也会跳过空的重复 continuation 单元格并折叠成一个矩形 `table_merges`。如果重复 continuation 单元格里有可见文本、图片或嵌套内容，引擎会 fail-open 保留为可见单元格，不会当合并占位清空；源审计会用 `irregular_hmerge_count` 和 `visible_hmerge_continuation_count` 暴露复核提示，但不把这种兼容冗余误报为 `gridSpan` 越界。
+- DOCX 复杂表格小白指引：当 `COMPLEX_TABLE_UNSUPPORTED` 的 detail 出现 `visible_hmerge_continuations=N` 时，`qa_report` / `qa_repair_plan` 的下一步会明确提示用 Word/WPS 对照原文和最终 DOCX，重点核对这些带可见内容的旧式合并延续单元格没有被吞掉、挪位或重复。
 - 模板说明清理：DOCX 模板里的“格式说明”、封面字段说明、源目录样例和 TOC 页码样例不会再进入最终论文；本地脱敏真实样例已通过 developer visual 端到端验证，结构 QA、strict conformance、visual QA 均为 `0` error / `0` warning。
 - 后置章节等价：结构 QA 现在把 `Acknowledgements` / `Acknowledgment` / `致谢`、`References` / `参考文献`、`Appendix` / `附录` 这类语义等价标题视为已覆盖，避免让用户为中英文模板标题差异处理误报的 `CONTENT_HEADING_MISSING`。
 - QA JSON 契约：结构 `qa_report.json`、strict `conformance_report.json`、visual `visual_report.json` 都显式写入 `status`（`passed` / `passed_with_warnings` / `failed`）和 `result_label`（例如 `通过但有警告`）；依赖缺失、QA 崩溃、构建失败、提取验证失败等 fallback 报告也必须写同样字段。流水线会对结构、strict、visual 三类 QA 报告都运行契约检查，包括依赖缺失和 QA 崩溃 fallback 报告，并在终端报告缺失字段或与 `passed` / warning 状态不一致的字段，`agent_summary.json` 的每个报告条目也同步暴露该状态，避免界面或 Agent 只靠 `passed` 猜测。
