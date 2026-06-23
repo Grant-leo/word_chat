@@ -1128,6 +1128,8 @@ def extract_table_from_ooxml(
             )
             duplicate_probe_text: Optional[str] = None
             duplicate_probe_nested_items: Optional[List[Dict[str, Any]]] = None
+            vmerge_probe_text: Optional[str] = None
+            vmerge_probe_nested_items: Optional[List[Dict[str, Any]]] = None
             if is_gridspan_duplicate_hmerge:
                 duplicate_probe_text, duplicate_probe_nested_items = _cell_text_and_nested_items_from_ooxml(
                     tc,
@@ -1144,6 +1146,20 @@ def extract_table_from_ooxml(
                     hmerge_gridspan_remaining = max(0, hmerge_gridspan_remaining - colspan)
                     continue
                 is_vmerge_continue = False
+            if is_vmerge_continue:
+                vmerge_probe_text, vmerge_probe_nested_items = _cell_text_and_nested_items_from_ooxml(
+                    tc,
+                    clean_text_func=clean_text_func,
+                    nested_depth=nested_depth,
+                    max_nested_depth=max_nested_depth,
+                    image_rels=image_rels,
+                    image_registry=image_registry,
+                    image_items_func=image_items_func,
+                    image_run_items_func=image_run_items_func,
+                    notes=notes,
+                )
+                if vmerge_probe_nested_items:
+                    is_vmerge_continue = False
             is_hmerge_continue = (
                 hmerge_kind == "continue"
                 and current_hmerge_record is not None
@@ -1155,6 +1171,9 @@ def extract_table_from_ooxml(
             elif duplicate_probe_text is not None:
                 text = duplicate_probe_text
                 nested_items = duplicate_probe_nested_items or []
+            elif vmerge_probe_text is not None:
+                text = vmerge_probe_text
+                nested_items = vmerge_probe_nested_items or []
             else:
                 text, nested_items = _cell_text_and_nested_items_from_ooxml(
                     tc,

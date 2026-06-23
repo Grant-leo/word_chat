@@ -1529,6 +1529,93 @@ def content_parser_repairs_mismatched_vmerge_span_without_losing_text() -> None:
 
 
 @case
+def content_parser_preserves_rich_vmerge_continuation_as_visible_cell() -> None:
+    work = new_workdir("parser_rich_vmerge_continuation")
+    img = work / "vmerge_continuation.png"
+    write_sample_png(img, width=128, height=96)
+    docx = work / "rich_vmerge_continuation.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Vertical start"
+    table.cell(0, 1).text = "Top right"
+    para = table.cell(1, 0).paragraphs[0]
+    para.add_run().add_picture(str(img))
+    para.add_run(r"$x=1$")
+    table.cell(1, 1).text = "Bottom right"
+    doc.save(docx)
+
+    def inject_visible_vmerge_continue(xml: str) -> str:
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + w_ns + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(w_ns + "tr")
+        assert_true(len(rows) == 2, "test rows missing")
+        first_row_cells = rows[0].findall(w_ns + "tc")
+        second_row_cells = rows[1].findall(w_ns + "tc")
+        assert_true(len(first_row_cells) == 2 and len(second_row_cells) == 2, "test row cells missing")
+
+        def ensure_tc_pr(cell):
+            tc_pr = cell.find(w_ns + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(w_ns + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        restart = ET.SubElement(ensure_tc_pr(first_row_cells[0]), w_ns + "vMerge")
+        restart.set(w_ns + "val", "restart")
+        ET.SubElement(ensure_tc_pr(second_row_cells[0]), w_ns + "vMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_visible_vmerge_continue)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"rich vMerge-continuation table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [
+            ["Vertical start", "Top right"],
+            [r"$x=1$", "Bottom right"],
+        ],
+        f"rich vMerge continuation should fail open as a visible cell: {table_item}",
+    )
+    assert_true(
+        not any(int(merge.get("rowspan") or 1) > 1 for merge in table_item.get("table_merges") or []),
+        f"visible rich vMerge continuation should not be hidden behind a vertical merge: {table_item}",
+    )
+    cell_items = table_item.get("table_cell_items") or []
+    image_item = next(
+        (
+            item
+            for entry in cell_items
+            if entry.get("row") == 1 and entry.get("col") == 0
+            for item in entry.get("items") or []
+            if isinstance(item, dict) and item.get("role") == "image"
+        ),
+        None,
+    )
+    rich_item = next(
+        (
+            item
+            for entry in cell_items
+            if entry.get("row") == 1 and entry.get("col") == 0
+            for item in entry.get("items") or []
+            if isinstance(item, dict) and item.get("role") == "rich_text"
+        ),
+        None,
+    )
+    assert_true(image_item, f"rich vMerge continuation image was not attached to the visible cell: {table_item}")
+    assert_true(rich_item, f"rich vMerge continuation formula was not attached to the visible cell: {table_item}")
+
+    result = run_generated_case("parser_rich_vmerge_continuation_generated", content, base_format())
+    assert_true(result["report"]["passed"] is True, f"rich vMerge continuation render should pass QA: {result['report']}")
+    assert_true(result["manifest"]["counts"].get("content_images_rendered") == 1, f"continuation image was not rendered: {result['manifest']}")
+    assert_true(omath_count(result["xml"]) >= 1, "continuation formula did not render as native Word math")
+
+
+@case
 def content_parser_preserves_grid_before_vmerge_cells() -> None:
     work = new_workdir("parser_grid_before_vmerge")
     docx = work / "grid_before_vmerge.docx"

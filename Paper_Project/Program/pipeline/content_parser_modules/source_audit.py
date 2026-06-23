@@ -293,6 +293,29 @@ def _cell_has_visible_content(cell: ET.Element) -> bool:
     return walk(cell)
 
 
+def _cell_has_rich_visible_content(cell: ET.Element) -> bool:
+    visible_markers = {
+        "drawing",
+        "pict",
+        "object",
+        "tbl",
+        "oMath",
+        "oMathPara",
+        "footnoteReference",
+        "endnoteReference",
+    }
+
+    def walk(elem: ET.Element) -> bool:
+        for child in _iter_final_view_children(elem):
+            if _local_name(child) in visible_markers:
+                return True
+            if walk(child):
+                return True
+        return False
+
+    return walk(cell)
+
+
 def _row_grid_before(row: ET.Element) -> int:
     tr_pr = row.find(W_NS + "trPr")
     if tr_pr is None:
@@ -382,6 +405,7 @@ def _table_geometry_stats(xml_text: str) -> Dict[str, int]:
         "irregular_grid_span_count": 0,
         "irregular_hmerge_count": 0,
         "visible_hmerge_continuation_count": 0,
+        "visible_vmerge_continuation_count": 0,
     }
     if not xml_text:
         return empty
@@ -427,6 +451,9 @@ def _table_geometry_stats(xml_text: str) -> Dict[str, int]:
                 elif vmerge_kind == "continue":
                     expected = active_vmerges.get(col_idx)
                     cell_irregular = False
+                    if _cell_has_rich_visible_content(cell):
+                        stats["visible_vmerge_continuation_count"] += 1
+                        table_irregular = True
                     if expected is None:
                         cell_irregular = True
                         expected_span = span
@@ -577,6 +604,7 @@ def audit_docx_source(docx_path: str) -> Dict[str, Any]:
                 "irregular_grid_span_count": geometry_stats["irregular_grid_span_count"],
                 "irregular_hmerge_count": geometry_stats["irregular_hmerge_count"],
                 "visible_hmerge_continuation_count": geometry_stats["visible_hmerge_continuation_count"],
+                "visible_vmerge_continuation_count": geometry_stats["visible_vmerge_continuation_count"],
             }
             counts["merged_cell_count"] = counts["grid_span_count"] + counts["hmerge_count"] + counts["vmerge_count"]
             formats = _media_formats(names)
@@ -623,7 +651,8 @@ def audit_docx_source(docx_path: str) -> Dict[str, Any]:
                     f"irregular_vmerges={counts['irregular_vmerge_count']}; "
                     f"irregular_grid_spans={counts['irregular_grid_span_count']}; "
                     f"irregular_hmerges={counts['irregular_hmerge_count']}; "
-                    f"visible_hmerge_continuations={counts['visible_hmerge_continuation_count']}"
+                    f"visible_hmerge_continuations={counts['visible_hmerge_continuation_count']}; "
+                    f"visible_vmerge_continuations={counts['visible_vmerge_continuation_count']}"
                 )
                 issues.append(_safe_issue("COMPLEX_TABLE_UNSUPPORTED", "warning", detail))
             result["issues"] = issues

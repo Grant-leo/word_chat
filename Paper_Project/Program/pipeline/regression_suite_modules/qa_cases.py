@@ -553,6 +553,32 @@ def qa_complex_table_warning_guides_visible_hmerge_continuations() -> None:
 
 
 @case
+def qa_complex_table_warning_guides_visible_vmerge_continuations() -> None:
+    work = new_workdir("qa_visible_vmerge_continuation_action")
+    write_json(work / "workflow_mode.json", {"mode": "user"})
+    report = build_report(
+        str(work),
+        "user",
+        {"visible_vmerge_continuation_count": 1},
+        [
+            {
+                "code": "COMPLEX_TABLE_UNSUPPORTED",
+                "severity": "warning",
+                "message": "complex table requires review",
+                "detail": "visible_vmerge_continuations=1",
+            }
+        ],
+    )
+    action = report["next_action"]
+    plan_action = str((report.get("repair_plan") or {}).get("next_action") or "")
+    step_action = str((((report.get("repair_plan") or {}).get("steps") or [{}])[0]).get("user_action") or "")
+    combined = "\n".join([action, plan_action, step_action])
+    assert_true("visible_vmerge_continuations" in combined, f"visible vMerge continuation detail disappeared from guidance: {combined}")
+    assert_true("可见内容" in combined, f"guidance should tell users why the vMerge continuation needs review: {combined}")
+    assert_true("最终 DOCX" in combined and "原文" in combined, f"guidance should tell users what to compare: {combined}")
+
+
+@case
 def qa_json_reports_expose_explicit_status_labels() -> None:
     work = new_workdir("qa_json_status_labels")
     write_json(work / "workflow_mode.json", {"mode": "developer"})

@@ -405,6 +405,59 @@ def source_audit_counts_visible_mixed_hmerge_continuations_without_content_leaka
 
 
 @case
+def source_audit_counts_visible_vmerge_continuations_without_content_leakage() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_visible_vmerge_continuation")
+    image = work / "vmerge_continuation.png"
+    write_sample_png(image, width=96, height=72)
+    path = work / "visible_vmerge_continuation.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Vertical start"
+    table.cell(0, 1).text = "Top right"
+    table.cell(1, 0).text = "Sensitive continuation text"
+    table.cell(1, 0).paragraphs[0].add_run().add_picture(str(image))
+    table.cell(1, 1).text = "Bottom right"
+    doc.save(path)
+
+    def inject_visible_vmerge_continue(xml: str) -> str:
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + W_NS + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(W_NS + "tr")
+        assert_true(len(rows) == 2, "test rows missing")
+
+        def ensure_tc_pr(cell: ET.Element) -> ET.Element:
+            tc_pr = cell.find(W_NS + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(W_NS + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        first_row_cells = rows[0].findall(W_NS + "tc")
+        second_row_cells = rows[1].findall(W_NS + "tc")
+        assert_true(len(first_row_cells) == 2 and len(second_row_cells) == 2, "test row cells missing")
+        restart = ET.SubElement(ensure_tc_pr(first_row_cells[0]), W_NS + "vMerge")
+        restart.set(W_NS + "val", "restart")
+        ET.SubElement(ensure_tc_pr(second_row_cells[0]), W_NS + "vMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(path, "word/document.xml", inject_visible_vmerge_continue)
+
+    audit = audit_docx_source(str(path))
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert_true("COMPLEX_TABLE_UNSUPPORTED" in codes, f"visible vMerge continuation ambiguity was not reported: {audit}")
+    assert_true(audit["counts"].get("visible_vmerge_continuation_count") == 1, f"visible vMerge continuation count missing: {audit}")
+    assert_true(
+        "Sensitive continuation text" not in str(audit),
+        f"source audit leaked visible vMerge continuation text: {audit}",
+    )
+    detail = " ".join(str(issue.get("detail") or "") for issue in audit["issues"] if issue.get("code") == "COMPLEX_TABLE_UNSUPPORTED")
+    assert_true("visible_vmerge_continuations=1" in detail, f"complex table detail did not name visible vMerge continuation count: {audit}")
+
+
+@case
 def source_audit_allows_four_level_nested_tables_and_flags_deeper_nesting() -> None:
     from content_parser_modules.source_audit import audit_docx_source
 

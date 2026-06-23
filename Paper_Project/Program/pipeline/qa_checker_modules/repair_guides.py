@@ -361,7 +361,7 @@ REPAIR_GUIDES = {
     "COMPLEX_TABLE_UNSUPPORTED": {
         "title": "源正文含复杂表格",
         "why": "四层以内嵌套表已经按单元格内结构保留；普通超宽表会在确定需要时自动进入横向页保护列宽；但五层及以上嵌套、孤立纵向合并、跨度异常、极端宽表或横向页面里的复杂宽表仍容易在重建后出现分页效果或异常网格差异。常规边框已经按源表格结构提取并回写，但复杂表格仍需视觉核对。",
-        "user_action": "生成后重点核对这些表格，尤其是 detail 里出现 irregular_tables、irregular_hmerges、visible_hmerge_continuations、wide_tables、landscape_wide_tables 或 nested_depth 大于 4 的情况；visible_hmerge_continuations 表示旧版/兼容表格合并延续单元格里仍有可见内容，需要用 Word/WPS 对照原文和最终 DOCX 检查这些单元格没有被吞掉、挪位或重复。若五层及以上嵌套、异常合并、极端宽表或横向宽表错位，请先运行 visual QA，必要时再把异常表格拆成普通表格或转为清晰图片。",
+        "user_action": "生成后重点核对这些表格，尤其是 detail 里出现 irregular_tables、irregular_hmerges、visible_hmerge_continuations、visible_vmerge_continuations、wide_tables、landscape_wide_tables 或 nested_depth 大于 4 的情况；visible_hmerge_continuations / visible_vmerge_continuations 表示旧版/兼容表格合并延续单元格里仍有可见内容，需要用 Word/WPS 对照原文和最终 DOCX 检查这些单元格没有被吞掉、挪位或重复。若五层及以上嵌套、异常合并、极端宽表或横向宽表错位，请先运行 visual QA，必要时再把异常表格拆成普通表格或转为清晰图片。",
         "developer_action": "增强表格保真：五层及以上嵌套结构、异常合并网格自动修复、极端宽表分页和多 section 横向表格连续排布。",
         "auto_level": "manual_review",
     },
