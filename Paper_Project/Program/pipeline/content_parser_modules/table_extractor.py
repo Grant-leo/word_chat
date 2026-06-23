@@ -1126,8 +1126,10 @@ def extract_table_from_ooxml(
                 and current_hmerge_record is not None
                 and hmerge_gridspan_remaining > 0
             )
+            duplicate_probe_text: Optional[str] = None
+            duplicate_probe_nested_items: Optional[List[Dict[str, Any]]] = None
             if is_gridspan_duplicate_hmerge:
-                probe_text, probe_nested_items = _cell_text_and_nested_items_from_ooxml(
+                duplicate_probe_text, duplicate_probe_nested_items = _cell_text_and_nested_items_from_ooxml(
                     tc,
                     clean_text_func=clean_text_func,
                     nested_depth=nested_depth,
@@ -1138,9 +1140,10 @@ def extract_table_from_ooxml(
                     image_run_items_func=image_run_items_func,
                     notes=notes,
                 )
-                if not probe_text and not probe_nested_items:
+                if not duplicate_probe_text and not duplicate_probe_nested_items:
                     hmerge_gridspan_remaining = max(0, hmerge_gridspan_remaining - colspan)
                     continue
+                is_vmerge_continue = False
             is_hmerge_continue = (
                 hmerge_kind == "continue"
                 and current_hmerge_record is not None
@@ -1149,6 +1152,9 @@ def extract_table_from_ooxml(
             if is_vmerge_continue or is_hmerge_continue:
                 text = ""
                 nested_items = []
+            elif duplicate_probe_text is not None:
+                text = duplicate_probe_text
+                nested_items = duplicate_probe_nested_items or []
             else:
                 text, nested_items = _cell_text_and_nested_items_from_ooxml(
                     tc,

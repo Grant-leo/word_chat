@@ -1244,6 +1244,82 @@ def content_parser_coalesces_mixed_gridspan_hmerge_vmerge_rectangle() -> None:
 
 
 @case
+def content_parser_preserves_visible_mixed_gridspan_hmerge_vmerge_continuation_text() -> None:
+    work = new_workdir("parser_visible_mixed_gridspan_hmerge_vmerge")
+    docx = work / "visible_mixed_gridspan_hmerge_vmerge.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=4)
+    table.cell(0, 0).text = "Mixed 2D block"
+    table.cell(0, 1).text = "Duplicate header should stay"
+    table.cell(0, 2).text = "Score"
+    table.cell(0, 3).text = "Note"
+    table.cell(1, 0).text = ""
+    table.cell(1, 1).text = "Visible continuation should stay"
+    table.cell(1, 2).text = "1"
+    table.cell(1, 3).text = "Keep"
+    doc.save(docx)
+
+    def inject_mixed_gridspan_hmerge_vmerge(xml: str) -> str:
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + w_ns + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(w_ns + "tr")
+        assert_true(len(rows) == 2, "test rows missing")
+
+        def ensure_tc_pr(cell):
+            tc_pr = cell.find(w_ns + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(w_ns + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        for row_idx in (0, 1):
+            cells = rows[row_idx].findall(w_ns + "tc")
+            assert_true(len(cells) == 4, "test row cells missing")
+            first_pr = ensure_tc_pr(cells[0])
+            grid_span = first_pr.find(w_ns + "gridSpan")
+            if grid_span is None:
+                grid_span = ET.SubElement(first_pr, w_ns + "gridSpan")
+            grid_span.set(w_ns + "val", "2")
+            hmerge = ET.SubElement(first_pr, w_ns + "hMerge")
+            hmerge.set(w_ns + "val", "restart")
+            vmerge = ET.SubElement(first_pr, w_ns + "vMerge")
+            if row_idx == 0:
+                vmerge.set(w_ns + "val", "restart")
+
+            second_pr = ensure_tc_pr(cells[1])
+            ET.SubElement(second_pr, w_ns + "hMerge")
+            second_vmerge = ET.SubElement(second_pr, w_ns + "vMerge")
+            if row_idx == 0:
+                second_vmerge.set(w_ns + "val", "restart")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_mixed_gridspan_hmerge_vmerge)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"visible mixed continuation table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [
+            ["Mixed 2D block", "", "Duplicate header should stay", "Score", "Note"],
+            ["", "", "Visible continuation should stay", "1", "Keep"],
+        ],
+        f"visible duplicate continuation text should fail open instead of being cleared: {table_item}",
+    )
+    assert_true(
+        table_item.get("table_merges") == [{"row": 0, "col": 0, "rowspan": 2, "colspan": 2}],
+        f"visible duplicate continuation should not add overlapping merge records: {table_item}",
+    )
+
+    result = run_generated_case("parser_visible_mixed_gridspan_hmerge_vmerge_generated", content, base_format())
+    assert_true(result["report"]["passed"] is True, f"visible mixed continuation render should pass QA: {result['report']}")
+    assert_true("Visible continuation should stay" in result["xml"], "generated DOCX lost visible duplicate continuation text")
+
+
+@case
 def content_parser_repairs_orphan_vmerge_without_losing_text() -> None:
     work = new_workdir("parser_orphan_vmerge_repair")
     docx = work / "orphan_vmerge.docx"
