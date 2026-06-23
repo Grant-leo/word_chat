@@ -288,6 +288,50 @@ def source_audit_flags_landscape_wide_table_risk() -> None:
 
 
 @case
+def source_audit_counts_grid_after_row_omissions_as_columns() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_grid_after_wide_table")
+    path = work / "grid_after_wide_table.docx"
+    doc = Document()
+    table = doc.add_table(rows=1, cols=1)
+    table.cell(0, 0).text = "Visible first cell"
+    doc.save(path)
+
+    def inject_grid_after(xml: str) -> str:
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + W_NS + "tbl")
+        assert_true(table_el is not None, "table missing")
+        old_grid = table_el.find(W_NS + "tblGrid")
+        if old_grid is not None:
+            table_el.remove(old_grid)
+        tbl_grid = ET.Element(W_NS + "tblGrid")
+        for _ in range(9):
+            col = ET.SubElement(tbl_grid, W_NS + "gridCol")
+            col.set(W_NS + "w", "900")
+        table_el.insert(1, tbl_grid)
+        row = table_el.find(W_NS + "tr")
+        assert_true(row is not None, "row missing")
+        tr_pr = row.find(W_NS + "trPr")
+        if tr_pr is None:
+            tr_pr = ET.Element(W_NS + "trPr")
+            row.insert(0, tr_pr)
+        grid_after = ET.SubElement(tr_pr, W_NS + "gridAfter")
+        grid_after.set(W_NS + "val", "8")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(path, "word/document.xml", inject_grid_after)
+
+    audit = audit_docx_source(str(path))
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert_true(audit["counts"].get("max_table_columns") == 9, f"gridAfter columns were not counted: {audit}")
+    assert_true(audit["counts"].get("wide_table_count") == 1, f"gridAfter wide table was not counted: {audit}")
+    assert_true("COMPLEX_TABLE_UNSUPPORTED" in codes, f"gridAfter wide table should require review: {audit}")
+    detail = " ".join(str(issue.get("detail") or "") for issue in audit["issues"] if issue.get("code") == "COMPLEX_TABLE_UNSUPPORTED")
+    assert_true("wide_tables=1" in detail, f"gridAfter wide table detail incomplete: {audit}")
+
+
+@case
 def source_audit_does_not_double_count_nested_wide_tables() -> None:
     from content_parser_modules.source_audit import audit_docx_source
 

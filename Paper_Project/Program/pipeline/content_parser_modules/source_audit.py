@@ -136,6 +136,7 @@ def _table_max_columns(table: ET.Element) -> int:
             if cell.tag != W_NS + "tc":
                 continue
             cols += _table_cell_grid_span(cell)
+        cols += _row_grid_after(row)
         table_max = max(table_max, cols)
     return table_max
 
@@ -172,6 +173,19 @@ def _row_grid_before(row: ET.Element) -> int:
         return 0
     try:
         return max(0, int(grid_before.attrib.get(W_NS + "val", "0")))
+    except Exception:
+        return 0
+
+
+def _row_grid_after(row: ET.Element) -> int:
+    tr_pr = row.find(W_NS + "trPr")
+    if tr_pr is None:
+        return 0
+    grid_after = tr_pr.find(W_NS + "gridAfter")
+    if grid_after is None:
+        return 0
+    try:
+        return max(0, int(grid_after.attrib.get(W_NS + "val", "0")))
     except Exception:
         return 0
 
