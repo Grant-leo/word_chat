@@ -10,6 +10,9 @@ from xml.etree import ElementTree as ET
 
 W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 SUPPORTED_WORD_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff"}
+_TRANSPARENT_CONTENT_CONTAINERS = {"customXml", "smartTag"}
+_ACCEPTED_REVISION_CONTAINERS = {"ins", "moveTo"}
+_DELETED_REVISION_CONTAINERS = {"del", "moveFrom"}
 ISSUE_MESSAGES = {
     "SOURCE_TEXTBOX_UNSUPPORTED": "Source DOCX contains textbox content; visible text is downgraded into the body stream but original floating position needs review.",
     "SOURCE_FOOTNOTE_UNSUPPORTED": "Source DOCX contains footnotes; anchors and visible note text are extracted, but final numbering needs QA/visual review.",
@@ -23,6 +26,47 @@ ISSUE_MESSAGES = {
     "COMPLEX_TABLE_UNSUPPORTED": "Source DOCX contains deeply nested, overwide, or irregular table structures that need manual/visual review.",
     "TABLE_MERGE_UNSUPPORTED": "Source DOCX contains merged table cells; basic gridSpan/vMerge, common table layout details, and explicit borders are preserved, but complex table layout still needs visual review.",
 }
+
+
+def _local_name(elem: ET.Element) -> str:
+    return str(elem.tag).rsplit("}", 1)[-1]
+
+
+def _sdt_content_children(elem: ET.Element) -> List[ET.Element]:
+    content = elem.find(W_NS + "sdtContent") if elem is not None else None
+    return list(content) if content is not None else []
+
+
+def _iter_table_row_elements(container: ET.Element) -> List[ET.Element]:
+    rows: List[ET.Element] = []
+    for child in list(container):
+        local_name = _local_name(child)
+        if local_name == "tr":
+            rows.append(child)
+        elif local_name == "sdt":
+            for nested in _sdt_content_children(child):
+                rows.extend(_iter_table_row_elements(nested))
+        elif local_name in _TRANSPARENT_CONTENT_CONTAINERS or local_name in _ACCEPTED_REVISION_CONTAINERS:
+            rows.extend(_iter_table_row_elements(child))
+        elif local_name in _DELETED_REVISION_CONTAINERS:
+            continue
+    return rows
+
+
+def _iter_table_cell_elements(row: ET.Element) -> List[ET.Element]:
+    cells: List[ET.Element] = []
+    for child in list(row):
+        local_name = _local_name(child)
+        if local_name == "tc":
+            cells.append(child)
+        elif local_name == "sdt":
+            for nested in _sdt_content_children(child):
+                cells.extend(_iter_table_cell_elements(nested))
+        elif local_name in _TRANSPARENT_CONTENT_CONTAINERS or local_name in _ACCEPTED_REVISION_CONTAINERS:
+            cells.extend(_iter_table_cell_elements(child))
+        elif local_name in _DELETED_REVISION_CONTAINERS:
+            continue
+    return cells
 
 
 def _safe_issue(code: str, severity: str, detail: str = "") -> Dict[str, Any]:
@@ -130,11 +174,9 @@ def _wide_table_count(xml_text: str, threshold: int = 8) -> int:
 
 def _table_max_columns(table: ET.Element) -> int:
     table_max = 0
-    for row in table.findall(W_NS + "tr"):
+    for row in _iter_table_row_elements(table):
         cols = _row_grid_before(row)
-        for cell in row:
-            if cell.tag != W_NS + "tc":
-                continue
+        for cell in _iter_table_cell_elements(row):
             cols += _table_cell_grid_span(cell)
         cols += _row_grid_after(row)
         table_max = max(table_max, cols)
@@ -209,10 +251,10 @@ def _table_geometry_stats(xml_text: str) -> Dict[str, int]:
         grid_cols = len(grid.findall(W_NS + "gridCol")) if grid is not None else 0
         active_vmerges: Dict[int, int] = {}
         table_irregular = False
-        for row in table.findall(W_NS + "tr"):
+        for row in _iter_table_row_elements(table):
             col_idx = _row_grid_before(row)
             next_active: Dict[int, int] = {}
-            for cell in row.findall(W_NS + "tc"):
+            for cell in _iter_table_cell_elements(row):
                 span = _table_cell_grid_span(cell)
                 if grid_cols and col_idx + span > grid_cols:
                     stats["irregular_grid_span_count"] += 1

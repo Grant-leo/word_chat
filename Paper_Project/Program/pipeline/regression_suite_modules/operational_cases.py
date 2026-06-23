@@ -332,6 +332,45 @@ def source_audit_counts_grid_after_row_omissions_as_columns() -> None:
 
 
 @case
+def source_audit_counts_revision_wrapped_table_rows_as_visible_width() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_revision_wrapped_wide_table")
+    path = work / "revision_wrapped_wide_table.docx"
+    doc = Document()
+    table = doc.add_table(rows=1, cols=9)
+    for idx, cell in enumerate(table.rows[0].cells):
+        cell.text = f"Wide {idx + 1}"
+    doc.save(path)
+
+    def wrap_row_in_revision(xml: str) -> str:
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + W_NS + "tbl")
+        assert_true(table_el is not None, "table missing")
+        row = table_el.find(W_NS + "tr")
+        assert_true(row is not None, "row missing")
+        row_index = list(table_el).index(row)
+        table_el.remove(row)
+        ins = ET.Element(W_NS + "ins")
+        ins.set(W_NS + "id", "1")
+        ins.set(W_NS + "author", "Regression")
+        ins.append(row)
+        table_el.insert(row_index, ins)
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(path, "word/document.xml", wrap_row_in_revision)
+
+    audit = audit_docx_source(str(path))
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert_true("TRACKED_CHANGES_PRESENT" in codes, f"revision wrapper should remain visible in audit: {audit}")
+    assert_true(audit["counts"].get("max_table_columns") == 9, f"revision-wrapped row width was not counted: {audit}")
+    assert_true(audit["counts"].get("wide_table_count") == 1, f"revision-wrapped wide row was not counted: {audit}")
+    assert_true("COMPLEX_TABLE_UNSUPPORTED" in codes, f"revision-wrapped wide table should require review: {audit}")
+    detail = " ".join(str(issue.get("detail") or "") for issue in audit["issues"] if issue.get("code") == "COMPLEX_TABLE_UNSUPPORTED")
+    assert_true("wide_tables=1" in detail, f"revision-wrapped wide table detail incomplete: {audit}")
+
+
+@case
 def source_audit_does_not_double_count_nested_wide_tables() -> None:
     from content_parser_modules.source_audit import audit_docx_source
 
