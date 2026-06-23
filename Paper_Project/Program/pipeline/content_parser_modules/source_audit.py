@@ -37,35 +37,48 @@ def _sdt_content_children(elem: ET.Element) -> List[ET.Element]:
     return list(content) if content is not None else []
 
 
+def _iter_final_view_children(elem: ET.Element) -> Iterable[ET.Element]:
+    for child in list(elem):
+        local_name = _local_name(child)
+        if local_name == "sdt":
+            for nested in _sdt_content_children(child):
+                yield from _iter_final_view_children(nested)
+        elif local_name in _TRANSPARENT_CONTENT_CONTAINERS or local_name in _ACCEPTED_REVISION_CONTAINERS:
+            yield from _iter_final_view_children(child)
+        elif local_name in _DELETED_REVISION_CONTAINERS:
+            continue
+        else:
+            yield child
+
+
+def _iter_visible_table_elements(container: ET.Element) -> List[ET.Element]:
+    tables: List[ET.Element] = []
+
+    def walk(elem: ET.Element) -> None:
+        if elem.tag == W_NS + "tbl":
+            tables.append(elem)
+        for child in _iter_final_view_children(elem):
+            walk(child)
+
+    walk(container)
+    return tables
+
+
 def _iter_table_row_elements(container: ET.Element) -> List[ET.Element]:
     rows: List[ET.Element] = []
-    for child in list(container):
+    for child in _iter_final_view_children(container):
         local_name = _local_name(child)
         if local_name == "tr":
             rows.append(child)
-        elif local_name == "sdt":
-            for nested in _sdt_content_children(child):
-                rows.extend(_iter_table_row_elements(nested))
-        elif local_name in _TRANSPARENT_CONTENT_CONTAINERS or local_name in _ACCEPTED_REVISION_CONTAINERS:
-            rows.extend(_iter_table_row_elements(child))
-        elif local_name in _DELETED_REVISION_CONTAINERS:
-            continue
     return rows
 
 
 def _iter_table_cell_elements(row: ET.Element) -> List[ET.Element]:
     cells: List[ET.Element] = []
-    for child in list(row):
+    for child in _iter_final_view_children(row):
         local_name = _local_name(child)
         if local_name == "tc":
             cells.append(child)
-        elif local_name == "sdt":
-            for nested in _sdt_content_children(child):
-                cells.extend(_iter_table_cell_elements(nested))
-        elif local_name in _TRANSPARENT_CONTENT_CONTAINERS or local_name in _ACCEPTED_REVISION_CONTAINERS:
-            cells.extend(_iter_table_cell_elements(child))
-        elif local_name in _DELETED_REVISION_CONTAINERS:
-            continue
     return cells
 
 
@@ -130,7 +143,7 @@ def _nested_table_stats(xml_text: str) -> Dict[str, int]:
     def walk(elem: ET.Element, table_depth: int = 0) -> Dict[str, int]:
         nested_count = 0
         max_depth = 0
-        for child in list(elem):
+        for child in _iter_final_view_children(elem):
             if child.tag == W_NS + "tbl":
                 if table_depth >= 1:
                     nested_count += 1
@@ -153,7 +166,7 @@ def _max_table_columns(xml_text: str) -> int:
     except Exception:
         return 0
     max_cols = 0
-    for table in root.iter(W_NS + "tbl"):
+    for table in _iter_visible_table_elements(root):
         max_cols = max(max_cols, _table_max_columns(table))
     return max_cols
 
@@ -166,10 +179,31 @@ def _wide_table_count(xml_text: str, threshold: int = 8) -> int:
     except Exception:
         return 0
     wide = 0
-    for table in root.iter(W_NS + "tbl"):
+    for table in _iter_visible_table_elements(root):
         if _table_max_columns(table) > threshold:
             wide += 1
     return wide
+
+
+def _table_structure_stats(xml_text: str) -> Dict[str, int]:
+    empty = {"table_count": 0, "grid_span_count": 0, "vmerge_count": 0}
+    if not xml_text:
+        return empty
+    try:
+        root = ET.fromstring(xml_text.encode("utf-8"))
+    except Exception:
+        return empty
+    stats = dict(empty)
+    tables = _iter_visible_table_elements(root)
+    stats["table_count"] = len(tables)
+    for table in tables:
+        for row in _iter_table_row_elements(table):
+            for cell in _iter_table_cell_elements(row):
+                if _table_cell_grid_span(cell) > 1:
+                    stats["grid_span_count"] += 1
+                if _table_cell_vmerge_kind(cell):
+                    stats["vmerge_count"] += 1
+    return stats
 
 
 def _table_max_columns(table: ET.Element) -> int:
@@ -246,7 +280,7 @@ def _table_geometry_stats(xml_text: str) -> Dict[str, int]:
         return empty
 
     stats = dict(empty)
-    for table in root.iter(W_NS + "tbl"):
+    for table in _iter_visible_table_elements(root):
         grid = table.find(W_NS + "tblGrid")
         grid_cols = len(grid.findall(W_NS + "gridCol")) if grid is not None else 0
         active_vmerges: Dict[int, int] = {}
@@ -301,7 +335,7 @@ def _wide_tables_in_elements(elements: Iterable[ET.Element], threshold: int = 8)
     wide = 0
     seen: set[int] = set()
     for elem in elements:
-        for table in elem.iter(W_NS + "tbl"):
+        for table in _iter_visible_table_elements(elem):
             table_id = id(table)
             if table_id in seen:
                 continue
@@ -369,6 +403,7 @@ def audit_docx_source(docx_path: str) -> Dict[str, Any]:
 
             nested_stats = _nested_table_stats(document_xml)
             geometry_stats = _table_geometry_stats(document_xml)
+            table_stats = _table_structure_stats(document_xml)
             wide_table_count = _wide_table_count(document_xml)
             landscape_section_count = len(re.findall(r'w:orient=["\']landscape["\']', all_xml))
             counts: Dict[str, Any] = {
@@ -382,9 +417,9 @@ def audit_docx_source(docx_path: str) -> Dict[str, Any]:
                 "landscape_section_count": landscape_section_count,
                 "footnote_count": _count_real_notes(xml_parts.get("word/footnotes.xml", ""), "footnote"),
                 "endnote_count": _count_real_notes(xml_parts.get("word/endnotes.xml", ""), "endnote"),
-                "table_count": len(re.findall(r"<w:tbl\b", document_xml)),
-                "grid_span_count": len(re.findall(r"<w:gridSpan\b", document_xml)),
-                "vmerge_count": len(re.findall(r"<w:vMerge\b", document_xml)),
+                "table_count": table_stats["table_count"],
+                "grid_span_count": table_stats["grid_span_count"],
+                "vmerge_count": table_stats["vmerge_count"],
                 "nested_table_count": nested_stats["nested_table_count"],
                 "nested_table_max_depth": nested_stats["nested_table_max_depth"],
                 "max_table_columns": _max_table_columns(document_xml),

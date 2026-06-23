@@ -371,6 +371,56 @@ def source_audit_counts_revision_wrapped_table_rows_as_visible_width() -> None:
 
 
 @case
+def source_audit_ignores_deleted_revision_tables_for_table_risk() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_deleted_revision_table_risk")
+    path = work / "deleted_revision_table_risk.docx"
+    doc = Document()
+    doc.add_paragraph("Visible body text.")
+    doc.save(path)
+
+    def inject_deleted_wide_table(xml: str) -> str:
+        root = ET.fromstring(xml.encode("utf-8"))
+        body = root.find(W_NS + "body")
+        assert_true(body is not None, "document body missing")
+        table_el = ET.Element(W_NS + "tbl")
+        tbl_grid = ET.SubElement(table_el, W_NS + "tblGrid")
+        for _ in range(9):
+            col = ET.SubElement(tbl_grid, W_NS + "gridCol")
+            col.set(W_NS + "w", "900")
+        row = ET.SubElement(table_el, W_NS + "tr")
+        for idx in range(9):
+            cell = ET.SubElement(row, W_NS + "tc")
+            tc_pr = ET.SubElement(cell, W_NS + "tcPr")
+            tc_w = ET.SubElement(tc_pr, W_NS + "tcW")
+            tc_w.set(W_NS + "type", "dxa")
+            tc_w.set(W_NS + "w", "900")
+            para = ET.SubElement(cell, W_NS + "p")
+            run = ET.SubElement(para, W_NS + "r")
+            text = ET.SubElement(run, W_NS + "t")
+            text.text = f"Deleted {idx + 1}"
+        move_from = ET.Element(W_NS + "moveFrom")
+        move_from.set(W_NS + "id", "1")
+        move_from.set(W_NS + "author", "Regression")
+        move_from.append(table_el)
+        sect_pr = body.find(W_NS + "sectPr")
+        insert_at = list(body).index(sect_pr) if sect_pr is not None else len(list(body))
+        body.insert(insert_at, move_from)
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(path, "word/document.xml", inject_deleted_wide_table)
+
+    audit = audit_docx_source(str(path))
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert_true("TRACKED_CHANGES_PRESENT" in codes, f"deleted revision wrapper should remain visible in audit: {audit}")
+    assert_true(audit["counts"].get("table_count") == 0, f"deleted revision table should not count as a visible table: {audit}")
+    assert_true(audit["counts"].get("max_table_columns") == 0, f"deleted revision table should not affect visible max columns: {audit}")
+    assert_true(audit["counts"].get("wide_table_count") == 0, f"deleted revision table should not count as a visible wide table: {audit}")
+    assert_true("COMPLEX_TABLE_UNSUPPORTED" not in codes, f"deleted revision table created a false complex-table warning: {audit}")
+
+
+@case
 def source_audit_does_not_double_count_nested_wide_tables() -> None:
     from content_parser_modules.source_audit import audit_docx_source
 
