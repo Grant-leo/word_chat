@@ -131,19 +131,62 @@ def _base_pdf_meta(path: Path) -> dict[str, Any]:
     }
 
 
-def _read_pdf_info(path: Path) -> dict[str, Any]:
-    exe = shutil.which("pdfinfo")
-    if not exe:
-        return {"ok": False, "error": "PDFINFO_MISSING", "raw": ""}
+def _tool_candidates(name: str) -> list[str]:
+    first = shutil.which(name)
+    if not first:
+        return []
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add(path: str | None) -> None:
+        if not path:
+            return
+        norm = os.path.normcase(os.path.abspath(path))
+        if norm in seen:
+            return
+        seen.add(norm)
+        candidates.append(path)
+
+    add(first)
+    finder = "where.exe" if os.name == "nt" else "which"
+    args = [finder, name] if os.name == "nt" else [finder, "-a", name]
     try:
-        proc = subprocess.run(
-            [exe, str(path)],
-            capture_output=True,
-            check=False,
-            timeout=20,
-        )
-    except Exception as exc:  # pragma: no cover - platform dependent
-        return {"ok": False, "error": f"PDFINFO_FAILED: {exc}", "raw": ""}
+        proc = subprocess.run(args, capture_output=True, check=False, timeout=10)
+    except Exception:
+        return candidates
+    if proc.returncode == 0:
+        for line in _decode_bytes(proc.stdout).splitlines():
+            add(line.strip())
+    return candidates
+
+
+def _run_tool(name: str, args: list[str], timeout: int) -> tuple[subprocess.CompletedProcess | None, list[str]]:
+    candidates = _tool_candidates(name)
+    if not candidates:
+        return None, []
+    failures: list[str] = []
+    last_result: subprocess.CompletedProcess | None = None
+    for exe in candidates:
+        try:
+            proc = subprocess.run([exe] + args, capture_output=True, check=False, timeout=timeout)
+        except Exception as exc:  # pragma: no cover - platform dependent
+            failures.append((str(exc) or exc.__class__.__name__)[:500])
+            continue
+        if proc.returncode == 0:
+            return proc, failures
+        last_result = proc
+        detail = (_decode_bytes(proc.stderr) or _decode_bytes(proc.stdout)).strip()
+        if detail:
+            failures.append(detail[:500])
+    return last_result, failures
+
+
+def _read_pdf_info(path: Path) -> dict[str, Any]:
+    proc, failures = _run_tool("pdfinfo", [str(path)], timeout=20)
+    if proc is None:
+        if failures:
+            return {"ok": False, "error": "PDFINFO_FAILED: " + " | ".join(failures[-3:]), "raw": ""}
+        return {"ok": False, "error": "PDFINFO_MISSING", "raw": ""}
     raw = _decode_bytes(proc.stdout) + _decode_bytes(proc.stderr)
     if proc.returncode != 0:
         protected_error = _pdf_protection_error("pdfinfo", raw)
@@ -181,18 +224,11 @@ def _page_from_pdfinfo(info: dict[str, Any]) -> dict[str, float] | None:
 
 
 def _pdftotext_layout(path: Path) -> dict[str, Any]:
-    exe = shutil.which("pdftotext")
-    if not exe:
+    proc, failures = _run_tool("pdftotext", ["-layout", "-enc", "UTF-8", str(path), "-"], timeout=30)
+    if proc is None:
+        if failures:
+            return {"ok": False, "error": "PDFTOTEXT_FAILED: " + " | ".join(failures[-3:]), "text": ""}
         return {"ok": False, "error": "PDFTOTEXT_MISSING", "text": ""}
-    try:
-        proc = subprocess.run(
-            [exe, "-layout", "-enc", "UTF-8", str(path), "-"],
-            capture_output=True,
-            check=False,
-            timeout=30,
-        )
-    except Exception as exc:  # pragma: no cover - platform dependent
-        return {"ok": False, "error": f"PDFTOTEXT_FAILED: {exc}", "text": ""}
     text = _decode_bytes(proc.stdout)
     raw_error = text + _decode_bytes(proc.stderr)
     if proc.returncode != 0:
@@ -204,20 +240,20 @@ def _pdftotext_layout(path: Path) -> dict[str, Any]:
 
 
 def _pdftotext_bbox(path: Path) -> dict[str, Any]:
-    exe = shutil.which("pdftotext")
-    if not exe:
+    if not _tool_candidates("pdftotext"):
         return {"ok": False, "error": "PDFTOTEXT_BBOX_MISSING", "words": [], "page": None}
     with tempfile.TemporaryDirectory(prefix="pdf_tpl_") as tmp_dir:
         out_path = Path(tmp_dir) / "bbox.html"
-        try:
-            proc = subprocess.run(
-                [exe, "-bbox-layout", "-enc", "UTF-8", str(path), str(out_path)],
-                capture_output=True,
-                check=False,
-                timeout=30,
-            )
-        except Exception as exc:  # pragma: no cover - platform dependent
-            return {"ok": False, "error": f"PDFTOTEXT_BBOX_FAILED: {exc}", "words": [], "page": None}
+        proc, failures = _run_tool("pdftotext", ["-bbox-layout", "-enc", "UTF-8", str(path), str(out_path)], timeout=30)
+        if proc is None:
+            if failures:
+                return {
+                    "ok": False,
+                    "error": "PDFTOTEXT_BBOX_FAILED: " + " | ".join(failures[-3:]),
+                    "words": [],
+                    "page": None,
+                }
+            return {"ok": False, "error": "PDFTOTEXT_BBOX_MISSING", "words": [], "page": None}
         if proc.returncode != 0 or not out_path.exists():
             raw_error = _decode_bytes(proc.stdout) + _decode_bytes(proc.stderr)
             protected_error = _pdf_protection_error("pdftotext-bbox", raw_error)

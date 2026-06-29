@@ -1022,6 +1022,117 @@ def visual_sample_pages_prioritize_late_risk_content_pages() -> None:
 
 
 @case
+def visual_sample_pages_include_table_continuation_page() -> None:
+    import qa_visual
+
+    pages = [
+        "cover",
+        "contents",
+        "preface",
+        "1. Introduction",
+        "background prose",
+        "method prose",
+        "middle prose",
+        "Table 5 Long Wide Measurements",
+        "Column A Column B Column C row 30 row 31 row 32",
+        "Column A Column B Column C row 60 row 61 row 62",
+        "discussion",
+        "body",
+        "body",
+        "references",
+        "appendix",
+    ]
+    samples = qa_visual._sample_pages(15, pages)
+    assert_true(len(samples) <= 6, f"sample page selection should stay bounded: {samples}")
+    assert_true(8 in samples, f"sample page selection missed the long table start page: {samples}")
+    assert_true(9 in samples, f"sample page selection missed the long table continuation page: {samples}")
+
+
+@case
+def visual_sample_pages_ignore_table_list_for_real_table_pages() -> None:
+    import qa_visual
+
+    pages = [
+        "cover",
+        "contents",
+        "List of Figures Figure 1 Architecture ........ II",
+        "List of Tables Table 5 Long Wide Measurements ........ III",
+        "1. Introduction",
+        "Table 5 Long Wide Measurements LongWideHeader1 LongWideHeader2 LongWideRow001",
+        "LongWideHeader1 LongWideHeader2 LongWideRow030 LongWideRow031",
+        "LongWideHeader1 LongWideHeader2 LongWideRow060 LongWideRow061",
+        "discussion",
+        "body",
+        "body",
+        "body",
+        "references",
+        "appendix",
+        "appendix notes",
+    ]
+    samples = qa_visual._sample_pages(15, pages)
+    assert_true(len(samples) <= 6, f"sample page selection should stay bounded: {samples}")
+    assert_true(6 in samples, f"sample page selection picked table-list page instead of real table start: {samples}")
+    assert_true(7 in samples, f"sample page selection missed real table continuation page: {samples}")
+
+
+@case
+def visual_pdfinfo_skips_broken_path_shim() -> None:
+    from qa_visual_modules import pdf_tools
+
+    work = new_workdir("visual_pdfinfo_path_fallback")
+    bad = work / "bad"
+    good = work / "good"
+    bad.mkdir()
+    good.mkdir()
+    (bad / "pdfinfo.cmd").write_text(
+        "@echo off\r\necho The system cannot find the path specified. 1>&2\r\nexit /b 3\r\n",
+        encoding="utf-8",
+    )
+    (good / "pdfinfo.cmd").write_text(
+        "@echo off\r\necho Pages:          7\r\necho Page size:      595 x 842 pts\r\nexit /b 0\r\n",
+        encoding="utf-8",
+    )
+    old_path = os.environ.get("PATH", "")
+    os.environ["PATH"] = str(bad) + os.pathsep + str(good) + os.pathsep + old_path
+    try:
+        info = pdf_tools._pdfinfo(str(work / "synthetic.pdf"))
+    finally:
+        os.environ["PATH"] = old_path
+    assert_true(info.get("pages") == 7, f"pdfinfo should skip broken shim candidates: {info}")
+    assert_true(info.get("page_width_pt") == 595.0, f"pdfinfo should parse fallback page size: {info}")
+
+
+@case
+def visual_poppler_runner_continues_after_candidate_exception() -> None:
+    import subprocess
+
+    from qa_visual_modules import pdf_tools
+
+    original_candidates = pdf_tools._tool_candidates
+    original_run = pdf_tools._run
+
+    def fake_candidates(_name: str):
+        return ["missing_pdfinfo", "good_pdfinfo"]
+
+    def fake_run(cmd, timeout=120):
+        if cmd[0] == "missing_pdfinfo":
+            raise FileNotFoundError("missing_pdfinfo")
+        return subprocess.CompletedProcess(cmd, 0, stdout="Pages:          3\n", stderr="")
+
+    pdf_tools._tool_candidates = fake_candidates
+    pdf_tools._run = fake_run
+    try:
+        result, exe, failures = pdf_tools._run_tool("pdfinfo", ["synthetic.pdf"], timeout=10)
+    finally:
+        pdf_tools._tool_candidates = original_candidates
+        pdf_tools._run = original_run
+
+    assert_true(result is not None and result.returncode == 0, f"runner should continue after exceptions: {result}")
+    assert_true(exe == "good_pdfinfo", f"runner should use the later good candidate: {exe}")
+    assert_true(failures, "runner should preserve the skipped exception detail for diagnostics")
+
+
+@case
 def visual_qa_fails_closed_without_pdf_tools() -> None:
     import qa_visual
 
