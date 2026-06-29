@@ -208,6 +208,16 @@ def should_keep_table_together(rows):
     return estimated_lines <= 18
 
 
+def should_default_repeat_first_row(rows, ncols=0, nested=False, max_width_twips=None):
+    if nested or not rows or len(rows) <= 12:
+        return False
+    if ncols <= 1:
+        return False
+    if safe_positive_int(max_width_twips):
+        return True
+    return estimate_table_row_lines(rows[0]) <= 3
+
+
 def keep_table_together(table):
     for ri, row in enumerate(table.rows):
         for cell in row.cells:
@@ -1155,7 +1165,12 @@ def render_table(rows, cell_items=None, table_merges=None, table_col_widths_twip
         repeat_header_count = int(table_repeat_header_rows or 0)
     except Exception:
         repeat_header_count = 0
-    if table_repeat_header_rows is None and len(rows):
+    if table_repeat_header_rows is None and should_default_repeat_first_row(
+        rows,
+        ncols=ncols,
+        nested=nested,
+        max_width_twips=max_width_twips,
+    ):
         repeat_header_count = 1
     repeat_header_count = max(0, min(repeat_header_count, len(rows)))
     for ri, row in enumerate(rows):
@@ -1216,7 +1231,7 @@ def render_table(rows, cell_items=None, table_merges=None, table_col_widths_twip
             if not wrote_any:
                 p = cell.paragraphs[0] if cell.paragraphs else cell.add_paragraph()
                 apply_paragraph_profile(p, prof, first_indent_override=0)
-    apply_repeat_header_rows(table, table_repeat_header_rows)
+    apply_repeat_header_rows(table, repeat_header_count)
     apply_row_heights(table, table_row_heights_twips)
     apply_table_merges(table, table_merges)
     if explicit_borders:

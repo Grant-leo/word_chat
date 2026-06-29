@@ -850,6 +850,66 @@ def script_generator_auto_landscapes_plain_wide_tables() -> None:
 
 
 @case
+def script_generator_repeats_first_row_for_auto_landscape_long_wide_tables() -> None:
+    rows = [[f"Long wide header {idx}" for idx in range(1, 10)]]
+    rows.extend([[f"Long wide row {row}-{col}" for col in range(1, 10)] for row in range(1, 34)])
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Long auto landscape table"},
+            {
+                "role": "table",
+                "table_rows": rows,
+                "table_col_widths_twips": [1200] * 9,
+            },
+            "Portrait body after long auto landscape table.",
+        ],
+        meta_tables=1,
+    )
+    result = run_generated_case("auto_landscape_long_wide_table_header", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 1,
+        "long overwide table should still be auto-landscaped",
+    )
+    assert_true(
+        len(re.findall(r"<w:tblHeader\b", result["xml"])) == 1,
+        "long auto-landscaped tables should repeat the first row when crossing pages",
+    )
+    counts = result["manifest"]["counts"]
+    assert_true(
+        counts.get("content_table_repeat_header_rows_rendered") == 1,
+        f"default repeat-header count missing for long auto-landscaped table: {counts}",
+    )
+
+
+@case
+def script_generator_does_not_default_repeat_header_for_short_tables() -> None:
+    content = base_content(
+        [
+            {
+                "role": "table",
+                "table_rows": [["Header A", "Header B"], ["Body A", "Body B"]],
+            },
+            {
+                "role": "table",
+                "table_rows": [["Explicit off A", "Explicit off B"], ["Body A", "Body B"]],
+                "table_repeat_header_rows": 0,
+            },
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("short_tables_no_default_repeat_header", content, base_format())
+    assert_true(
+        "<w:tblHeader" not in result["xml"],
+        "short tables or explicit repeat-header=0 tables should not gain default repeated headers",
+    )
+    counts = result["manifest"]["counts"]
+    assert_true(
+        counts.get("content_table_repeat_header_rows_rendered", 0) == 0,
+        f"short/default-off tables should not increment repeat-header count: {counts}",
+    )
+
+
+@case
 def script_generator_groups_adjacent_landscape_tables_with_short_note() -> None:
     landscape_setup = {
         "orientation": "landscape",
