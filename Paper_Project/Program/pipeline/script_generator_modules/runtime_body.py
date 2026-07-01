@@ -55,6 +55,8 @@ def looks_like_list_bridge_text(text):
         return True
     if re.match(r'^(?:\(?\d{1,3}\)?[.)、]|[A-Za-z][.)])\s+\S', t):
         return True
+    if re.match(r'^(?:\([ivxlcdmIVXLCDM]{1,8}\)|[IVXLCDM]{2,8}[.)、]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[、.)）])\s*\S', t):
+        return True
     if re.match(r'^(?:\[\d{1,3}\]|［\d{1,3}］|【\d{1,3}】|〔\d{1,3}〕)[、.]?\s*\S', t):
         return True
     if re.match(r'^[（(]?\d{1,3}[）)][、.]?\s*\S', t):
