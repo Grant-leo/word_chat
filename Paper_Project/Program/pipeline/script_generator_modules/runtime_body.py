@@ -182,7 +182,7 @@ def landscape_table_bridge_text(item):
         text = clean_text_artifacts(item).strip()
     if not text:
         return ''
-    if looks_like_table_title(text) or is_figure_caption_text(text) or is_table_caption_text(text):
+    if looks_like_numbered_heading_text(text) or looks_like_table_title(text) or is_figure_caption_text(text) or is_table_caption_text(text):
         return ''
     if looks_like_list_bridge_text(text):
         return ''

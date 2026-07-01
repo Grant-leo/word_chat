@@ -17,8 +17,16 @@ def is_code_table_item(item):
     return isinstance(item, dict) and item.get('table_rows') and (item.get('role') == 'code' or rows_look_like_code(item.get('table_rows') or []))
 
 
+def looks_like_numbered_heading_text(text):
+    raw = clean_text_artifacts(text)
+    return bool(re.match(r'^\d+(?:\.\d+)+\s+\S', raw))
+
+
 def looks_like_table_title(text):
-    t = strip_heading_number(clean_text_artifacts(text))
+    raw = clean_text_artifacts(text)
+    if looks_like_numbered_heading_text(raw):
+        return False
+    t = strip_heading_number(raw)
     if not t or len(t) > 50:
         return False
     if re.match(r'^(图|表)\s*\d+', t) or re.match(r'^代码\s*\d+', t):

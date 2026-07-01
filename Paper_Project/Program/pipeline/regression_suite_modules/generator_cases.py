@@ -1161,6 +1161,100 @@ def script_generator_splits_landscape_tables_around_display_math_bridge() -> Non
 
 
 @case
+def script_generator_does_not_promote_landscape_numbered_heading_bridge_to_table_caption() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    heading_bridge = "2.2 Experimental setup"
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Numbered heading first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Numbered heading first header {idx}" for idx in range(1, 10)],
+                    [f"Numbered heading first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            heading_bridge,
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Numbered heading second header {idx}" for idx in range(1, 10)],
+                    [f"Numbered heading second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after numbered heading bridge landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("landscape_tables_numbered_heading_bridge", content, base_format())
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def has_landscape_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") == "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    def has_portrait_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") != "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    all_text = "\n".join(child_text(child) for child in children)
+    assert_true(heading_bridge in all_text, f"numbered heading bridge was not preserved as body text: {all_text}")
+    assert_true(
+        "Experimental setup" not in "".join(text for text in all_text.splitlines() if text.startswith(("表", "Table"))),
+        "numbered heading bridge should not be promoted to a generated table caption",
+    )
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "numbered heading bridge should split adjacent landscape tables into separate landscape sections",
+    )
+
+    table1_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Numbered heading first header 1" in child_text(child)),
+        -1,
+    )
+    heading_idx = next((idx for idx, child in enumerate(children) if heading_bridge in child_text(child)), -1)
+    table2_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Numbered heading second header 1" in child_text(child)),
+        -1,
+    )
+    after_idx = next(
+        (idx for idx, child in enumerate(children) if "Portrait body after numbered heading bridge landscape tables." in child_text(child)),
+        -1,
+    )
+    assert_true(min(table1_idx, heading_idx, table2_idx, after_idx) >= 0, "numbered heading bridge landscape markers missing")
+
+    first_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table1_idx + 1 : heading_idx], start=table1_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    portrait_bridge_section_break = next(
+        (idx for idx, child in enumerate(children[heading_idx + 1 : table2_idx], start=heading_idx + 1) if has_portrait_section(child)),
+        -1,
+    )
+    second_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table2_idx + 1 : after_idx], start=table2_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    assert_true(
+        table1_idx < first_landscape_section_break < heading_idx < portrait_bridge_section_break < table2_idx < second_landscape_section_break < after_idx,
+        "numbered heading bridge should be closed as portrait body between the two landscape table sections",
+    )
+
+
+@case
 def script_generator_groups_adjacent_landscape_tables_with_short_sentence_note() -> None:
     landscape_setup = {
         "orientation": "landscape",
