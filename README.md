@@ -181,9 +181,9 @@ build_generated.py ─────────→ 最终论文.docx
 
 ## 当前验证基线
 
-截至 2026-06-29：
+截至 2026-07-01：
 
-- 合成回归：`360 passed, 0 failed`
+- 合成回归：`361 passed, 0 failed`
 - DOCX 表格/嵌套表注释边界：四层嵌套表单元格会保持同段文字、图片、LaTeX、OMML 和脚注的源顺序；表格单元格中“图片后只有脚注锚点、没有可见文字”的情况也会在图片后原位渲染为 Word 原生脚注引用；表格单元格里的 block-level、inline 和嵌套 inline 内容控件文字会原位进入该单元格，内容控件内 `w:fldSimple` 的可见字段结果、`w:customXml` / `w:smartTag` 透明容器里的显示值也会按源顺序保留，内容控件内 hyperlink 包住图片、LaTeX、OMML 和脚注时也会保留原顺序，并在正文级内容控件兜底恢复时去重，避免重复正文；表格外正文级内容控件即使与表格单元格文本部分重叠或完全相同，也不会被误判为表格重复项；正文级 `w:sdtContent` 同时包住段落和表格时也会原位展开，元数据只统计正文段落，表格单元格文本不会被当成散落正文；正文级内容控件段落里的 inline `w:sdt` / `w:fldSimple` / hyperlink / `w:customXml` / `w:smartTag` 会递归保留图片、OMML/LaTeX 公式和脚注/尾注锚点顺序；带 `w:ins` / `w:moveTo` 的修订插入内容会按 Word 最终视图进入正文、表格、修订包裹的整行表格/单元格、标题路由和文本框恢复通道，`w:del` / `w:moveFrom` 删除内容与批注正文不会混入最终论文。
 - DOCX 正文透明容器边界：正文级 `w:customXml` / `w:smartTag` 包住段落和表格时，内容会原位进入正文流，后续普通段落不会被包装节点造成的索引差异替换或丢失。
 - 自动修复闭环回归：可修复 QA error、连续无改善停止、重建失败停止、needs_user_file 停止、strict/visual QA 依赖缺失、visual 参数保持、报告路径脱敏、停止后 `agent_summary` 汇总下一步均已覆盖
@@ -201,6 +201,7 @@ build_generated.py ─────────→ 最终论文.docx
 - DOCX 复杂表格小白指引：当 `COMPLEX_TABLE_UNSUPPORTED` 的 detail 出现 `visible_hmerge_continuations=N` 或 `visible_vmerge_continuations=N` 时，`qa_report` / `qa_repair_plan` 的下一步会明确提示用 Word/WPS 对照原文和最终 DOCX，重点核对这些带可见内容的合并延续单元格没有被吞掉、挪位或重复。
 - DOCX 横向表格 section 保护：相邻横向宽表只有在源页面设置签名一致时才会通过短说明自动合并进同一个 landscape section；如果纸张尺寸或页边距不同，引擎会保留独立横向 section，避免第二个表套用错误版心。
 - DOCX 横向表格公式桥接保护：相邻横向宽表之间如果出现 display/block 公式（包括富文本段中的显示公式），引擎会结束前一个横向 section，先恢复纵向正文，再为后续宽表单独建立横向 section，避免公式段被静默套进横向页。
+- DOCX 横向表格列表桥接保护：相邻横向宽表之间如果出现 `-` / 编号开头的列表式正文，引擎会结束前一个横向 section，把列表段落放回纵向正文流，再为后续宽表单独建立横向 section，避免正文清单被误当成表格短注释。
 - DOCX 长宽表跨页表头：自动横向保护的长宽表会默认给第一行写入 Word `tblHeader`，跨页时表头可重复；短小表格和显式 `table_repeat_header_rows=0` 不会被误加重复表头。
 - visual QA 长表样张覆盖：图表清单、目录和点线页码清单不会被误当成真实图表风险页；长表风险页会额外抽取后一页，便于在 `visual_qa/samples/` 中核对跨页表头和延续页。PDF 模板解析和 visual QA 的 Poppler 工具查找都会跳过 PATH 中损坏或无法执行的 `pdfinfo` / `pdftotext` / `pdftoppm` shim，继续尝试后续可用候选。
 - 模板说明清理：DOCX 模板里的“格式说明”、封面字段说明、源目录样例和 TOC 页码样例不会再进入最终论文；本地脱敏真实样例已通过 developer visual 端到端验证，结构 QA、strict conformance、visual QA 均为 `0` error / `0` warning。

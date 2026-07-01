@@ -47,6 +47,17 @@ def paragraph_item_has_display_math(item):
     return False
 
 
+def looks_like_list_bridge_text(text):
+    t = clean_text_artifacts(text).strip()
+    if not t:
+        return False
+    if re.match(r'^(?:[-*+]|\u2022|\u00b7|\u25e6|\u2023)\s+\S', t):
+        return True
+    if re.match(r'^(?:\(?\d{1,3}\)?[.)、]|[A-Za-z][.)])\s+\S', t):
+        return True
+    return False
+
+
 def render_paragraph_item(item, code_sensitive=False, chapter=None):
     if isinstance(item, dict) and item.get('role') == 'rich_text':
         add_rich_text_runs(item, role='body', first_indent=True)
@@ -162,6 +173,8 @@ def landscape_table_bridge_text(item):
     if not text:
         return ''
     if looks_like_table_title(text) or is_figure_caption_text(text) or is_table_caption_text(text):
+        return ''
+    if looks_like_list_bridge_text(text):
         return ''
     if looks_like_code_line(text):
         return ''
