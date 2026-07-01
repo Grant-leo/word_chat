@@ -1339,6 +1339,95 @@ def script_generator_splits_landscape_tables_around_chinese_numbered_bridge() ->
 
 
 @case
+def script_generator_splits_landscape_tables_around_bracketed_number_bridge() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    bracketed_bridge = "[1] This numbered body item belongs to the portrait flow between two wide tables."
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Bracketed list bridge first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Bracketed list first header {idx}" for idx in range(1, 10)],
+                    [f"Bracketed list first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            bracketed_bridge,
+            {"role": "table_caption", "text": "表 2 Bracketed list bridge second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Bracketed list second header {idx}" for idx in range(1, 10)],
+                    [f"Bracketed list second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after bracketed numbered bridge landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("landscape_tables_bracketed_number_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "bracketed-number bridge content should split adjacent landscape tables into separate landscape sections",
+    )
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def has_landscape_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") == "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    def has_portrait_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") != "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    table1_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Bracketed list first header 1" in child_text(child)),
+        -1,
+    )
+    bridge_idx = next((idx for idx, child in enumerate(children) if "numbered body item belongs to the portrait flow" in child_text(child)), -1)
+    table2_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Bracketed list second header 1" in child_text(child)),
+        -1,
+    )
+    after_idx = next(
+        (idx for idx, child in enumerate(children) if "Portrait body after bracketed numbered bridge landscape tables." in child_text(child)),
+        -1,
+    )
+    assert_true(min(table1_idx, bridge_idx, table2_idx, after_idx) >= 0, "bracketed numbered bridge landscape markers missing")
+
+    first_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table1_idx + 1 : bridge_idx], start=table1_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    portrait_bridge_section_break = next(
+        (idx for idx, child in enumerate(children[bridge_idx + 1 : table2_idx], start=bridge_idx + 1) if has_portrait_section(child)),
+        -1,
+    )
+    second_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table2_idx + 1 : after_idx], start=table2_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    assert_true(
+        table1_idx < first_landscape_section_break < bridge_idx < portrait_bridge_section_break < table2_idx < second_landscape_section_break < after_idx,
+        "bracketed-number bridge content should be closed as a portrait section between the two landscape table sections",
+    )
+
+
+@case
 def script_generator_does_not_group_landscape_tables_with_different_page_setups() -> None:
     first_setup = {
         "orientation": "landscape",
