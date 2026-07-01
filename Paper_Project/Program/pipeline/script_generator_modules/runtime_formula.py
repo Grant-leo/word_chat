@@ -54,6 +54,40 @@ def append_inline_formula(p, item):
         return False
 
 
+def _rich_text_image_items(run):
+    if not isinstance(run, dict):
+        return []
+    items = []
+    for item in run.get('items') or []:
+        if isinstance(item, dict):
+            items.extend(_rich_text_image_items(item))
+    kind = str(run.get('type') or '').strip()
+    role = str(run.get('role') or '').strip()
+    if (kind in ('image', 'figure') or role in ('image', 'figure') or run.get('image') or run.get('filename') or run.get('asset')):
+        filename = run.get('image') or run.get('filename') or run.get('asset')
+        if filename:
+            items.append(run)
+    return items
+
+
+def append_inline_image_run(p, run):
+    wrote = False
+    for image_item in _rich_text_image_items(run):
+        filename = image_item.get('image') or image_item.get('filename') or image_item.get('asset') or ''
+        path = content_image_path(filename)
+        if not path:
+            continue
+        try:
+            r = p.add_run()
+            width, height = fit_picture_dimensions(path, has_caption=False)
+            r.add_picture(path, width=width, height=height)
+            BUILD_STATS['content_images_rendered'] = BUILD_STATS.get('content_images_rendered', 0) + 1
+            wrote = True
+        except Exception:
+            continue
+    return wrote
+
+
 def add_rich_text_runs(item, role='body', first_indent=True):
     prof = profile(role)
     runs = item.get('runs') or []
@@ -74,6 +108,8 @@ def add_rich_text_runs(item, role='body', first_indent=True):
         if kind == 'math':
             for m in run.get('math') or []:
                 wrote = append_inline_formula(p, m) or wrote
+        elif kind in ('image', 'figure') or run.get('image') or run.get('filename') or run.get('asset') or _rich_text_image_items(run):
+            wrote = append_inline_image_run(p, run) or wrote
         elif kind == 'note_ref':
             wrote = append_note_reference(p, run) or wrote
         else:

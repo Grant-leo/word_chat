@@ -5,8 +5,17 @@ BODY_RUNTIME = r'''
 def paragraph_item_has_image(item):
     if not isinstance(item, dict):
         return False
-    if item.get('role') in ('image', 'figure') or item.get('image'):
+    role = str(item.get('role') or '').strip()
+    kind = str(item.get('type') or '').strip()
+    if role in ('image', 'figure') or kind in ('image', 'figure') or item.get('image') or item.get('filename') or item.get('asset'):
         return True
+    for run in item.get('runs') or []:
+        if paragraph_item_has_image(run):
+            return True
+        if isinstance(run, dict):
+            for nested in run.get('items') or []:
+                if paragraph_item_has_image(nested):
+                    return True
     for cell in item.get('table_cell_items') or []:
         for nested in cell.get('items') or []:
             if paragraph_item_has_image(nested):
