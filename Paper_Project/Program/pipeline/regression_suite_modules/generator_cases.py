@@ -1062,6 +1062,105 @@ def script_generator_groups_adjacent_landscape_tables_with_rich_bridge_notes() -
 
 
 @case
+def script_generator_splits_landscape_tables_around_display_math_bridge() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Display bridge first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Display first header {idx}" for idx in range(1, 10)],
+                    [f"Display first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            {
+                "role": "rich_text",
+                "text": "Displayed equation bridge should resume portrait flow.",
+                "runs": [
+                    {"type": "text", "text": "Displayed equation bridge should resume portrait flow: "},
+                    {"type": "math", "text": r"E=mc^2", "math": {"type": "display", "text": r"E=mc^2", "latex": r"E=mc^2"}},
+                ],
+                "math": {"type": "display", "text": r"E=mc^2", "latex": r"E=mc^2"},
+            },
+            {"role": "table_caption", "text": "表 2 Display bridge second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Display second header {idx}" for idx in range(1, 10)],
+                    [f"Display second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after display bridge landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("landscape_tables_display_math_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "display-formula bridge content should split adjacent landscape tables into separate landscape sections",
+    )
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def has_landscape_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") == "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    def has_portrait_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") != "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    table1_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Display first header 1" in child_text(child)),
+        -1,
+    )
+    formula_idx = next(
+        (idx for idx, child in enumerate(children) if "Displayed equation bridge should resume portrait flow" in child_text(child)),
+        -1,
+    )
+    table2_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Display second header 1" in child_text(child)),
+        -1,
+    )
+    after_idx = next(
+        (idx for idx, child in enumerate(children) if "Portrait body after display bridge landscape tables." in child_text(child)),
+        -1,
+    )
+    assert_true(min(table1_idx, formula_idx, table2_idx, after_idx) >= 0, "display-math bridge landscape markers missing")
+
+    first_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table1_idx + 1 : formula_idx], start=table1_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    second_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table2_idx + 1 : after_idx], start=table2_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    portrait_bridge_section_break = next(
+        (idx for idx, child in enumerate(children[formula_idx + 1 : table2_idx], start=formula_idx + 1) if has_portrait_section(child)),
+        -1,
+    )
+    assert_true(
+        table1_idx < first_landscape_section_break < formula_idx < portrait_bridge_section_break < table2_idx < second_landscape_section_break < after_idx,
+        "display-formula bridge should be closed as a portrait section between the two landscape table sections",
+    )
+
+
+@case
 def script_generator_does_not_group_landscape_tables_with_different_page_setups() -> None:
     first_setup = {
         "orientation": "landscape",

@@ -14,6 +14,39 @@ def paragraph_item_has_image(item):
     return False
 
 
+def paragraph_item_has_display_math(item):
+    if not isinstance(item, dict):
+        return False
+
+    def iter_math_entries(value):
+        if isinstance(value, dict):
+            return [value]
+        if isinstance(value, list):
+            return value
+        return []
+
+    def math_entry_is_display(entry):
+        if not isinstance(entry, dict):
+            return False
+        kind = str(entry.get('type') or '').strip().lower()
+        return kind in ('display', 'block') or bool(entry.get('display') or entry.get('block'))
+
+    for math_entry in iter_math_entries(item.get('math')):
+        if math_entry_is_display(math_entry):
+            return True
+    for run in item.get('runs') or []:
+        if not isinstance(run, dict):
+            continue
+        for math_entry in iter_math_entries(run.get('math')):
+            if math_entry_is_display(math_entry):
+                return True
+    for cell in item.get('table_cell_items') or []:
+        for nested in cell.get('items') or []:
+            if paragraph_item_has_display_math(nested):
+                return True
+    return False
+
+
 def render_paragraph_item(item, code_sensitive=False, chapter=None):
     if isinstance(item, dict) and item.get('role') == 'rich_text':
         add_rich_text_runs(item, role='body', first_indent=True)
@@ -121,7 +154,7 @@ def landscape_table_bridge_text(item):
         role = str(item.get('role') or '').strip()
         if role in ('table_caption', 'figure_caption', 'figure', 'image', 'code', 'formula', 'formula_problem'):
             return ''
-        if paragraph_item_has_image(item) or is_table_item(item) or item.get('code'):
+        if paragraph_item_has_image(item) or paragraph_item_has_display_math(item) or is_table_item(item) or item.get('code'):
             return ''
         text = clean_text_artifacts(item.get('text') or '').strip()
     else:
