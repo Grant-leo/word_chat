@@ -18,8 +18,8 @@ def is_code_table_item(item):
 
 
 def looks_like_numbered_heading_text(text):
-    raw = clean_text_artifacts(text)
-    return bool(re.match(r'^\d+(?:\.\d+)+\s+\S', raw))
+    raw = clean_text_artifacts(text).strip()
+    return bool(re.match(r'^\d+(?:\.\d+)+(?:[.)\u3001\uff0e\u3002]\s*|\s+)\S', raw))
 
 
 def looks_like_table_title(text):

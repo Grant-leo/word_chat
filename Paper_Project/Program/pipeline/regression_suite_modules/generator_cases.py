@@ -1255,6 +1255,63 @@ def script_generator_does_not_promote_landscape_numbered_heading_bridge_to_table
 
 
 @case
+def script_generator_does_not_promote_landscape_trailing_dot_numbered_heading_bridge_to_table_caption() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    heading_bridge = "2.2. Experimental setup"
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Trailing-dot numbered heading first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Trailing-dot first header {idx}" for idx in range(1, 10)],
+                    [f"Trailing-dot first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            heading_bridge,
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Trailing-dot second header {idx}" for idx in range(1, 10)],
+                    [f"Trailing-dot second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after trailing-dot numbered heading bridge landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("landscape_tables_trailing_dot_numbered_heading_bridge", content, base_format())
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    all_text = "\n".join(child_text(child) for child in children)
+    caption_text = "\n".join(text for text in all_text.splitlines() if text.startswith(("表", "Table")))
+    assert_true(heading_bridge in all_text, f"trailing-dot numbered heading bridge was not preserved as body text: {all_text}")
+    assert_true(
+        "Experimental setup" not in caption_text,
+        f"trailing-dot numbered heading bridge should not be promoted to a generated table caption: {caption_text}",
+    )
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "trailing-dot numbered heading bridge should split adjacent landscape tables into separate landscape sections",
+    )
+
+
+@case
 def script_generator_groups_adjacent_landscape_tables_with_short_sentence_note() -> None:
     landscape_setup = {
         "orientation": "landscape",
