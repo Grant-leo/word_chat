@@ -1161,6 +1161,88 @@ def script_generator_splits_landscape_tables_around_display_math_bridge() -> Non
 
 
 @case
+def script_generator_groups_adjacent_landscape_tables_with_short_sentence_note() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Short sentence first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Short sentence first header {idx}" for idx in range(1, 10)],
+                    [f"Short sentence first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Short bridge note.",
+            {"role": "table_caption", "text": "表 2 Short sentence second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Short sentence second header {idx}" for idx in range(1, 10)],
+                    [f"Short sentence second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after short sentence bridge landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("adjacent_landscape_tables_short_sentence_note", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 1,
+        "adjacent landscape tables separated by a short sentence note should share one landscape section",
+    )
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def has_sectpr(child: ET.Element) -> bool:
+        return child.tag == f"{W_NS}sectPr" or child.find(f".//{W_NS}sectPr") is not None
+
+    table1_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Short sentence first header 1" in child_text(child)),
+        -1,
+    )
+    note_idx = next((idx for idx, child in enumerate(children) if "Short bridge note." in child_text(child)), -1)
+    table2_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Short sentence second header 1" in child_text(child)),
+        -1,
+    )
+    after_idx = next(
+        (idx for idx, child in enumerate(children) if "Portrait body after short sentence bridge landscape tables." in child_text(child)),
+        -1,
+    )
+    assert_true(min(table1_idx, note_idx, table2_idx, after_idx) >= 0, "short sentence bridge landscape markers missing")
+    intermediate_section_breaks = [idx for idx, child in enumerate(children[table1_idx + 1 : table2_idx], start=table1_idx + 1) if has_sectpr(child)]
+    landscape_section_break = next(
+        (
+            idx
+            for idx, child in enumerate(children[table2_idx + 1 :], start=table2_idx + 1)
+            if any(page_size.attrib.get(f"{W_NS}orient") == "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+        ),
+        -1,
+    )
+    assert_true(not intermediate_section_breaks, f"short sentence landscape group was split by intermediate section breaks: {intermediate_section_breaks}")
+    assert_true(
+        table1_idx < note_idx < table2_idx < landscape_section_break < after_idx,
+        "short sentence note should stay between adjacent landscape tables before portrait body resumes",
+    )
+
+
+@case
 def script_generator_splits_landscape_tables_around_list_bridge() -> None:
     landscape_setup = {
         "orientation": "landscape",

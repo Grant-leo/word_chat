@@ -23,7 +23,7 @@ def looks_like_table_title(text):
         return False
     if re.match(r'^(图|表)\s*\d+', t) or re.match(r'^代码\s*\d+', t):
         return False
-    if re.search(r'[。！？；;=<>]|如下|所示', t):
+    if re.search(r'[。！？；;=<>]|[.!?]$|如下|所示', t):
         return False
     return True
 
