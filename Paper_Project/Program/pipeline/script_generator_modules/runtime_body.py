@@ -203,7 +203,7 @@ def landscape_table_bridge_run_at(paragraphs, idx, anchor_table_item=None):
         if not text or len(text) > 220:
             return None
         total_len += len(text)
-        if total_len > 360:
+        if total_len > 220:
             return None
         bridge_items.append(bridge)
         pos += 1
