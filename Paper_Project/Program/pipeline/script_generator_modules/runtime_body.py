@@ -158,6 +158,33 @@ def paragraph_item_is_formula_item(item):
     return role == 'formula' or kind in ('formula', 'math') or bool(item.get('latex') or item.get('xml') or item.get('math'))
 
 
+def paragraph_item_has_block_formula_item(item):
+    if not isinstance(item, dict):
+        return False
+
+    def nested_has_formula(nested):
+        return paragraph_item_is_formula_item(nested) or paragraph_item_has_block_formula_item(nested)
+
+    for nested in item.get('items') or []:
+        if nested_has_formula(nested):
+            return True
+    for run in item.get('runs') or []:
+        if not isinstance(run, dict):
+            continue
+        for nested in run.get('items') or []:
+            if nested_has_formula(nested):
+                return True
+        for cell in run.get('table_cell_items') or []:
+            for nested in cell.get('items') or []:
+                if nested_has_formula(nested):
+                    return True
+    for cell in item.get('table_cell_items') or []:
+        for nested in cell.get('items') or []:
+            if nested_has_formula(nested):
+                return True
+    return False
+
+
 def math_entry_requests_display(entry, default_display=True):
     if not isinstance(entry, dict):
         return default_display
@@ -419,7 +446,7 @@ def landscape_table_bridge_text(item):
         role = str(item.get('role') or '').strip()
         if role in ('table_caption', 'figure_caption', 'figure', 'image', 'code', 'formula', 'formula_problem'):
             return ''
-        if paragraph_item_has_image(item) or paragraph_item_has_display_math(item) or paragraph_item_has_table(item) or paragraph_item_has_code(item) or paragraph_item_has_caption(item):
+        if paragraph_item_has_image(item) or paragraph_item_has_display_math(item) or paragraph_item_has_block_formula_item(item) or paragraph_item_has_table(item) or paragraph_item_has_code(item) or paragraph_item_has_caption(item):
             return ''
         text = clean_text_artifacts(item.get('text') or '').strip()
     else:

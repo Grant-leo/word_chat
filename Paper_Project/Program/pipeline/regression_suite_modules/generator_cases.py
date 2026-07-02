@@ -1455,6 +1455,63 @@ def script_generator_splits_landscape_tables_around_rich_item_display_math_bridg
 
 
 @case
+def script_generator_splits_landscape_tables_around_rich_item_legacy_latex_bridge() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Legacy latex bridge first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Legacy latex first header {idx}" for idx in range(1, 10)],
+                    [f"Legacy latex first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            {
+                "role": "rich_text",
+                "text": "Legacy latex item bridge should resume portrait flow.",
+                "items": [
+                    {
+                        "role": "formula",
+                        "source": "latex",
+                        "text": r"PV=nRT",
+                        "latex": r"PV=nRT",
+                        "numbered": False,
+                    }
+                ],
+            },
+            {"role": "table_caption", "text": "表 2 Legacy latex bridge second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Legacy latex second header {idx}" for idx in range(1, 10)],
+                    [f"Legacy latex second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after legacy latex bridge landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("landscape_tables_rich_item_legacy_latex_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "rich_text.items legacy latex formula bridge should split adjacent landscape tables into separate landscape sections",
+    )
+    assert_true("<m:oMath" in result["xml"], "rich_text.items legacy latex bridge should render as native OMML")
+    counts = result["manifest"]["counts"]
+    assert_true(counts.get("content_formulas_rendered", 0) >= 1, f"rich_text.items legacy latex formula not counted: {counts}")
+
+
+@case
 def script_generator_splits_landscape_tables_around_rich_image_bridge() -> None:
     img_src = new_workdir("landscape_rich_image_bridge_src")
     write_sample_png(img_src / "bridge.png", width=180, height=120)
