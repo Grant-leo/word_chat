@@ -23,6 +23,20 @@ def _tool_candidates(name: str) -> List[str]:
             candidates.append(path)
 
     add(shutil.which(name))
+    path_exts = [""]
+    if os.name == "nt" and not os.path.splitext(name)[1]:
+        path_exts.extend(
+            ext.lower()
+            for ext in (os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD").split(os.pathsep)
+            if ext
+        )
+    for folder in (os.environ.get("PATH") or "").split(os.pathsep):
+        if not folder:
+            continue
+        for ext in path_exts:
+            candidate = os.path.join(folder, name + ext)
+            if os.path.isfile(candidate):
+                add(candidate)
     finder = "where.exe" if os.name == "nt" else "which"
     args = [finder, name] if os.name == "nt" else [finder, "-a", name]
     try:

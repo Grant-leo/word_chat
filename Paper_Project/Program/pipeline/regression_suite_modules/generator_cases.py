@@ -67,6 +67,25 @@ def conformance_reference_labels_keep_template_cjk_font() -> None:
 
 
 @case
+def generated_script_preserves_chinese_and_literal_unicode_escape_text() -> None:
+    literal_escape = r"\u4e2d\u6587"
+    content = base_content(
+        [
+            "中文字符保持原样：编码测试，路径 C:\\用户\\资料。",
+            f"字面转义保留：{literal_escape} 不能被二次解码。",
+        ]
+    )
+    result = run_generated_case("generated_unicode_safety", content)
+    xml = result["xml"]
+    build_text = (result["work"] / "build_generated.py").read_text(encoding="utf-8")
+    assert_true("中文字符保持原样" in xml, f"generated DOCX lost Chinese text: {xml[:1000]}")
+    assert_true(literal_escape in xml, f"literal unicode escape text was decoded or dropped: {xml[:1000]}")
+    assert_true("字面转义保留：中文" not in xml, "literal unicode escape text was decoded into Chinese")
+    assert_true("codecs.decode" not in build_text and "unicode_escape" not in build_text,
+                "generated build script should not use unicode-escape string decoding")
+
+
+@case
 def conformance_checks_rich_text_and_duplicate_paragraphs() -> None:
     work = new_workdir("conformance_rich_duplicate_missing")
     content = base_content(

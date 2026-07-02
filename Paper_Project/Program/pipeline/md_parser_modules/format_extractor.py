@@ -6,6 +6,11 @@ import os
 import re
 from typing import Any, Dict, Tuple
 
+try:
+    from md_parser_modules.file_io import read_markdown_text
+except ImportError:  # pragma: no cover - package-style imports
+    from .file_io import read_markdown_text
+
 
 DEFAULT_PAGE = {
     'page_width_cm': 21.0, 'page_height_cm': 29.7,
@@ -156,8 +161,7 @@ def extract_format(md_path: str, output_dir=None) -> Tuple[Dict[str, Any], str]:
     """Extract format information from MD file.
     Returns (format_dict, md_text) — same signature as format_extractor.extract().
     """
-    with open(md_path, 'r', encoding='utf-8') as f:
-        raw = f.read()
+    raw = read_markdown_text(md_path)
 
     yaml_config, body_pos = _parse_yaml_frontmatter(raw)
     fmt_text = None

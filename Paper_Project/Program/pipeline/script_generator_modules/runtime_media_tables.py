@@ -870,6 +870,24 @@ def media_replace_paragraph_index(media):
         return None
 
 
+def media_should_replace_paragraph(media):
+    if not isinstance(media, dict):
+        return False
+    if media.get('role') != 'rich_text' and not media.get('math'):
+        return True
+    if str(media.get('text') or '').strip():
+        return True
+    for run in media.get('runs') or []:
+        if not isinstance(run, dict):
+            continue
+        kind = run.get('type') or ('math' if run.get('math') else 'text')
+        if kind == 'math' and run.get('math'):
+            return True
+        if kind == 'text' and str(run.get('text') or '').strip():
+            return True
+    return False
+
+
 def render_table_cell_rich_text(cell, item, prof, force_new_paragraph=False):
     if not isinstance(item, dict):
         return False
@@ -1216,7 +1234,10 @@ def render_table(rows, cell_items=None, table_merges=None, table_col_widths_twip
             for media in media_by_cell.get((ri, ci), []):
                 replace_idx = media_replace_paragraph_index(media)
                 if replace_idx is not None:
-                    replacement_media.setdefault(replace_idx, []).append(media)
+                    if media_should_replace_paragraph(media):
+                        replacement_media.setdefault(replace_idx, []).append(media)
+                    else:
+                        positioned_media.setdefault(replace_idx, []).append(media)
                     continue
                 idx = media_after_paragraph_index(media)
                 if idx is None:

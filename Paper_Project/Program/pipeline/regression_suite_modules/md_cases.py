@@ -7,6 +7,7 @@ from io import BytesIO
 
 from PIL import Image
 from md_parser import extract_content as extract_md_content
+from md_parser_modules.format_extractor import extract_format as extract_md_format
 
 from regression_suite_modules.generated_docx import run_generated_case
 from regression_suite_modules.harness import (
@@ -39,6 +40,39 @@ def _table_cell_media_items(paragraphs):
         for cell in paragraph.get("table_cell_items") or []:
             items.extend(cell.get("items") or [])
     return items
+
+
+@case
+def md_parser_reads_gb18030_chinese_markdown_without_escape_decode() -> None:
+    work = new_workdir("md_gb18030_chinese")
+    md = work / "gb18030_sample.md"
+    source = "\n".join(
+        [
+            "# 中文编码测试",
+            "",
+            "# 格式说明",
+            "正文：Times New Roman，小四号(12pt)，两端对齐，首行缩进2字符。",
+            "---",
+            "## 第一章 绪论",
+            "正文包含中文字符：硕士论文排版，不应乱码。",
+            "字面转义保留：\\u4e2d\\u6587 不能被二次解码。",
+        ]
+    )
+    md.write_bytes(source.encode("gb18030"))
+
+    content = extract_md_content(str(md), output_dir=str(work))
+    assert_true(content["title_info"]["title_cn"] == "中文编码测试", f"GB18030 title was not decoded safely: {content['title_info']}")
+    paragraphs = [p for sec in content["sections"] for p in sec.get("paragraphs", [])]
+    joined = "\n".join(str(p.get("text") if isinstance(p, dict) else p) for p in paragraphs)
+    assert_true("正文包含中文字符：硕士论文排版，不应乱码。" in joined, f"GB18030 Chinese body text was corrupted: {joined!r}")
+    assert_true("\\u4e2d\\u6587" in joined, f"literal unicode escape text was incorrectly decoded: {joined!r}")
+    assert_true("中文" not in joined.split("字面转义保留：", 1)[1].split("不能被二次解码", 1)[0],
+                f"literal unicode escape became Chinese text: {joined!r}")
+
+    fmt, raw = extract_md_format(str(md))
+    assert_true("格式说明" in raw and "正文：Times New Roman" in raw, f"GB18030 raw markdown was not preserved: {raw!r}")
+    fmt_text = "\n".join(p.get("text", "") for p in fmt.get("paragraphs", []))
+    assert_true("首行缩进2字符" in fmt_text, f"GB18030 format instruction was not extracted: {fmt_text!r}")
 
 
 @case

@@ -49,6 +49,24 @@ def privacy_sanitizes_absolute_paths() -> None:
 
 
 @case
+def production_code_avoids_unicode_escape_string_decoding() -> None:
+    dangerous_tokens = ("codecs.decode", "unicode_escape", "raw_unicode_escape", "escape_decode")
+    offenders = []
+    for path in PIPELINE_DIR.rglob("*.py"):
+        rel = path.relative_to(PIPELINE_DIR).as_posix()
+        if rel.startswith("regression_suite_modules/"):
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        for token in dangerous_tokens:
+            if token in text:
+                offenders.append(f"{rel}: {token}")
+    assert_true(
+        not offenders,
+        "production code must not decode already-Unicode strings with unicode escape codecs: " + ", ".join(offenders),
+    )
+
+
+@case
 def private_corpus_inventory_classifies_realdata_without_content_leakage() -> None:
     from private_corpus_audit import audit_corpus
 

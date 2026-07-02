@@ -2870,6 +2870,111 @@ def content_parser_flattens_too_deep_nested_table_media_formula_and_note() -> No
 
 
 @case
+def content_parser_flattens_too_deep_multicell_endnote_image_caption_order() -> None:
+    work = new_workdir("parser_too_deep_multicell_endnote_image_caption")
+    img = work / "too_deep_caption_image.png"
+    write_sample_png(img, width=128, height=96)
+    docx = work / "too_deep_multicell_endnote_image_caption.docx"
+    doc = Document()
+    doc.add_paragraph("1 Deep multicell note image")
+    outer = doc.add_table(rows=1, cols=1)
+    host = outer.cell(0, 0)
+    host.text = "Level 0 before"
+    for depth in range(1, 8):
+        nested = host.add_table(rows=1, cols=2 if depth == 7 else 1)
+        if depth == 7:
+            nested.cell(0, 0).paragraphs[0].add_run("NOTE_ANCHOR")
+            image_para = nested.cell(0, 1).paragraphs[0]
+            image_para.add_run().add_picture(str(img))
+            nested.cell(0, 1).add_paragraph("Fig. 7 Over-depth image caption")
+        else:
+            host = nested.cell(0, 0)
+            host.text = f"Level {depth} before"
+    doc.save(docx)
+
+    endnote_text = "Over-depth table endnote must stay before the following image."
+
+    def inject_reference(xml: str) -> str:
+        return xml.replace(
+            "<w:r><w:t>NOTE_ANCHOR</w:t></w:r>",
+            '<w:r><w:endnoteReference w:id="12"/></w:r>',
+            1,
+        )
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_reference)
+    with zipfile.ZipFile(docx, "a") as zf:
+        zf.writestr(
+            "word/endnotes.xml",
+            (
+                '<w:endnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                '<w:endnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:endnote>'
+                '<w:endnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:endnote>'
+                f'<w:endnote w:id="12"><w:p><w:r><w:t>{endnote_text}</w:t></w:r></w:p></w:endnote>'
+                "</w:endnotes>"
+            ),
+        )
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"too-deep multicell table should still have one outer table: {items}")
+
+    current = table_items[0]
+    for depth in range(1, 7):
+        current = next(
+            (
+                item
+                for entry in current.get("table_cell_items") or []
+                if entry.get("row") == 0 and entry.get("col") == 0
+                for item in entry.get("items") or []
+                if isinstance(item, dict) and item.get("role") == "table"
+            ),
+            None,
+        )
+        assert_true(current, f"nested table depth {depth} was not attached to its parent cell")
+
+    flattened_cell_items = [
+        item
+        for entry in current.get("table_cell_items") or []
+        if entry.get("row") == 0 and entry.get("col") == 0
+        for item in entry.get("items") or []
+        if isinstance(item, dict)
+    ]
+    note_item = next(
+        (
+            item
+            for item in flattened_cell_items
+            if item.get("role") == "rich_text"
+            and any(run.get("type") == "note_ref" and run.get("note_type") == "endnote" for run in item.get("runs") or [])
+        ),
+        None,
+    )
+    image_item = next((item for item in flattened_cell_items if item.get("role") == "image"), None)
+    assert_true(note_item, f"note-only flattened item missing: {current}")
+    assert_true(image_item, f"image flattened item missing: {current}")
+    assert_true(
+        note_item.get("replace_paragraph_index") == image_item.get("after_paragraph_index"),
+        f"note-only/image flattened index collision not reproduced: {current}",
+    )
+    assert_true(
+        flattened_cell_items.index(note_item) < flattened_cell_items.index(image_item),
+        f"flattened multi-cell source order changed before generation: {flattened_cell_items}",
+    )
+
+    result = run_generated_case("too_deep_multicell_endnote_image_caption_render", content, base_format())
+    xml = result["xml"]
+    assert_true("<w:endnoteReference" in xml, "too-deep multi-cell endnote did not render as native reference")
+    assert_true("<w:drawing>" in xml, f"too-deep multi-cell image did not render: {result['manifest']}")
+    assert_true("Fig. 7 Over-depth image caption" in xml, "too-deep multi-cell image caption was dropped during render")
+    assert_true(
+        xml.find("<w:endnoteReference") < xml.find("<w:drawing>") < xml.find("Fig. 7 Over-depth image caption"),
+        "too-deep multi-cell endnote/image/caption source order changed after flattening",
+    )
+    assert_true(result["manifest"]["counts"].get("endnote_references_rendered") == 1, f"endnote count missing: {result['manifest']}")
+    assert_true(result["report"]["passed"] is True, f"too-deep multi-cell endnote/image/caption render should pass QA: {result['report']}")
+
+
+@case
 def content_parser_preserves_nested_table_cell_inline_image_formula_and_footnote_order() -> None:
     work = new_workdir("parser_nested_table_cell_inline_image_formula_note")
     img = work / "nested_inline_image.png"

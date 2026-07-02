@@ -20,6 +20,7 @@ try:
         _strip_md_formatting,
         _title_info_from_title,
     )
+    from md_parser_modules.file_io import read_markdown_text
 except ImportError:  # pragma: no cover - package-style imports
     from ..path_safety import ensure_safe_output_dir, safe_rmtree_generated_child
     from .content_helpers import (
@@ -35,6 +36,7 @@ except ImportError:  # pragma: no cover - package-style imports
         _strip_md_formatting,
         _title_info_from_title,
     )
+    from .file_io import read_markdown_text
 
 def _default_output_dir():
     return os.path.abspath(os.path.join(os.getcwd(), 'Outputs', '_md_parser_extract'))
@@ -64,8 +66,7 @@ def extract_content(md_path, output_dir=None):
     """Extract content from MD file into content.json-compatible dict.
     Returns dict with same structure as content_parser.extract().
     """
-    with open(md_path, 'r', encoding='utf-8') as f:
-        raw = f.read()
+    raw = read_markdown_text(md_path)
 
     lines = raw.split('\n')
     lines = _skip_format_section(lines)
