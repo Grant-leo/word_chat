@@ -1692,6 +1692,93 @@ def content_parser_preserves_grid_before_vmerge_cells() -> None:
 
 
 @case
+def content_parser_repairs_grid_before_mismatched_2d_merge_without_fake_vertical_merge() -> None:
+    work = new_workdir("parser_grid_before_mismatched_2d_merge")
+    docx = work / "grid_before_mismatched_2d_merge.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=3)
+    table.cell(0, 0).text = "Merged header"
+    table.cell(0, 1).text = "Header continuation"
+    table.cell(0, 2).text = "Right header"
+    table.cell(1, 0).text = "Omitted lead"
+    table.cell(1, 1).text = "Visible continuation must stay"
+    table.cell(1, 2).text = "Right body"
+    doc.save(docx)
+
+    def rewrite(xml: str) -> str:
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + w_ns + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(w_ns + "tr")
+        assert_true(len(rows) == 2, "test rows missing")
+        first_cells = rows[0].findall(w_ns + "tc")
+        second_cells = rows[1].findall(w_ns + "tc")
+        assert_true(len(first_cells) == 3 and len(second_cells) == 3, "test cell grid changed")
+
+        def ensure_tc_pr(cell):
+            tc_pr = cell.find(w_ns + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(w_ns + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        first_pr = ensure_tc_pr(first_cells[0])
+        grid_span = first_pr.find(w_ns + "gridSpan")
+        if grid_span is None:
+            grid_span = ET.SubElement(first_pr, w_ns + "gridSpan")
+        grid_span.set(w_ns + "val", "2")
+        hmerge = ET.SubElement(first_pr, w_ns + "hMerge")
+        hmerge.set(w_ns + "val", "restart")
+        vmerge = ET.SubElement(first_pr, w_ns + "vMerge")
+        vmerge.set(w_ns + "val", "restart")
+        rows[0].remove(first_cells[1])
+
+        rows[1].remove(second_cells[0])
+        tr_pr = rows[1].find(w_ns + "trPr")
+        if tr_pr is None:
+            tr_pr = ET.Element(w_ns + "trPr")
+            rows[1].insert(0, tr_pr)
+        grid_before = ET.SubElement(tr_pr, w_ns + "gridBefore")
+        grid_before.set(w_ns + "val", "1")
+        ET.SubElement(ensure_tc_pr(second_cells[1]), w_ns + "vMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", rewrite)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"mismatched gridBefore 2D merge table was not preserved: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows")
+        == [["Merged header", "", "Right header"], ["", "Visible continuation must stay", "Right body"]],
+        f"mismatched gridBefore 2D merge did not preserve visible grid/text: {table_item}",
+    )
+    assert_true(
+        table_item.get("table_merges") == [{"row": 0, "col": 0, "rowspan": 1, "colspan": 2}],
+        f"mismatched gridBefore 2D merge should keep only the safe horizontal merge: {table_item}",
+    )
+    assert_true(
+        table_item.get("table_row_grid_before") == [0, 1],
+        f"mismatched gridBefore row omission metadata was not preserved: {table_item}",
+    )
+
+    result = run_generated_case("parser_grid_before_mismatched_2d_merge_generated", content, base_format())
+    counts = result["manifest"].get("counts", {})
+    assert_true(
+        counts.get("content_table_merges_rendered") == 1,
+        f"mismatched gridBefore 2D repair should render only one safe merge operation: {counts}",
+    )
+    assert_true(
+        "Visible continuation must stay" in result["xml"],
+        "generated DOCX lost visible text from mismatched gridBefore vMerge continuation",
+    )
+    assert_true(result["report"]["passed"] is True, f"mismatched gridBefore 2D repair render should pass QA: {result['report']}")
+
+
+@case
 def content_parser_preserves_grid_after_row_omissions() -> None:
     work = new_workdir("parser_grid_after")
     docx = work / "grid_after.docx"

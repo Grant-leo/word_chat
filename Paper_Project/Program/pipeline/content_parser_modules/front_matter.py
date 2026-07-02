@@ -111,10 +111,14 @@ def _extract_cover_info_from_tables(tables):
     cover_info = {}
     for table in tables[:5]:
         for row in table.rows:
-            if len(row.cells) < 2:
+            try:
+                cells = list(row.cells)
+            except Exception:
                 continue
-            label = row.cells[0].text.strip()
-            value = _valid_cover_value(row.cells[1].text)
+            if len(cells) < 2:
+                continue
+            label = cells[0].text.strip()
+            value = _valid_cover_value(cells[1].text)
             if not label or not value:
                 continue
             key = _cover_key_for_label(label)

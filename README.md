@@ -183,7 +183,7 @@ build_generated.py ─────────→ 最终论文.docx
 
 截至 2026-07-02：
 
-- 合成回归：`383 passed, 0 failed`
+- 合成回归：`384 passed, 0 failed`
 - DOCX 富文本 run 内嵌块级内容：`rich_text.runs[].items` 里的代码、图片、题注和小表会按源顺序插入在前后文字 run 之间；不会被提前塞进当前段落，也不会被整体推迟到整段文字之后。
 - DOCX 富文本 run 单元格来源块级内容：`rich_text.runs[].table_cell_items` 里的代码、图片、题注和小表也会按源顺序插入在前后文字 run 之间；不会因为被挂在 table-cell 兼容结构下而静默丢失。
 - DOCX 表格/嵌套表注释边界：四层嵌套表单元格会保持同段文字、图片、LaTeX、OMML 和脚注的源顺序；表格单元格中“图片后只有脚注锚点、没有可见文字”的情况也会在图片后原位渲染为 Word 原生脚注引用；表格单元格里的 block-level、inline 和嵌套 inline 内容控件文字会原位进入该单元格，内容控件内 `w:fldSimple` 的可见字段结果、`w:customXml` / `w:smartTag` 透明容器里的显示值也会按源顺序保留，内容控件内 hyperlink 包住图片、LaTeX、OMML 和脚注时也会保留原顺序，并在正文级内容控件兜底恢复时去重，避免重复正文；表格外正文级内容控件即使与表格单元格文本部分重叠或完全相同，也不会被误判为表格重复项；正文级 `w:sdtContent` 同时包住段落和表格时也会原位展开，元数据只统计正文段落，表格单元格文本不会被当成散落正文；正文级内容控件段落里的 inline `w:sdt` / `w:fldSimple` / hyperlink / `w:customXml` / `w:smartTag` 会递归保留图片、OMML/LaTeX 公式和脚注/尾注锚点顺序；带 `w:ins` / `w:moveTo` 的修订插入内容会按 Word 最终视图进入正文、表格、修订包裹的整行表格/单元格、标题路由和文本框恢复通道，`w:del` / `w:moveFrom` 删除内容与批注正文不会混入最终论文。
@@ -199,6 +199,7 @@ build_generated.py ─────────→ 最终论文.docx
 - DOCX 旧式 hMerge + vMerge 矩形合并：兼容旧式横向合并和纵向合并组合成 2D 合并块时，内容解析会归一成一个矩形 `table_merges`，避免生成端重复执行多条重叠 merge。
 - DOCX 非矩形旧式 hMerge + vMerge 冲突：如果旧式横向合并和纵向合并不是同宽矩形，引擎会 fail-open 保留 continuation 可见文本，只保留安全横向合并，并由源审计标记 `COMPLEX_TABLE_UNSUPPORTED` 复核。
 - DOCX 混合 gridSpan + hMerge 重复编码：兼容转换工具同时写入现代 `gridSpan` 和旧式 `hMerge` 的表格，解析端不会把同一横向合并双计为更宽合并；当同一个 2D 合并块还叠加 `vMerge` 时，也会跳过空的重复 continuation 单元格并折叠成一个矩形 `table_merges`。如果重复 continuation 单元格里有可见文本、图片或嵌套内容，引擎会 fail-open 保留为可见单元格，不会当合并占位清空；源审计会用 `irregular_hmerge_count` 和 `visible_hmerge_continuation_count` 暴露复核提示，但不把这种兼容冗余误报为 `gridSpan` 越界。
+- DOCX 省略列 + 半坏二维合并：当 `gridBefore` 省略了下一行的合并起点列，但源文件仍残留 `gridSpan + hMerge + vMerge` 组合时，封面字段探测不会因 `python-docx` 行枚举异常中断，内容解析会保留可见 continuation 文本，并只输出一个安全横向 `table_merges`，避免生成端执行重复或跨省略列的假 merge。
 - DOCX vMerge 富内容延续单元格：普通 `vMerge continue` 文本继续按 Word 合并语义隐藏；但如果 continuation 单元格里有图片、公式、嵌套表或注释锚点，引擎会 fail-open 保留为可见单元格，源审计记录 `visible_vmerge_continuation_count` 并要求复核，避免富内容被静默吞掉。
 - DOCX 复杂表格小白指引：当 `COMPLEX_TABLE_UNSUPPORTED` 的 detail 出现 `visible_hmerge_continuations=N` 或 `visible_vmerge_continuations=N` 时，`qa_report` / `qa_repair_plan` 的下一步会明确提示用 Word/WPS 对照原文和最终 DOCX，重点核对这些带可见内容的合并延续单元格没有被吞掉、挪位或重复。
 - DOCX 横向表格 section 保护：连续相邻且源页面设置签名一致的横向宽表，即使中间没有桥接说明，也会共用同一个 landscape section；带短说明时也可合并，纸张尺寸或页边距不同则保留独立横向 section，避免第二个表套用错误版心；当 section heading 本身是表题且第一项就是横向宽表时，表题会跟随首表进入同一个 landscape section，不会留在前一个纵向页；如果横向 section break 被正文级 `w:sdt`、`w:customXml` 或接受修订 `w:ins` 包装，解析端会按最终正文流展开后再把页面设置挂到对应宽表。

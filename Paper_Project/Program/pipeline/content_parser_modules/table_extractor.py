@@ -129,6 +129,23 @@ def _coalesce_legacy_hmerge_vmerge_merges(merges: List[Dict[str, int]]) -> List[
     return [merge for idx, merge in enumerate(merges) if idx not in consumed]
 
 
+def _dedupe_exact_merges(merges: List[Dict[str, int]]) -> List[Dict[str, int]]:
+    deduped: List[Dict[str, int]] = []
+    seen = set()
+    for merge in merges:
+        key = (
+            _merge_int(merge, "row", 0),
+            _merge_int(merge, "col", 0),
+            _merge_int(merge, "rowspan", 1),
+            _merge_int(merge, "colspan", 1),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(merge)
+    return deduped
+
+
 def _row_height_twips(tr_elem: Any) -> Dict[str, Any]:
     tr_pr = tr_elem.find(f"{{{W_NS}}}trPr")
     tr_height = tr_pr.find(f"{{{W_NS}}}trHeight") if tr_pr is not None else None
@@ -1250,6 +1267,7 @@ def extract_table_from_ooxml(
     merges = _coalesce_legacy_hmerge_vmerge_merges(merges)
     for merge in merges:
         merge.pop("hmerge_colspan", None)
+    merges = _dedupe_exact_merges(merges)
     merges = [
         merge
         for merge in merges
