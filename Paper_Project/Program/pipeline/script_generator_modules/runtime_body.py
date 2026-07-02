@@ -253,6 +253,14 @@ def render_landscape_table_group(paragraphs, idx, current_chapter):
                 add_caption(next_table_caption(title_text, current_chapter), 'table_caption')
             render_table_from_item(group.get('table_item') or {})
             idx = group.get('next_idx') or (idx + 1)
+            next_group = table_group_at(paragraphs, idx)
+            if next_group:
+                if landscape_table_section_compatible(
+                    group.get('table_item') or {},
+                    next_group.get('table_item') or {},
+                ):
+                    continue
+                break
             bridge_run = landscape_table_bridge_run_at(
                 paragraphs,
                 idx,

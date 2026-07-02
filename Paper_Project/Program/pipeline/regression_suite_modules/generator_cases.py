@@ -910,6 +910,76 @@ def script_generator_does_not_default_repeat_header_for_short_tables() -> None:
 
 
 @case
+def script_generator_groups_adjacent_landscape_tables_without_bridge_note() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Consecutive first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Consecutive first header {idx}" for idx in range(1, 10)],
+                    [f"Consecutive first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            {"role": "table_caption", "text": "表 2 Consecutive second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Consecutive second header {idx}" for idx in range(1, 10)],
+                    [f"Consecutive second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after consecutive landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("adjacent_landscape_tables_without_bridge", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 1,
+        "consecutive compatible landscape tables should share one landscape section",
+    )
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def has_sectpr(child: ET.Element) -> bool:
+        return child.tag == f"{W_NS}sectPr" or child.find(f".//{W_NS}sectPr") is not None
+
+    def has_landscape_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") == "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    table1_idx = next((idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Consecutive first header 1" in child_text(child)), -1)
+    table2_idx = next((idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Consecutive second header 1" in child_text(child)), -1)
+    after_idx = next((idx for idx, child in enumerate(children) if "Portrait body after consecutive landscape tables." in child_text(child)), -1)
+    caption1_idx = max((idx for idx, child in enumerate(children[:table1_idx]) if "Consecutive first landscape table" in child_text(child)), default=-1)
+    caption2_idx = max((idx for idx, child in enumerate(children[:table2_idx]) if "Consecutive second landscape table" in child_text(child)), default=-1)
+    assert_true(min(caption1_idx, table1_idx, caption2_idx, table2_idx, after_idx) >= 0, "consecutive landscape markers missing")
+
+    previous_section_break = max((idx for idx, child in enumerate(children[:table1_idx]) if has_sectpr(child)), default=-1)
+    landscape_section_break = next((idx for idx, child in enumerate(children[table2_idx + 1 :], start=table2_idx + 1) if has_landscape_section(child)), -1)
+    intermediate_section_breaks = [idx for idx, child in enumerate(children[table1_idx + 1 : table2_idx], start=table1_idx + 1) if has_sectpr(child)]
+    assert_true(not intermediate_section_breaks, f"consecutive landscape tables were split by section breaks: {intermediate_section_breaks}")
+    assert_true(
+        previous_section_break < caption1_idx < table1_idx < caption2_idx < table2_idx < landscape_section_break < after_idx,
+        "consecutive landscape tables should stay in one landscape section before portrait body resumes",
+    )
+
+
+@case
 def script_generator_groups_adjacent_landscape_tables_with_short_note() -> None:
     landscape_setup = {
         "orientation": "landscape",
