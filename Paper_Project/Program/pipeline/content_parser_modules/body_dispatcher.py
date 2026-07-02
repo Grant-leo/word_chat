@@ -314,6 +314,35 @@ def parse_body_sections(doc: Any, text_start: int, image_registry: Any, notes: D
 
     section_page_by_elem: Dict[int, Dict[str, Any]] = {}
 
+    def sdt_content_children(elem: Any) -> List[Any]:
+        for part in list(elem):
+            if local_name(part) == "sdtContent":
+                return list(part)
+        return []
+
+    def iter_section_flow_elements(elem: Any) -> List[Any]:
+        tag = local_name(elem)
+        if tag in ("p", "tbl", "sectPr"):
+            return [elem]
+        if tag == "sdt":
+            flow: List[Any] = []
+            for child in sdt_content_children(elem):
+                flow.extend(iter_section_flow_elements(child))
+            return flow
+        if tag in _BODY_TRANSPARENT_CONTAINERS or tag in _BODY_ACCEPTED_REVISION_CONTAINERS:
+            flow = []
+            for child in list(elem):
+                flow.extend(iter_section_flow_elements(child))
+            return flow
+        if tag in _BODY_DELETED_REVISION_CONTAINERS:
+            return []
+        flow = []
+        for child in list(elem):
+            child_tag = local_name(child)
+            if child_tag in ("p", "tbl", "sectPr", "sdt") or child_tag in _BODY_TRANSPARENT_CONTAINERS | _BODY_ACCEPTED_REVISION_CONTAINERS:
+                flow.extend(iter_section_flow_elements(child))
+        return flow
+
     def assign_section_page_setup(elem: Any, setup: Dict[str, Any]) -> None:
         tag = local_name(elem)
         if tag in ("p", "tbl"):
@@ -338,13 +367,14 @@ def parse_body_sections(doc: Any, text_start: int, image_registry: Any, notes: D
             pending = []
 
         for child in body_children:
-            if local_name(child) == "sectPr":
-                flush(child)
-                continue
-            pending.append(child)
-            sect_pr = paragraph_section_properties(child)
-            if sect_pr is not None:
-                flush(sect_pr)
+            for flow_elem in iter_section_flow_elements(child):
+                if local_name(flow_elem) == "sectPr":
+                    flush(flow_elem)
+                    continue
+                pending.append(flow_elem)
+                sect_pr = paragraph_section_properties(flow_elem)
+                if sect_pr is not None:
+                    flush(sect_pr)
         if pending:
             fallback_sect_pr = None
             try:
@@ -354,12 +384,6 @@ def parse_body_sections(doc: Any, text_start: int, image_registry: Any, notes: D
             flush(fallback_sect_pr)
 
     build_section_page_map()
-
-    def sdt_content_children(elem: Any) -> List[Any]:
-        for part in list(elem):
-            if local_name(part) == "sdtContent":
-                return list(part)
-        return []
 
     def countable_content_control_paragraph(paragraph: Any) -> bool:
         text = clean_text_artifacts(str(paragraph_visible_text(paragraph) or ""), preserve_newlines=True).strip()

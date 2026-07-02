@@ -1911,6 +1911,102 @@ def content_parser_preserves_landscape_section_for_wide_table() -> None:
 
 
 @case
+def content_parser_preserves_wrapped_landscape_section_break_for_wide_table() -> None:
+    wrappers = ("sdt", "customXml", "ins")
+
+    def wrap_landscape_section_break(xml: str, wrapper_name: str) -> str:
+        w_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        root = etree.fromstring(xml.encode("utf-8"))
+        ns = {"w": w_ns}
+        body = root.xpath(".//w:body", namespaces=ns)[0]
+        break_paragraphs = body.xpath(
+            "./w:p[w:pPr/w:sectPr/w:pgSz[@w:orient='landscape']]",
+            namespaces=ns,
+        )
+        assert_true(len(break_paragraphs) == 1, f"expected one landscape section break paragraph, got {len(break_paragraphs)}")
+        paragraph = break_paragraphs[0]
+        index = body.index(paragraph)
+        body.remove(paragraph)
+
+        if wrapper_name == "sdt":
+            wrapper = etree.Element(f"{{{w_ns}}}sdt")
+            sdt_pr = etree.SubElement(wrapper, f"{{{w_ns}}}sdtPr")
+            tag = etree.SubElement(sdt_pr, f"{{{w_ns}}}tag")
+            tag.set(f"{{{w_ns}}}val", "wrapped-landscape-break")
+            content = etree.SubElement(wrapper, f"{{{w_ns}}}sdtContent")
+            content.append(paragraph)
+        elif wrapper_name == "customXml":
+            wrapper = etree.Element(f"{{{w_ns}}}customXml")
+            wrapper.set(f"{{{w_ns}}}element", "wrappedLandscapeBreak")
+            wrapper.set(f"{{{w_ns}}}uri", "urn:synthetic")
+            wrapper.append(paragraph)
+        else:
+            wrapper = etree.Element(f"{{{w_ns}}}ins")
+            wrapper.set(f"{{{w_ns}}}id", "42")
+            wrapper.set(f"{{{w_ns}}}author", "Synthetic")
+            wrapper.set(f"{{{w_ns}}}date", "2026-01-01T00:00:00Z")
+            wrapper.append(paragraph)
+
+        body.insert(index, wrapper)
+        return etree.tostring(root, encoding="unicode")
+
+    for wrapper_name in wrappers:
+        work = new_workdir(f"parser_wrapped_landscape_section_{wrapper_name}")
+        docx = work / f"wrapped_landscape_section_{wrapper_name}.docx"
+        doc = Document()
+        doc.add_paragraph("1 Wrapped landscape section")
+        landscape = doc.add_section(WD_SECTION.NEW_PAGE)
+        landscape.orientation = WD_ORIENT.LANDSCAPE
+        landscape.page_width, landscape.page_height = landscape.page_height, landscape.page_width
+        table = doc.add_table(rows=2, cols=9)
+        for ci in range(9):
+            table.cell(0, ci).text = f"H{ci + 1}"
+            table.cell(1, ci).text = f"Wrapped wide cell {ci + 1}"
+        portrait = doc.add_section(WD_SECTION.NEW_PAGE)
+        portrait.orientation = WD_ORIENT.PORTRAIT
+        if portrait.page_width > portrait.page_height:
+            portrait.page_width, portrait.page_height = portrait.page_height, portrait.page_width
+        doc.add_paragraph("Back to portrait body")
+        doc.save(docx)
+
+        _rewrite_docx_part(docx, "word/document.xml", lambda xml, name=wrapper_name: wrap_landscape_section_break(xml, name))
+
+        content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+        items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+        table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+        assert_true(len(table_items) == 1, f"{wrapper_name}-wrapped section table was not preserved as a table: {items}")
+        table_item = table_items[0]
+        source_setup = table_item.get("source_section_page_setup") or {}
+        assert_true(
+            source_setup.get("orientation") == "landscape",
+            f"{wrapper_name}-wrapped landscape section setup was not attached to the table: {table_item}",
+        )
+        assert_true(
+            int(source_setup.get("page_width_twips") or 0) > int(source_setup.get("page_height_twips") or 0),
+            f"{wrapper_name}-wrapped landscape page dimensions were not preserved: {source_setup}",
+        )
+
+        result = run_generated_case(f"parser_wrapped_landscape_section_{wrapper_name}_generated", content, base_format())
+        assert_true('w:orient="landscape"' in result["xml"], f"{wrapper_name}-wrapped generated DOCX lost landscape table section")
+        assert_true(
+            result["xml"].count('w:orient="landscape"') == 1,
+            f"{wrapper_name}-wrapped generated DOCX should restore portrait orientation after the landscape table",
+        )
+        assert_true(
+            result["manifest"]["counts"].get("content_landscape_table_sections_rendered", 0) == 1,
+            f"{wrapper_name}-wrapped landscape table section render count missing: {result['manifest']}",
+        )
+        if wrapper_name == "ins":
+            codes = {issue.get("code") for issue in result["report"].get("issues") or []}
+            assert_true(
+                "TRACKED_CHANGES_PRESENT" in codes,
+                f"{wrapper_name}-wrapped generated DOCX should still surface tracked-change review guidance: {result['report']}",
+            )
+        else:
+            assert_true(result["report"]["passed"] is True, f"{wrapper_name}-wrapped landscape render should pass QA: {result['report']}")
+
+
+@case
 def content_parser_preserves_table_layout_details() -> None:
     work = new_workdir("parser_table_layout_details")
     docx = work / "table_layout_details.docx"
