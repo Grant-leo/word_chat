@@ -65,6 +65,26 @@ def paragraph_item_has_display_math(item):
     return False
 
 
+def paragraph_item_nested_table_items(item):
+    if not isinstance(item, dict):
+        return []
+    if is_table_item(item):
+        return [item]
+    table_items = []
+    for nested in item.get('runs') or []:
+        table_items.extend(paragraph_item_nested_table_items(nested))
+    for nested in item.get('items') or []:
+        table_items.extend(paragraph_item_nested_table_items(nested))
+    for cell in item.get('table_cell_items') or []:
+        for nested in cell.get('items') or []:
+            table_items.extend(paragraph_item_nested_table_items(nested))
+    return table_items
+
+
+def paragraph_item_has_table(item):
+    return bool(paragraph_item_nested_table_items(item))
+
+
 def looks_like_list_bridge_text(text):
     t = clean_text_artifacts(text).strip()
     if not t:
@@ -89,6 +109,8 @@ def looks_like_list_bridge_text(text):
 def render_paragraph_item(item, code_sensitive=False, chapter=None):
     if isinstance(item, dict) and item.get('role') == 'rich_text':
         add_rich_text_runs(item, role='body', first_indent=True)
+        for table_item in paragraph_item_nested_table_items(item):
+            render_table_item(table_item)
         return
     if isinstance(item, dict) and item.get('role') == 'formula_problem':
         add_text(item.get('text') or '', role='body', first_indent=True)
@@ -193,7 +215,7 @@ def landscape_table_bridge_text(item):
         role = str(item.get('role') or '').strip()
         if role in ('table_caption', 'figure_caption', 'figure', 'image', 'code', 'formula', 'formula_problem'):
             return ''
-        if paragraph_item_has_image(item) or paragraph_item_has_display_math(item) or is_table_item(item) or item.get('code'):
+        if paragraph_item_has_image(item) or paragraph_item_has_display_math(item) or paragraph_item_has_table(item) or item.get('code'):
             return ''
         text = clean_text_artifacts(item.get('text') or '').strip()
     else:
