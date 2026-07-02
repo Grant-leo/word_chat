@@ -1692,6 +1692,126 @@ def content_parser_preserves_grid_before_vmerge_cells() -> None:
 
 
 @case
+def script_generator_does_not_delete_media_in_grid_before_omission_zone() -> None:
+    work = new_workdir("generator_grid_before_media_guard")
+    image = work / "omission_zone.png"
+    write_sample_png(image, width=96, height=72)
+    content = base_content(
+        [
+            {
+                "role": "table",
+                "table_rows": [["Header", "Value"], ["", "Visible cell"]],
+                "table_row_grid_before": [0, 1],
+                "table_cell_items": [
+                    {
+                        "row": 1,
+                        "col": 0,
+                        "items": [
+                            {"role": "image", "image": image.name},
+                            {
+                                "role": "rich_text",
+                                "runs": [
+                                    {
+                                        "type": "math",
+                                        "math": [{"type": "inline", "latex": "x=1", "text": "x=1"}],
+                                    }
+                                ],
+                                "math": [{"type": "inline", "latex": "x=1", "text": "x=1"}],
+                            },
+                        ],
+                    }
+                ],
+            }
+        ],
+        meta_tables=1,
+    )
+    content["_meta"]["images_dir"] = str(work)
+
+    result = run_generated_case("generator_grid_before_media_guard_generated", content, base_format())
+    root = etree.fromstring(result["xml"].encode("utf-8"))
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    tables = root.xpath(".//w:tbl[.//w:t='Header']", namespaces=ns)
+    assert_true(len(tables) == 1, f"generated table missing or duplicated: {len(tables)}")
+    rows = tables[0].xpath("./w:tr", namespaces=ns)
+    assert_true(len(rows) == 2, f"generated table should have two rows: {len(rows)}")
+    second_row_drawings = rows[1].xpath(".//w:drawing", namespaces=ns)
+    assert_true(second_row_drawings, "gridBefore omission restoration deleted visible media from the omitted grid zone")
+    assert_true(omath_count(result["xml"]) >= 1, "gridBefore omission restoration deleted a visible formula from the omitted grid zone")
+    second_grid_before = rows[1].xpath("./w:trPr/w:gridBefore/@w:val", namespaces=ns)
+    assert_true(
+        second_grid_before == [],
+        "row omission should not be restored when the omitted grid zone carries media",
+    )
+    counts = result["manifest"]["counts"]
+    assert_true(counts.get("content_images_rendered") == 1, f"omitted-zone image was not rendered: {counts}")
+    assert_true(counts.get("inline_formulas_rendered") == 1, f"omitted-zone formula was not rendered: {counts}")
+    assert_true(
+        counts.get("content_table_grid_before_media_guard_rows_skipped") == 1,
+        f"gridBefore media guard did not record the protected row: {counts}",
+    )
+
+
+@case
+def script_generator_does_not_delete_media_in_grid_after_omission_zone() -> None:
+    work = new_workdir("generator_grid_after_media_guard")
+    image = work / "tail_omission_zone.png"
+    write_sample_png(image, width=96, height=72)
+    content = base_content(
+        [
+            {
+                "role": "table",
+                "table_rows": [["Header", "Value"], ["Visible cell", ""]],
+                "table_row_grid_after": [0, 1],
+                "table_cell_items": [
+                    {
+                        "row": 1,
+                        "col": 1,
+                        "items": [
+                            {"role": "image", "image": image.name},
+                            {
+                                "role": "rich_text",
+                                "runs": [
+                                    {
+                                        "type": "math",
+                                        "math": [{"type": "inline", "latex": "y=1", "text": "y=1"}],
+                                    }
+                                ],
+                                "math": [{"type": "inline", "latex": "y=1", "text": "y=1"}],
+                            },
+                        ],
+                    }
+                ],
+            }
+        ],
+        meta_tables=1,
+    )
+    content["_meta"]["images_dir"] = str(work)
+
+    result = run_generated_case("generator_grid_after_media_guard_generated", content, base_format())
+    root = etree.fromstring(result["xml"].encode("utf-8"))
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    tables = root.xpath(".//w:tbl[.//w:t='Header']", namespaces=ns)
+    assert_true(len(tables) == 1, f"generated table missing or duplicated: {len(tables)}")
+    rows = tables[0].xpath("./w:tr", namespaces=ns)
+    assert_true(len(rows) == 2, f"generated table should have two rows: {len(rows)}")
+    second_row_drawings = rows[1].xpath(".//w:drawing", namespaces=ns)
+    assert_true(second_row_drawings, "gridAfter omission restoration deleted visible media from the omitted grid zone")
+    assert_true(omath_count(result["xml"]) >= 1, "gridAfter omission restoration deleted a visible formula from the omitted grid zone")
+    second_grid_after = rows[1].xpath("./w:trPr/w:gridAfter/@w:val", namespaces=ns)
+    assert_true(
+        second_grid_after == [],
+        "row omission should not be restored when the trailing omitted grid zone carries media",
+    )
+    counts = result["manifest"]["counts"]
+    assert_true(counts.get("content_images_rendered") == 1, f"omitted-zone image was not rendered: {counts}")
+    assert_true(counts.get("inline_formulas_rendered") == 1, f"omitted-zone formula was not rendered: {counts}")
+    assert_true(
+        counts.get("content_table_grid_after_media_guard_rows_skipped") == 1,
+        f"gridAfter media guard did not record the protected row: {counts}",
+    )
+
+
+@case
 def content_parser_repairs_grid_before_mismatched_2d_merge_without_fake_vertical_merge() -> None:
     work = new_workdir("parser_grid_before_mismatched_2d_merge")
     docx = work / "grid_before_mismatched_2d_merge.docx"

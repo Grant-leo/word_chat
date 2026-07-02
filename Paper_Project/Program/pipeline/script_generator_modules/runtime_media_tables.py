@@ -736,12 +736,22 @@ def apply_table_merges(table, table_merges):
     return rendered
 
 
-def apply_row_grid_before(table, row_grid_before, rows=None, col_widths=None):
+def row_omission_zone_has_media(media_by_cell, row_idx, col_indexes):
+    if not media_by_cell:
+        return False
+    for col_idx in col_indexes:
+        if media_by_cell.get((row_idx, col_idx)):
+            return True
+    return False
+
+
+def apply_row_grid_before(table, row_grid_before, rows=None, col_widths=None, media_by_cell=None):
     if not row_grid_before:
         return 0
     rendered = 0
     rows = rows or []
     col_widths = col_widths or []
+    media_by_cell = media_by_cell or {}
     for row_idx, value in enumerate(row_grid_before or []):
         try:
             count = int(value or 0)
@@ -751,6 +761,9 @@ def apply_row_grid_before(table, row_grid_before, rows=None, col_widths=None):
             continue
         source_row = rows[row_idx] if row_idx < len(rows) and isinstance(rows[row_idx], (list, tuple)) else []
         if any(str(source_row[idx] or '').strip() for idx in range(min(count, len(source_row)))):
+            continue
+        if row_omission_zone_has_media(media_by_cell, row_idx, range(count)):
+            BUILD_STATS['content_table_grid_before_media_guard_rows_skipped'] = BUILD_STATS.get('content_table_grid_before_media_guard_rows_skipped', 0) + 1
             continue
         tr = table.rows[row_idx]._tr
         tr_pr = tr.find(qn('w:trPr'))
@@ -784,12 +797,13 @@ def apply_row_grid_before(table, row_grid_before, rows=None, col_widths=None):
     return rendered
 
 
-def apply_row_grid_after(table, row_grid_after, rows=None, col_widths=None):
+def apply_row_grid_after(table, row_grid_after, rows=None, col_widths=None, media_by_cell=None):
     if not row_grid_after:
         return 0
     rendered = 0
     rows = rows or []
     col_widths = col_widths or []
+    media_by_cell = media_by_cell or {}
     for row_idx, value in enumerate(row_grid_after or []):
         try:
             count = int(value or 0)
@@ -802,6 +816,9 @@ def apply_row_grid_after(table, row_grid_after, rows=None, col_widths=None):
             continue
         tail_start = len(source_row) - count
         if any(str(source_row[idx] or '').strip() for idx in range(tail_start, len(source_row))):
+            continue
+        if row_omission_zone_has_media(media_by_cell, row_idx, range(tail_start, len(source_row))):
+            BUILD_STATS['content_table_grid_after_media_guard_rows_skipped'] = BUILD_STATS.get('content_table_grid_after_media_guard_rows_skipped', 0) + 1
             continue
         tr = table.rows[row_idx]._tr
         tr_pr = tr.find(qn('w:trPr'))
@@ -1249,8 +1266,8 @@ def render_table(rows, cell_items=None, table_merges=None, table_col_widths_twip
     apply_cell_overrides(table, table_cell_overrides)
     if should_keep_table_together(rows):
         keep_table_together(table)
-    apply_row_grid_before(table, table_row_grid_before, rows=rows, col_widths=col_widths)
-    apply_row_grid_after(table, table_row_grid_after, rows=rows, col_widths=col_widths)
+    apply_row_grid_before(table, table_row_grid_before, rows=rows, col_widths=col_widths, media_by_cell=media_by_cell)
+    apply_row_grid_after(table, table_row_grid_after, rows=rows, col_widths=col_widths, media_by_cell=media_by_cell)
     return table
 
 
