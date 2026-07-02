@@ -277,6 +277,11 @@ def render_rich_text_runs_with_block_breaks(item, chapter=None):
             flush_pending_runs()
             for nested in run.get('items') or []:
                 rendered = render_rich_text_block_items_in_order(nested, chapter=chapter, render_media=True) or rendered
+        if isinstance(run, dict) and run.get('table_cell_items'):
+            flush_pending_runs()
+            for cell in run.get('table_cell_items') or []:
+                for nested in cell.get('items') or []:
+                    rendered = render_rich_text_block_items_in_order(nested, chapter=chapter, render_media=True) or rendered
     flush_pending_runs()
     return rendered
 

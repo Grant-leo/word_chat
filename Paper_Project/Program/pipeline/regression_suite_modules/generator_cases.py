@@ -2369,6 +2369,128 @@ def script_generator_preserves_rich_run_item_block_order_in_landscape_tables_bri
 
 
 @case
+def script_generator_preserves_rich_run_table_cell_items_order_in_landscape_tables_bridge() -> None:
+    img_src = new_workdir("landscape_rich_run_table_cell_items_src")
+    write_sample_png(img_src / "run_cell_item_order_bridge.png", width=180, height=120)
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Rich run cell-item bridge first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich run cell-item first header {idx}" for idx in range(1, 10)],
+                    [f"Rich run cell-item first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            {
+                "role": "rich_text",
+                "text": "Run table-cell item bridge should keep nested block order.",
+                "runs": [
+                    {"type": "text", "text": "Run table-cell item bridge before nested items."},
+                    {
+                        "type": "text",
+                        "text": "Run table-cell item bridge anchor text.",
+                        "table_cell_items": [
+                            {
+                                "items": [
+                                    {
+                                        "role": "code",
+                                        "code": "run_cell_item_code_marker = 19",
+                                    },
+                                    {
+                                        "role": "image",
+                                        "image": "run_cell_item_order_bridge.png",
+                                    },
+                                    {
+                                        "role": "figure_caption",
+                                        "text": "Figure 14 Run table-cell item nested bridge caption",
+                                    },
+                                    {
+                                        "role": "table",
+                                        "table_rows": [["Run table-cell item bridge metric", "Run table-cell item bridge value"]],
+                                    },
+                                ]
+                            }
+                        ],
+                    },
+                    {"type": "text", "text": "Run table-cell item bridge after nested items."},
+                ],
+            },
+            {"role": "table_caption", "text": "表 2 Rich run cell-item bridge second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich run cell-item second header {idx}" for idx in range(1, 10)],
+                    [f"Rich run cell-item second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after rich run table-cell item bridge landscape tables.",
+        ],
+        meta_tables=3,
+    )
+    content["_meta"]["images_dir"] = str(img_src)
+    content["_meta"]["images_extracted"] = 1
+    content["sections"][0]["images"] = ["run_cell_item_order_bridge.png"]
+    result = run_generated_case("landscape_tables_rich_run_table_cell_item_ordered_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "rich_text.runs[].table_cell_items bridge should split adjacent landscape tables into separate landscape sections",
+    )
+    assert_true("<w:drawing>" in result["xml"], "rich_text.runs[].table_cell_items bridge should render the nested image")
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def child_has_drawing(child: ET.Element) -> bool:
+        return any(node.tag == f"{W_NS}drawing" for node in child.iter())
+
+    before_idx = next(
+        (idx for idx, child in enumerate(children) if "Run table-cell item bridge before nested items." in child_text(child)),
+        -1,
+    )
+    code_idx = next(
+        (idx for idx, child in enumerate(children) if "run_cell_item_code_marker = 19" in child_text(child)),
+        -1,
+    )
+    image_idx = next((idx for idx, child in enumerate(children) if child_has_drawing(child)), -1)
+    caption_idx = next(
+        (idx for idx, child in enumerate(children) if "Fig. 14 Run table-cell item nested bridge caption" in child_text(child)),
+        -1,
+    )
+    bridge_table_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Run table-cell item bridge metric" in child_text(child)),
+        -1,
+    )
+    after_idx = next(
+        (idx for idx, child in enumerate(children) if "Run table-cell item bridge after nested items." in child_text(child)),
+        -1,
+    )
+    assert_true(
+        min(before_idx, code_idx, image_idx, caption_idx, bridge_table_idx, after_idx) >= 0,
+        "rich run table-cell item ordered bridge markers missing",
+    )
+    assert_true(
+        before_idx < code_idx < image_idx < caption_idx < bridge_table_idx < after_idx,
+        "rich_text.runs[].table_cell_items media/block children should render between surrounding text runs in source order",
+    )
+
+
+@case
 def script_generator_does_not_promote_landscape_numbered_heading_bridge_to_table_caption() -> None:
     landscape_setup = {
         "orientation": "landscape",
