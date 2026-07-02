@@ -16,6 +16,9 @@ def paragraph_item_has_image(item):
             for nested in run.get('items') or []:
                 if paragraph_item_has_image(nested):
                     return True
+    for nested in item.get('items') or []:
+        if paragraph_item_has_image(nested):
+            return True
     for cell in item.get('table_cell_items') or []:
         for nested in cell.get('items') or []:
             if paragraph_item_has_image(nested):

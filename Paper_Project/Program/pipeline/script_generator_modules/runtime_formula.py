@@ -70,10 +70,12 @@ def _rich_text_image_items(run):
     return items
 
 
-def append_inline_image_run(p, run):
+def append_inline_image_run(p, run, rendered_image_keys=None):
     wrote = False
     for image_item in _rich_text_image_items(run):
         filename = image_item.get('image') or image_item.get('filename') or image_item.get('asset') or ''
+        if rendered_image_keys is not None and filename in rendered_image_keys:
+            continue
         path = content_image_path(filename)
         if not path:
             continue
@@ -82,6 +84,8 @@ def append_inline_image_run(p, run):
             width, height = fit_picture_dimensions(path, has_caption=False)
             r.add_picture(path, width=width, height=height)
             BUILD_STATS['content_images_rendered'] = BUILD_STATS.get('content_images_rendered', 0) + 1
+            if rendered_image_keys is not None:
+                rendered_image_keys.add(filename)
             wrote = True
         except Exception:
             continue
@@ -91,25 +95,27 @@ def append_inline_image_run(p, run):
 def add_rich_text_runs(item, role='body', first_indent=True):
     prof = profile(role)
     runs = item.get('runs') or []
+    has_item_images = bool(_rich_text_image_items(item))
     if not runs:
         text = str(item.get('text') or '').strip()
         if text:
             runs = [{'type': 'text', 'text': text}]
         for m in _math_entries_from_item(item):
             runs.append({'type': 'math', 'text': m.get('text') or '', 'math': [m]})
-    if not runs:
+    if not runs and not has_item_images:
         return None
     p = doc.add_paragraph()
     apply_paragraph_profile(p, prof, first_indent_override=(prof.get('first_indent_cm') if first_indent else 0))
     superscript = role == 'body'
     wrote = False
+    rendered_image_keys = set()
     for run in runs:
         kind = run.get('type') or ('math' if run.get('math') else 'text')
         if kind == 'math':
             for m in run.get('math') or []:
                 wrote = append_inline_formula(p, m) or wrote
         elif kind in ('image', 'figure') or run.get('image') or run.get('filename') or run.get('asset') or _rich_text_image_items(run):
-            wrote = append_inline_image_run(p, run) or wrote
+            wrote = append_inline_image_run(p, run, rendered_image_keys) or wrote
         elif kind == 'note_ref':
             wrote = append_note_reference(p, run) or wrote
         else:
@@ -117,6 +123,8 @@ def add_rich_text_runs(item, role='body', first_indent=True):
             if text:
                 add_text_runs(p, text, prof, superscript)
                 wrote = True
+    if has_item_images:
+        wrote = append_inline_image_run(p, item, rendered_image_keys) or wrote
     if not wrote:
         try:
             p._element.getparent().remove(p._element)
