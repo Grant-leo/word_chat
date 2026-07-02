@@ -649,7 +649,7 @@ def audit_docx_source(docx_path: str) -> Dict[str, Any]:
                 if counts.get("hmerge_count"):
                     detail += f"; hmerge={counts['hmerge_count']}"
                 issues.append(_safe_issue("TABLE_MERGE_UNSUPPORTED", "warning", detail))
-            if counts["nested_table_max_depth"] > 4 or counts["max_table_columns"] > 8 or counts["irregular_table_count"]:
+            if counts["nested_table_max_depth"] > 5 or counts["max_table_columns"] > 8 or counts["irregular_table_count"]:
                 detail = (
                     f"nested_tables={counts['nested_table_count']}; "
                     f"nested_depth={counts['nested_table_max_depth']}; "
