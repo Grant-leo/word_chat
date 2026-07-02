@@ -2051,6 +2051,113 @@ def script_generator_preserves_rich_item_media_order_in_landscape_tables_bridge(
 
 
 @case
+def script_generator_preserves_rich_item_inline_formula_shape_in_landscape_tables_bridge() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Rich item inline formula first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich item inline formula first header {idx}" for idx in range(1, 10)],
+                    [f"Rich item inline formula first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            {
+                "role": "rich_text",
+                "text": "Inline item formula bridge should keep source order.",
+                "items": [
+                    {
+                        "role": "code",
+                        "code": "inline_formula_order_code = 13",
+                    },
+                    {
+                        "role": "formula",
+                        "text": r"a+b=c",
+                        "math": {"type": "inline", "text": r"a+b=c", "latex": r"a+b=c"},
+                    },
+                    {
+                        "role": "figure_caption",
+                        "text": "Figure 12 Inline formula bridge caption",
+                    },
+                    {
+                        "role": "table",
+                        "table_rows": [["Inline formula bridge metric", "Inline formula bridge value"]],
+                    },
+                ],
+            },
+            {"role": "table_caption", "text": "表 2 Rich item inline formula second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich item inline formula second header {idx}" for idx in range(1, 10)],
+                    [f"Rich item inline formula second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after rich item inline formula landscape tables.",
+        ],
+        meta_tables=3,
+    )
+    result = run_generated_case("landscape_tables_rich_item_inline_formula_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "rich_text.items inline formula bridge should split adjacent landscape tables into separate landscape sections",
+    )
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+    m_ns = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def child_has_inline_math(child: ET.Element) -> bool:
+        return any(node.tag == f"{m_ns}oMath" for node in child.iter())
+
+    def child_has_display_math(child: ET.Element) -> bool:
+        return any(node.tag == f"{m_ns}oMathPara" for node in child.iter())
+
+    bridge_text_idx = next(
+        (idx for idx, child in enumerate(children) if "Inline item formula bridge should keep source order." in child_text(child)),
+        -1,
+    )
+    code_idx = next(
+        (idx for idx, child in enumerate(children) if "inline_formula_order_code = 13" in child_text(child)),
+        -1,
+    )
+    formula_idx = next((idx for idx, child in enumerate(children) if child_has_inline_math(child) or child_has_display_math(child)), -1)
+    caption_idx = next(
+        (idx for idx, child in enumerate(children) if "Fig. 12 Inline formula bridge caption" in child_text(child)),
+        -1,
+    )
+    bridge_table_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Inline formula bridge metric" in child_text(child)),
+        -1,
+    )
+    assert_true(
+        min(bridge_text_idx, code_idx, formula_idx, caption_idx, bridge_table_idx) >= 0,
+        "rich item inline formula bridge markers missing",
+    )
+    assert_true(
+        bridge_text_idx < code_idx < formula_idx < caption_idx < bridge_table_idx,
+        "rich_text.items inline formula should remain in source order among block children",
+    )
+    assert_true(child_has_inline_math(children[formula_idx]), "inline formula item should render as inline OMML math")
+    assert_true(not child_has_display_math(children[formula_idx]), "inline formula item should not render as display OMML math")
+
+
+@case
 def script_generator_does_not_promote_landscape_numbered_heading_bridge_to_table_caption() -> None:
     landscape_setup = {
         "orientation": "landscape",

@@ -158,6 +158,26 @@ def paragraph_item_is_formula_item(item):
     return role == 'formula' or kind in ('formula', 'math') or bool(item.get('latex') or item.get('xml') or item.get('math'))
 
 
+def math_entry_requests_display(entry, default_display=True):
+    if not isinstance(entry, dict):
+        return default_display
+    kind = str(entry.get('type') or '').strip().lower()
+    if kind in ('display', 'block'):
+        return True
+    if kind == 'inline' or entry.get('inline'):
+        return False
+    if entry.get('display') or entry.get('block'):
+        return True
+    return default_display
+
+
+def render_inline_ordered_math(entry):
+    if not isinstance(entry, dict):
+        return False
+    run = {'type': 'math', 'text': entry.get('text') or entry.get('latex') or '', 'math': [entry]}
+    return add_rich_text_runs({'runs': [run]}, role='body', first_indent=True) is not None
+
+
 def render_ordered_math_item(item, chapter=None):
     if item.get('math') and not item.get('latex') and not item.get('xml'):
         rendered = False
@@ -165,9 +185,14 @@ def render_ordered_math_item(item, chapter=None):
             sub_item = dict(item)
             sub_item['math'] = [math_entry]
             sub_item['text'] = clean_formula_text(math_entry.get('text') or item.get('text') or '')
-            render_formula(sub_item, chapter)
+            if math_entry_requests_display(math_entry, default_display=True):
+                render_formula(sub_item, chapter)
+            else:
+                render_inline_ordered_math(math_entry)
             rendered = True
         return rendered
+    if not math_entry_requests_display(item, default_display=True):
+        return render_inline_ordered_math(item)
     render_formula(item, chapter)
     return True
 
