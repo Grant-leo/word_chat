@@ -82,6 +82,15 @@ def _iter_table_cell_elements(row: ET.Element) -> List[ET.Element]:
     return cells
 
 
+def _iter_final_view_section_flow(elem: ET.Element) -> Iterable[ET.Element]:
+    local_name = _local_name(elem)
+    if local_name in {"p", "tbl", "sectPr"}:
+        yield elem
+        return
+    for child in _iter_final_view_children(elem):
+        yield from _iter_final_view_section_flow(child)
+
+
 def _safe_issue(code: str, severity: str, detail: str = "") -> Dict[str, Any]:
     return {
         "code": code,
@@ -530,7 +539,7 @@ def _landscape_wide_table_risk_count(xml_text: str, threshold: int = 8) -> int:
         return 0
     risk_count = 0
     section_elements: List[ET.Element] = []
-    for child in list(body):
+    for child in _iter_final_view_section_flow(body):
         if child.tag == W_NS + "sectPr":
             if _is_landscape_section(child):
                 risk_count += _wide_tables_in_elements(section_elements, threshold=threshold)

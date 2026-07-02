@@ -659,6 +659,85 @@ def source_audit_flags_landscape_wide_table_risk() -> None:
 
 
 @case
+def source_audit_counts_wrapped_landscape_section_wide_table_risk() -> None:
+    from docx.enum.section import WD_ORIENT, WD_SECTION
+
+    from content_parser_modules.source_audit import audit_docx_source
+
+    def wrap_landscape_section_break(xml: str, wrapper_name: str) -> str:
+        root = ET.fromstring(xml.encode("utf-8"))
+        body = root.find(W_NS + "body")
+        assert_true(body is not None, "document body missing")
+        break_paragraph = None
+        for para in body.findall(W_NS + "p"):
+            p_pr = para.find(W_NS + "pPr")
+            sect_pr = p_pr.find(W_NS + "sectPr") if p_pr is not None else None
+            pg_sz = sect_pr.find(W_NS + "pgSz") if sect_pr is not None else None
+            if pg_sz is not None and str(pg_sz.attrib.get(W_NS + "orient") or "").lower() == "landscape":
+                break_paragraph = para
+                break
+        assert_true(break_paragraph is not None, "landscape section break paragraph missing")
+        index = list(body).index(break_paragraph)
+        body.remove(break_paragraph)
+
+        if wrapper_name == "sdt":
+            wrapper = ET.Element(W_NS + "sdt")
+            sdt_pr = ET.SubElement(wrapper, W_NS + "sdtPr")
+            tag = ET.SubElement(sdt_pr, W_NS + "tag")
+            tag.set(W_NS + "val", "wrapped-landscape-break")
+            content = ET.SubElement(wrapper, W_NS + "sdtContent")
+            content.append(break_paragraph)
+        elif wrapper_name == "customXml":
+            wrapper = ET.Element(W_NS + "customXml")
+            wrapper.set(W_NS + "element", "wrappedLandscapeBreak")
+            wrapper.set(W_NS + "uri", "urn:synthetic")
+            wrapper.append(break_paragraph)
+        else:
+            wrapper = ET.Element(W_NS + "ins")
+            wrapper.set(W_NS + "id", "42")
+            wrapper.set(W_NS + "author", "Regression")
+            wrapper.set(W_NS + "date", "2026-01-01T00:00:00Z")
+            wrapper.append(break_paragraph)
+
+        body.insert(index, wrapper)
+        return ET.tostring(root, encoding="unicode")
+
+    for wrapper_name in ("sdt", "customXml", "ins"):
+        work = new_workdir(f"source_audit_wrapped_landscape_wide_table_{wrapper_name}")
+        path = work / f"wrapped_landscape_wide_table_{wrapper_name}.docx"
+        doc = Document()
+        doc.add_paragraph("Before wrapped landscape section")
+        landscape = doc.add_section(WD_SECTION.NEW_PAGE)
+        landscape.orientation = WD_ORIENT.LANDSCAPE
+        landscape.page_width, landscape.page_height = landscape.page_height, landscape.page_width
+        table = doc.add_table(rows=1, cols=9)
+        for idx, cell in enumerate(table.rows[0].cells):
+            cell.text = f"L{idx + 1}"
+        portrait = doc.add_section(WD_SECTION.NEW_PAGE)
+        portrait.orientation = WD_ORIENT.PORTRAIT
+        if portrait.page_width > portrait.page_height:
+            portrait.page_width, portrait.page_height = portrait.page_height, portrait.page_width
+        doc.add_paragraph("Back to portrait section")
+        doc.save(path)
+
+        _rewrite_docx_part(path, "word/document.xml", lambda xml, name=wrapper_name: wrap_landscape_section_break(xml, name))
+
+        audit = audit_docx_source(str(path))
+        codes = {issue["code"] for issue in audit["issues"]}
+        assert_true("SOURCE_LANDSCAPE_SECTION_UNSUPPORTED" in codes, f"{wrapper_name} landscape section was not reported: {audit}")
+        if wrapper_name == "ins":
+            assert_true("TRACKED_CHANGES_PRESENT" in codes, f"{wrapper_name} revision wrapper should remain visible in audit: {audit}")
+        assert_true("COMPLEX_TABLE_UNSUPPORTED" in codes, f"{wrapper_name} wide table was not reported as complex: {audit}")
+        assert_true(audit["counts"].get("wide_table_count") == 1, f"{wrapper_name} wide table count missing: {audit}")
+        assert_true(
+            audit["counts"].get("landscape_wide_table_risk_count") == 1,
+            f"{wrapper_name} landscape wide table risk missing: {audit}",
+        )
+        detail = " ".join(str(issue.get("detail") or "") for issue in audit["issues"] if issue.get("code") == "COMPLEX_TABLE_UNSUPPORTED")
+        assert_true("wide_tables=1" in detail and "landscape_wide_tables=1" in detail, f"{wrapper_name} wide table detail incomplete: {audit}")
+
+
+@case
 def source_audit_counts_grid_after_row_omissions_as_columns() -> None:
     from content_parser_modules.source_audit import audit_docx_source
 
