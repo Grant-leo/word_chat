@@ -238,16 +238,18 @@ def render_rich_text_block_items_in_order(item, chapter=None, render_media=True,
     return rendered
 
 
-def rich_text_has_run_display_math(item):
+def rich_text_needs_run_stream_breaks(item):
     if not isinstance(item, dict):
         return False
     for run in item.get('runs') or []:
         if paragraph_item_has_display_math(run):
             return True
+        if isinstance(run, dict) and (run.get('items') or run.get('table_cell_items')):
+            return True
     return False
 
 
-def render_rich_text_runs_with_display_breaks(item, chapter=None):
+def render_rich_text_runs_with_block_breaks(item, chapter=None):
     if not isinstance(item, dict):
         return False
     runs = item.get('runs') or []
@@ -302,8 +304,8 @@ def looks_like_list_bridge_text(text):
 
 def render_paragraph_item(item, code_sensitive=False, chapter=None):
     if isinstance(item, dict) and item.get('role') == 'rich_text':
-        if rich_text_has_run_display_math(item):
-            render_rich_text_runs_with_display_breaks(item, chapter=chapter)
+        if rich_text_needs_run_stream_breaks(item):
+            render_rich_text_runs_with_block_breaks(item, chapter=chapter)
             render_rich_text_block_items_in_order(item, chapter=chapter, include_runs=False)
         else:
             add_rich_text_runs(item, role='body', first_indent=True, render_item_media=False)

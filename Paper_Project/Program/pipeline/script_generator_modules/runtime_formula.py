@@ -78,6 +78,14 @@ def _rich_text_image_items(run):
     return items
 
 
+def _rich_text_direct_image_item(run):
+    if not isinstance(run, dict):
+        return False
+    kind = str(run.get('type') or '').strip()
+    role = str(run.get('role') or '').strip()
+    return kind in ('image', 'figure') or role in ('image', 'figure') or bool(run.get('image') or run.get('filename') or run.get('asset'))
+
+
 def append_inline_image_run(p, run, rendered_image_keys=None):
     wrote = False
     for image_item in _rich_text_image_items(run):
@@ -134,8 +142,12 @@ def add_rich_text_runs(item, role='body', first_indent=True, render_item_media=T
         if kind == 'math':
             for m in _math_entries_from_item(run):
                 wrote = append_inline_formula(p, m) or wrote
-        elif kind in ('image', 'figure') or run.get('image') or run.get('filename') or run.get('asset') or _rich_text_image_items(run):
-            wrote = append_inline_image_run(p, run, rendered_image_keys) or wrote
+        elif _rich_text_direct_image_item(run) or (render_item_media and _rich_text_image_items(run)):
+            image_run = run
+            if _rich_text_direct_image_item(run) and not render_item_media:
+                image_run = dict(run)
+                image_run['items'] = []
+            wrote = append_inline_image_run(p, image_run, rendered_image_keys) or wrote
         elif kind == 'note_ref':
             wrote = append_note_reference(p, run) or wrote
         else:

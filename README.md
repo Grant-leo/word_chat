@@ -183,7 +183,8 @@ build_generated.py ─────────→ 最终论文.docx
 
 截至 2026-07-02：
 
-- 合成回归：`379 passed, 0 failed`
+- 合成回归：`380 passed, 0 failed`
+- DOCX 富文本 run 内嵌块级内容：`rich_text.runs[].items` 里的代码、图片、题注和小表会按源顺序插入在前后文字 run 之间；不会被提前塞进当前段落，也不会被整体推迟到整段文字之后。
 - DOCX 表格/嵌套表注释边界：四层嵌套表单元格会保持同段文字、图片、LaTeX、OMML 和脚注的源顺序；表格单元格中“图片后只有脚注锚点、没有可见文字”的情况也会在图片后原位渲染为 Word 原生脚注引用；表格单元格里的 block-level、inline 和嵌套 inline 内容控件文字会原位进入该单元格，内容控件内 `w:fldSimple` 的可见字段结果、`w:customXml` / `w:smartTag` 透明容器里的显示值也会按源顺序保留，内容控件内 hyperlink 包住图片、LaTeX、OMML 和脚注时也会保留原顺序，并在正文级内容控件兜底恢复时去重，避免重复正文；表格外正文级内容控件即使与表格单元格文本部分重叠或完全相同，也不会被误判为表格重复项；正文级 `w:sdtContent` 同时包住段落和表格时也会原位展开，元数据只统计正文段落，表格单元格文本不会被当成散落正文；正文级内容控件段落里的 inline `w:sdt` / `w:fldSimple` / hyperlink / `w:customXml` / `w:smartTag` 会递归保留图片、OMML/LaTeX 公式和脚注/尾注锚点顺序；带 `w:ins` / `w:moveTo` 的修订插入内容会按 Word 最终视图进入正文、表格、修订包裹的整行表格/单元格、标题路由和文本框恢复通道，`w:del` / `w:moveFrom` 删除内容与批注正文不会混入最终论文。
 - DOCX 正文透明容器边界：正文级 `w:customXml` / `w:smartTag` 包住段落和表格时，内容会原位进入正文流，后续普通段落不会被包装节点造成的索引差异替换或丢失。
 - 自动修复闭环回归：可修复 QA error、连续无改善停止、重建失败停止、needs_user_file 停止、strict/visual QA 依赖缺失、visual 参数保持、报告路径脱敏、停止后 `agent_summary` 汇总下一步均已覆盖
