@@ -380,6 +380,39 @@ def _iter_table_cell_elements(row_elem: Any) -> List[Any]:
     return cells
 
 
+def _flatten_over_depth_table_text_from_ooxml(
+    tbl_elem: Any,
+    clean_text_func: Optional[Callable[..., str]] = None,
+) -> str:
+    """Fail open for nested tables deeper than the structured-table limit."""
+    pieces: List[str] = []
+
+    def consume_child(child: Any) -> None:
+        local_name = _local_name(child)
+        if local_name == "p":
+            text = _clean_cell_text(paragraph_plain_text_from_ooxml(child), clean_text_func)
+            if text:
+                pieces.append(text)
+        elif local_name == "tbl":
+            text = _flatten_over_depth_table_text_from_ooxml(child, clean_text_func=clean_text_func)
+            if text:
+                pieces.append(text)
+        elif local_name == "sdt":
+            for nested in _sdt_content_children(child):
+                consume_child(nested)
+        elif local_name in _TRANSPARENT_CONTENT_CONTAINERS or local_name in _ACCEPTED_REVISION_CONTAINERS:
+            for nested in list(child):
+                consume_child(nested)
+        elif local_name in _DELETED_REVISION_CONTAINERS:
+            return
+
+    for row in _iter_table_row_elements(tbl_elem):
+        for cell in _iter_table_cell_elements(row):
+            for child in list(cell):
+                consume_child(child)
+    return "\n".join(piece for piece in pieces if piece).strip()
+
+
 def _row_hmerge_spans(row_elem: Any, grid_before: int = 0) -> Dict[int, int]:
     spans: Dict[int, int] = {}
     active_start: Optional[int] = None
@@ -1045,26 +1078,31 @@ def _cell_text_and_nested_items_from_ooxml(
                     notes=notes,
                 )
             )
-        elif local_name == "tbl" and nested_depth < max_nested_depth:
-            nested_data = extract_table_from_ooxml(
-                child,
-                clean_text_func=clean_text_func,
-                nested_depth=nested_depth + 1,
-                max_nested_depth=max_nested_depth,
-                image_rels=image_rels,
-                image_registry=image_registry,
-                image_items_func=image_items_func,
-                image_run_items_func=image_run_items_func,
-                notes=notes,
-            )
-            if nested_data.get("table_rows"):
-                nested_item: Dict[str, Any] = {
-                    "role": "table",
-                    "location": "nested_table_cell",
-                    "after_paragraph_index": len(text_parts),
-                }
-                nested_item.update(nested_data)
-                nested_items.append(nested_item)
+        elif local_name == "tbl":
+            if nested_depth < max_nested_depth:
+                nested_data = extract_table_from_ooxml(
+                    child,
+                    clean_text_func=clean_text_func,
+                    nested_depth=nested_depth + 1,
+                    max_nested_depth=max_nested_depth,
+                    image_rels=image_rels,
+                    image_registry=image_registry,
+                    image_items_func=image_items_func,
+                    image_run_items_func=image_run_items_func,
+                    notes=notes,
+                )
+                if nested_data.get("table_rows"):
+                    nested_item: Dict[str, Any] = {
+                        "role": "table",
+                        "location": "nested_table_cell",
+                        "after_paragraph_index": len(text_parts),
+                    }
+                    nested_item.update(nested_data)
+                    nested_items.append(nested_item)
+            else:
+                flattened = _flatten_over_depth_table_text_from_ooxml(child, clean_text_func=clean_text_func)
+                if flattened:
+                    text_parts.append(flattened)
         elif local_name == "sdt":
             for sdt_child in _sdt_content_children(child):
                 consume_cell_child(sdt_child)

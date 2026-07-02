@@ -2708,6 +2708,53 @@ def content_parser_preserves_six_level_nested_tables_in_cells() -> None:
 
 
 @case
+def content_parser_flattens_too_deep_nested_table_text_instead_of_dropping_it() -> None:
+    work = new_workdir("parser_too_deep_nested_table_text")
+    docx = work / "too_deep_nested_table_text.docx"
+    doc = Document()
+    outer = doc.add_table(rows=1, cols=1)
+    host = outer.cell(0, 0)
+    host.text = "Level 0 before"
+    for depth in range(1, 8):
+        nested = host.add_table(rows=1, cols=1)
+        host = nested.cell(0, 0)
+        host.text = "Level 7 beyond limit value" if depth == 7 else f"Level {depth} before"
+    for depth in range(6, -1, -1):
+        parent = outer.cell(0, 0)
+        for _ in range(depth):
+            parent = parent.tables[0].cell(0, 0)
+        parent.add_paragraph(f"Level {depth} after")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+
+    def flatten_table_text(item: Dict[str, Any]) -> str:
+        pieces: List[str] = []
+        for row in item.get("table_rows") or []:
+            pieces.extend(str(cell or "") for cell in row)
+        for entry in item.get("table_cell_items") or []:
+            for child in entry.get("items") or []:
+                if isinstance(child, dict) and child.get("role") == "table":
+                    pieces.append(flatten_table_text(child))
+                elif isinstance(child, dict):
+                    pieces.append(str(child.get("text") or child.get("code") or ""))
+        return "\n".join(part for part in pieces if part)
+
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"too-deep nested table should still have one outer table: {items}")
+    table_text = flatten_table_text(table_items[0])
+    assert_true(
+        "Level 7 beyond limit value" in table_text,
+        f"too-deep nested table text was silently dropped instead of flattened: {table_items[0]}",
+    )
+
+    result = run_generated_case("parser_too_deep_nested_table_text_generated", content, base_format())
+    assert_true("Level 7 beyond limit value" in result["xml"], "too-deep nested table text did not render")
+    assert_true(result["report"]["passed"] is True, f"too-deep nested table flatten render should pass QA: {result['report']}")
+
+
+@case
 def content_parser_preserves_nested_table_cell_inline_image_formula_and_footnote_order() -> None:
     work = new_workdir("parser_nested_table_cell_inline_image_formula_note")
     img = work / "nested_inline_image.png"
