@@ -1259,6 +1259,61 @@ def script_generator_splits_landscape_tables_around_display_math_bridge() -> Non
 
 
 @case
+def script_generator_splits_landscape_tables_around_rich_item_display_math_bridge() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Rich item formula bridge first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich item formula first header {idx}" for idx in range(1, 10)],
+                    [f"Rich item formula first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            {
+                "role": "rich_text",
+                "text": "Displayed item equation bridge should resume portrait flow.",
+                "items": [
+                    {
+                        "role": "formula",
+                        "text": r"E=mc^2",
+                        "math": {"type": "display", "text": r"E=mc^2", "latex": r"E=mc^2"},
+                    }
+                ],
+            },
+            {"role": "table_caption", "text": "表 2 Rich item formula bridge second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich item formula second header {idx}" for idx in range(1, 10)],
+                    [f"Rich item formula second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after rich item formula bridge landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("landscape_tables_rich_item_display_math_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "rich_text.items display formula bridge should split adjacent landscape tables into separate landscape sections",
+    )
+    assert_true("<m:oMath" in result["xml"], "rich_text.items display formula bridge should render as native OMML")
+    counts = result["manifest"]["counts"]
+    assert_true(counts.get("content_formulas_rendered", 0) >= 1, f"rich_text.items formula not counted: {counts}")
+
+
+@case
 def script_generator_splits_landscape_tables_around_rich_image_bridge() -> None:
     img_src = new_workdir("landscape_rich_image_bridge_src")
     write_sample_png(img_src / "bridge.png", width=180, height=120)

@@ -52,6 +52,12 @@ def paragraph_item_has_display_math(item):
         for math_entry in iter_math_entries(run.get('math')):
             if math_entry_is_display(math_entry):
                 return True
+        for nested in run.get('items') or []:
+            if paragraph_item_has_display_math(nested):
+                return True
+    for nested in item.get('items') or []:
+        if paragraph_item_has_display_math(nested):
+            return True
     for cell in item.get('table_cell_items') or []:
         for nested in cell.get('items') or []:
             if paragraph_item_has_display_math(nested):
