@@ -2755,6 +2755,121 @@ def content_parser_flattens_too_deep_nested_table_text_instead_of_dropping_it() 
 
 
 @case
+def content_parser_flattens_too_deep_nested_table_media_formula_and_note() -> None:
+    work = new_workdir("parser_too_deep_nested_table_media_formula_note")
+    img = work / "too_deep_nested_image.png"
+    write_sample_png(img, width=128, height=96)
+    docx = work / "too_deep_nested_table_media_formula_note.docx"
+    doc = Document()
+    outer = doc.add_table(rows=1, cols=1)
+    host = outer.cell(0, 0)
+    host.text = "Level 0 before"
+    for depth in range(1, 8):
+        nested = host.add_table(rows=1, cols=1)
+        host = nested.cell(0, 0)
+        if depth == 7:
+            host.text = ""
+            para = host.paragraphs[0]
+            para.add_run("TooDeepLead")
+            para.add_run().add_picture(str(img))
+            para.add_run(r"TooDeep formula $a=1$ and ")
+            para._element.append(etree.fromstring(latex_to_omath(r"b=2", display=False).encode("utf-8")))
+            para.add_run(" noted")
+        else:
+            host.text = f"Level {depth} before"
+    for depth in range(6, -1, -1):
+        parent = outer.cell(0, 0)
+        for _ in range(depth):
+            parent = parent.tables[0].cell(0, 0)
+        parent.add_paragraph(f"Level {depth} after")
+    doc.save(docx)
+
+    footnote_text = "Too-deep nested table note must stay visible after flattening."
+
+    def inject_reference(xml: str) -> str:
+        replacements = [
+            (
+                '<w:t xml:space="preserve"> noted</w:t></w:r></w:p>',
+                '<w:t xml:space="preserve"> noted</w:t></w:r><w:r><w:footnoteReference w:id="9"/></w:r></w:p>',
+            ),
+            (
+                "<w:t> noted</w:t></w:r></w:p>",
+                '<w:t> noted</w:t></w:r><w:r><w:footnoteReference w:id="9"/></w:r></w:p>',
+            ),
+        ]
+        for old, new in replacements:
+            if old in xml:
+                return xml.replace(old, new, 1)
+        return xml
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_reference)
+    with zipfile.ZipFile(docx, "a") as zf:
+        zf.writestr(
+            "word/footnotes.xml",
+            (
+                '<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                '<w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>'
+                '<w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>'
+                f'<w:footnote w:id="9"><w:p><w:r><w:t>{footnote_text}</w:t></w:r></w:p></w:footnote>'
+                "</w:footnotes>"
+            ),
+        )
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"too-deep media nested table should still have one outer table: {items}")
+
+    current = table_items[0]
+    for depth in range(1, 7):
+        current = next(
+            (
+                item
+                for entry in current.get("table_cell_items") or []
+                if entry.get("row") == 0 and entry.get("col") == 0
+                for item in entry.get("items") or []
+                if isinstance(item, dict) and item.get("role") == "table"
+            ),
+            None,
+        )
+        assert_true(current, f"nested table depth {depth} was not attached to its parent cell")
+
+    deepest_cell_items = [
+        item
+        for entry in current.get("table_cell_items") or []
+        if entry.get("row") == 0 and entry.get("col") == 0
+        for item in entry.get("items") or []
+        if isinstance(item, dict)
+    ]
+    image_item = next((item for item in deepest_cell_items if item.get("role") == "image"), None)
+    rich_item = next((item for item in deepest_cell_items if item.get("role") == "rich_text"), None)
+    assert_true(image_item and image_item.get("after_paragraph_index") == 2, f"too-deep image was dropped or misplaced: {current}")
+    assert_true(
+        rich_item and rich_item.get("replace_paragraph_index") == 2,
+        f"too-deep formula/note rich text was dropped or misplaced: {current}",
+    )
+    assert_true(
+        [run.get("type") for run in rich_item.get("runs") or []] == ["text", "math", "text", "math", "text", "note_ref"],
+        f"too-deep formula/note run order changed: {rich_item}",
+    )
+    assert_true((rich_item.get("notes") or [{}])[0].get("text") == footnote_text, f"too-deep note text lost: {rich_item}")
+
+    result = run_generated_case("parser_too_deep_nested_table_media_formula_note_generated", content, base_format())
+    xml = result["xml"]
+    assert_true("$a=1$" not in xml, "too-deep table-cell formula leaked LaTeX delimiters into generated XML")
+    assert_true(omath_count(xml) >= 2, "too-deep table-cell LaTeX/OMML formulas did not render as native math")
+    assert_true(xml.count("<w:drawing>") == 1, f"too-deep table-cell image did not render exactly once: {result['manifest']}")
+    assert_true("<w:footnoteReference" in xml, "too-deep table-cell footnote did not render as native reference")
+    assert_true(
+        xml.find("TooDeepLead") < xml.find("<w:drawing>") < xml.find("TooDeep formula") < xml.find("<w:footnoteReference"),
+        "too-deep table-cell image/formula/footnote source order changed after flattening",
+    )
+    assert_true(result["manifest"]["counts"].get("inline_formulas_rendered", 0) >= 2, f"inline formula count missing: {result['manifest']}")
+    assert_true(result["manifest"]["counts"].get("footnote_references_rendered") == 1, f"footnote count missing: {result['manifest']}")
+    assert_true(result["report"]["passed"] is True, f"too-deep inline image/formula/note render should pass QA: {result['report']}")
+
+
+@case
 def content_parser_preserves_nested_table_cell_inline_image_formula_and_footnote_order() -> None:
     work = new_workdir("parser_nested_table_cell_inline_image_formula_note")
     img = work / "nested_inline_image.png"
