@@ -461,12 +461,14 @@ def landscape_table_bridge_run_at(paragraphs, idx, anchor_table_item=None):
     return None
 
 
-def render_landscape_table_group(paragraphs, idx, current_chapter):
+def render_landscape_table_group(paragraphs, idx, current_chapter, leading_caption_text=None):
     first_group = table_group_at(paragraphs, idx)
     if not first_group:
         return idx
     started = begin_table_source_section(first_group.get('table_item'))
     try:
+        if leading_caption_text:
+            add_caption(next_table_caption(leading_caption_text, current_chapter), 'table_caption')
         while True:
             group = table_group_at(paragraphs, idx)
             if not group:
@@ -518,13 +520,23 @@ def render_body():
         if sec.get('page_break_before') and rendered_body_sections > 0:
             doc.add_page_break()
         rendered_body_sections += 1
+        paragraphs = sec.get('paragraphs', []) or []
+        first_table_group = table_group_at(paragraphs, 0)
+        defer_heading_table_caption = (
+            h if (
+                is_table_caption_text(h)
+                and first_table_group
+                and not first_table_group.get('caption_item')
+                and not first_table_group.get('title_text')
+            ) else None
+        )
         if is_caption_heading(h):
-            add_caption(h, 'figure_caption' if is_figure_caption_text(h) else 'table_caption')
+            if not defer_heading_table_caption:
+                add_caption(h, 'figure_caption' if is_figure_caption_text(h) else 'table_caption')
         elif h and h != '正文':
             add_heading(h, sec.get('level') or 1)
             if int(sec.get('level') or 1) == 1:
                 current_chapter = chapter_number_from_heading(h) or current_chapter
-        paragraphs = sec.get('paragraphs', []) or []
         has_inline_images = any(paragraph_item_has_image(x) for x in paragraphs)
         # New content_parser keeps images in the paragraph stream.  For old
         # content.json files, fall back to section-level images, but do not
@@ -538,7 +550,10 @@ def render_body():
             para = paragraphs[idx]
             nxt = paragraphs[idx + 1] if idx + 1 < len(paragraphs) else None
             if table_group_at(paragraphs, idx):
-                idx = render_landscape_table_group(paragraphs, idx, current_chapter)
+                leading_caption = defer_heading_table_caption if idx == 0 else None
+                idx = render_landscape_table_group(paragraphs, idx, current_chapter, leading_caption)
+                if leading_caption:
+                    defer_heading_table_caption = None
                 continue
             if isinstance(para, dict) and para.get('role') == 'table_caption' and is_table_item(nxt):
                 started = begin_table_source_section(nxt)

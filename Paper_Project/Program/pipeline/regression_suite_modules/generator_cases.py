@@ -796,6 +796,77 @@ def script_generator_keeps_structured_caption_with_landscape_table_section() -> 
 
 
 @case
+def script_generator_keeps_section_heading_caption_with_landscape_table_section() -> None:
+    content = base_content(["Intro body before target table section."], meta_tables=1)
+    content["sections"].append(
+        {
+            "heading": "Table 1 Section-heading landscape table",
+            "level": 1,
+            "role": "body",
+            "paragraphs": [
+                {
+                    "role": "table",
+                    "table_rows": [
+                        [f"Heading wide header {idx}" for idx in range(1, 10)],
+                        [f"Heading wide body {idx}" for idx in range(1, 10)],
+                    ],
+                    "table_col_widths_twips": [1200] * 9,
+                    "source_section_page_setup": {
+                        "orientation": "landscape",
+                        "page_width_twips": 15840,
+                        "page_height_twips": 12240,
+                        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+                    },
+                },
+                "Portrait body after section-heading landscape table.",
+            ],
+            "images": [],
+        }
+    )
+    result = run_generated_case("section_heading_caption_landscape_table", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 1,
+        "section-heading landscape table should render one landscape section",
+    )
+    assert_true(
+        result["manifest"]["counts"].get("content_landscape_table_sections_rendered") == 1,
+        "source landscape section count missing for section-heading table",
+    )
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def has_sectpr(child: ET.Element) -> bool:
+        return child.tag == f"{W_NS}sectPr" or child.find(f".//{W_NS}sectPr") is not None
+
+    def has_landscape_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") == "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    table_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Heading wide header 1" in child_text(child)),
+        -1,
+    )
+    caption_idx = max(
+        (idx for idx, child in enumerate(children[:table_idx]) if "Section-heading landscape table" in child_text(child)),
+        default=-1,
+    )
+    after_idx = next((idx for idx, child in enumerate(children) if "Portrait body after section-heading landscape table." in child_text(child)), -1)
+    assert_true(caption_idx >= 0 and table_idx >= 0 and after_idx >= 0, "section heading caption/table/following body markers missing")
+
+    previous_section_break = max((idx for idx, child in enumerate(children[:table_idx]) if has_sectpr(child)), default=-1)
+    landscape_section_break = next((idx for idx, child in enumerate(children[table_idx + 1 :], start=table_idx + 1) if has_landscape_section(child)), -1)
+    assert_true(
+        previous_section_break < caption_idx < table_idx < landscape_section_break < after_idx,
+        "section heading table caption should be inside the same landscape section as the first wide table",
+    )
+
+
+@case
 def script_generator_auto_landscapes_plain_wide_tables() -> None:
     content = base_content(
         [
