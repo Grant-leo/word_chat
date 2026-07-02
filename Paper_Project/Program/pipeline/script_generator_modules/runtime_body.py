@@ -140,6 +140,30 @@ def paragraph_item_has_caption(item):
     return bool(paragraph_item_nested_caption_items(item))
 
 
+def render_rich_text_block_items_in_order(item, chapter=None):
+    if not isinstance(item, dict):
+        return False
+    if paragraph_item_is_caption(item):
+        caption_role = 'figure_caption' if item.get('role') == 'figure_caption' else 'table_caption'
+        add_caption(item.get('text') or '', caption_role)
+        return True
+    if paragraph_item_is_code(item):
+        add_code_block(item.get('code') or item.get('text') or code_text_from_rows(item.get('table_rows') or []))
+        return True
+    if is_table_item(item):
+        render_table_item(item)
+        return True
+    rendered = False
+    for nested in item.get('runs') or []:
+        rendered = render_rich_text_block_items_in_order(nested, chapter=chapter) or rendered
+    for nested in item.get('items') or []:
+        rendered = render_rich_text_block_items_in_order(nested, chapter=chapter) or rendered
+    for cell in item.get('table_cell_items') or []:
+        for nested in cell.get('items') or []:
+            rendered = render_rich_text_block_items_in_order(nested, chapter=chapter) or rendered
+    return rendered
+
+
 def looks_like_list_bridge_text(text):
     t = clean_text_artifacts(text).strip()
     if not t:
@@ -164,13 +188,7 @@ def looks_like_list_bridge_text(text):
 def render_paragraph_item(item, code_sensitive=False, chapter=None):
     if isinstance(item, dict) and item.get('role') == 'rich_text':
         add_rich_text_runs(item, role='body', first_indent=True)
-        for caption_item in paragraph_item_nested_caption_items(item):
-            caption_role = 'figure_caption' if caption_item.get('role') == 'figure_caption' else 'table_caption'
-            add_caption(caption_item.get('text') or '', caption_role)
-        for table_item in paragraph_item_nested_table_items(item):
-            render_table_item(table_item)
-        for code_item in paragraph_item_nested_code_items(item):
-            add_code_block(code_item.get('code') or code_item.get('text') or code_text_from_rows(code_item.get('table_rows') or []))
+        render_rich_text_block_items_in_order(item, chapter=chapter)
         return
     if isinstance(item, dict) and item.get('role') == 'formula_problem':
         add_text(item.get('text') or '', role='body', first_indent=True)
