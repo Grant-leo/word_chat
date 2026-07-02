@@ -2531,6 +2531,63 @@ def content_parser_preserves_five_level_nested_tables_in_cells() -> None:
 
 
 @case
+def content_parser_preserves_six_level_nested_tables_in_cells() -> None:
+    work = new_workdir("parser_six_level_nested_table_cell")
+    docx = work / "six_level_nested_table_cell.docx"
+    doc = Document()
+    outer = doc.add_table(rows=1, cols=1)
+    host = outer.cell(0, 0)
+    host.text = "Level 0 before"
+    expected_rows = ["Level 0 before\nLevel 0 after"]
+    for depth in range(1, 7):
+        nested = host.add_table(rows=1, cols=1)
+        host = nested.cell(0, 0)
+        text = f"Level {depth} deepest value" if depth == 6 else f"Level {depth} before"
+        host.text = text
+        expected_rows.append(text if depth == 6 else f"Level {depth} before\nLevel {depth} after")
+    for depth in range(5, -1, -1):
+        parent = outer.cell(0, 0)
+        for _ in range(depth):
+            parent = parent.tables[0].cell(0, 0)
+        parent.add_paragraph(f"Level {depth} after")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    assert_true(content.get("_meta", {}).get("tables_count") == 7, f"six-level nested table count missing: {content.get('_meta')}")
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"six-level nested tables should stay inside the outer table cell: {items}")
+
+    current = table_items[0]
+    for depth, expected_text in enumerate(expected_rows):
+        assert_true(
+            current.get("table_rows") == [[expected_text]],
+            f"nested table depth {depth} text changed: {current}",
+        )
+        if depth == len(expected_rows) - 1:
+            break
+        current = next(
+            (
+                item
+                for entry in current.get("table_cell_items") or []
+                if entry.get("row") == 0 and entry.get("col") == 0
+                for item in entry.get("items") or []
+                if isinstance(item, dict) and item.get("role") == "table"
+            ),
+            None,
+        )
+        assert_true(current, f"nested table depth {depth + 1} was not attached to its parent cell")
+
+    result = run_generated_case("parser_six_level_nested_table_cell_generated", content, base_format())
+    assert_true("Level 6 deepest value" in result["xml"], "sixth-level nested table text did not render")
+    assert_true(
+        result["manifest"]["counts"].get("content_nested_tables_rendered", 0) >= 6,
+        f"six nested table render count missing: {result['manifest']}",
+    )
+    assert_true(result["report"]["passed"] is True, f"six-level nested table render should pass QA: {result['report']}")
+
+
+@case
 def content_parser_preserves_nested_table_cell_inline_image_formula_and_footnote_order() -> None:
     work = new_workdir("parser_nested_table_cell_inline_image_formula_note")
     img = work / "nested_inline_image.png"

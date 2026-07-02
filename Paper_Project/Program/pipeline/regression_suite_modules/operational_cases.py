@@ -458,7 +458,7 @@ def source_audit_counts_visible_vmerge_continuations_without_content_leakage() -
 
 
 @case
-def source_audit_allows_five_level_nested_tables_and_flags_deeper_nesting() -> None:
+def source_audit_allows_six_level_nested_tables_and_flags_deeper_nesting() -> None:
     from content_parser_modules.source_audit import audit_docx_source
 
     work = new_workdir("source_audit_nested_tables")
@@ -551,13 +551,33 @@ def source_audit_allows_five_level_nested_tables_and_flags_deeper_nesting() -> N
     deepest = deeper.cell(0, 0).add_table(rows=1, cols=1)
     too_deep = deepest.cell(0, 0).add_table(rows=1, cols=1)
     beyond_limit = too_deep.cell(0, 0).add_table(rows=1, cols=1)
-    still_deeper = beyond_limit.cell(0, 0).add_table(rows=1, cols=1)
-    still_deeper.cell(0, 0).text = "Still needs review"
+    supported_deep = beyond_limit.cell(0, 0).add_table(rows=1, cols=1)
+    supported_deep.cell(0, 0).text = "Six levels are supported"
     doc.save(six_level)
     six_audit = audit_docx_source(str(six_level))
     six_codes = {issue["code"] for issue in six_audit["issues"]}
-    assert_true("COMPLEX_TABLE_UNSUPPORTED" in six_codes, f"six-level nested table was not reported: {six_audit}")
+    assert_true(
+        "COMPLEX_TABLE_UNSUPPORTED" not in six_codes,
+        f"six-level nested table should be handled by the engine, not blocked as complex: {six_audit}",
+    )
     assert_true(six_audit["counts"].get("nested_table_max_depth") == 6, f"six-level nested depth missing: {six_audit}")
+
+    seven_level = work / "seven_level_nested.docx"
+    doc = Document()
+    outer = doc.add_table(rows=1, cols=1)
+    nested = outer.cell(0, 0).add_table(rows=1, cols=1)
+    deeper = nested.cell(0, 0).add_table(rows=1, cols=1)
+    deepest = deeper.cell(0, 0).add_table(rows=1, cols=1)
+    too_deep = deepest.cell(0, 0).add_table(rows=1, cols=1)
+    beyond_limit = too_deep.cell(0, 0).add_table(rows=1, cols=1)
+    still_supported = beyond_limit.cell(0, 0).add_table(rows=1, cols=1)
+    still_deeper = still_supported.cell(0, 0).add_table(rows=1, cols=1)
+    still_deeper.cell(0, 0).text = "Still needs review"
+    doc.save(seven_level)
+    seven_audit = audit_docx_source(str(seven_level))
+    seven_codes = {issue["code"] for issue in seven_audit["issues"]}
+    assert_true("COMPLEX_TABLE_UNSUPPORTED" in seven_codes, f"seven-level nested table was not reported: {seven_audit}")
+    assert_true(seven_audit["counts"].get("nested_table_max_depth") == 7, f"seven-level nested depth missing: {seven_audit}")
 
 
 @case
