@@ -85,6 +85,34 @@ def paragraph_item_has_table(item):
     return bool(paragraph_item_nested_table_items(item))
 
 
+def paragraph_item_is_code(item):
+    if not isinstance(item, dict):
+        return False
+    role = str(item.get('role') or '').strip()
+    kind = str(item.get('type') or '').strip()
+    return role == 'code' or kind == 'code' or bool(item.get('code'))
+
+
+def paragraph_item_nested_code_items(item):
+    if not isinstance(item, dict):
+        return []
+    if paragraph_item_is_code(item):
+        return [item]
+    code_items = []
+    for nested in item.get('runs') or []:
+        code_items.extend(paragraph_item_nested_code_items(nested))
+    for nested in item.get('items') or []:
+        code_items.extend(paragraph_item_nested_code_items(nested))
+    for cell in item.get('table_cell_items') or []:
+        for nested in cell.get('items') or []:
+            code_items.extend(paragraph_item_nested_code_items(nested))
+    return code_items
+
+
+def paragraph_item_has_code(item):
+    return bool(paragraph_item_nested_code_items(item))
+
+
 def looks_like_list_bridge_text(text):
     t = clean_text_artifacts(text).strip()
     if not t:
@@ -111,6 +139,8 @@ def render_paragraph_item(item, code_sensitive=False, chapter=None):
         add_rich_text_runs(item, role='body', first_indent=True)
         for table_item in paragraph_item_nested_table_items(item):
             render_table_item(table_item)
+        for code_item in paragraph_item_nested_code_items(item):
+            add_code_block(code_item.get('code') or code_item.get('text') or code_text_from_rows(code_item.get('table_rows') or []))
         return
     if isinstance(item, dict) and item.get('role') == 'formula_problem':
         add_text(item.get('text') or '', role='body', first_indent=True)
@@ -215,7 +245,7 @@ def landscape_table_bridge_text(item):
         role = str(item.get('role') or '').strip()
         if role in ('table_caption', 'figure_caption', 'figure', 'image', 'code', 'formula', 'formula_problem'):
             return ''
-        if paragraph_item_has_image(item) or paragraph_item_has_display_math(item) or paragraph_item_has_table(item) or item.get('code'):
+        if paragraph_item_has_image(item) or paragraph_item_has_display_math(item) or paragraph_item_has_table(item) or paragraph_item_has_code(item):
             return ''
         text = clean_text_artifacts(item.get('text') or '').strip()
     else:
