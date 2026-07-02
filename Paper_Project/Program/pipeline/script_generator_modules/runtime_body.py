@@ -178,6 +178,17 @@ def render_inline_ordered_math(entry):
     return add_rich_text_runs({'runs': [run]}, role='body', first_indent=True) is not None
 
 
+def paragraph_item_has_direct_display_math(item):
+    if not isinstance(item, dict):
+        return False
+    for math_entry in _math_entry_list(item.get('math')):
+        if math_entry_requests_display(math_entry, default_display=False):
+            return True
+    if (item.get('latex') or item.get('xml')) and math_entry_requests_display(item, default_display=False):
+        return True
+    return False
+
+
 def render_ordered_math_item(item, chapter=None):
     if item.get('math') and not item.get('latex') and not item.get('xml'):
         rendered = False
@@ -197,7 +208,7 @@ def render_ordered_math_item(item, chapter=None):
     return True
 
 
-def render_rich_text_block_items_in_order(item, chapter=None, render_media=True):
+def render_rich_text_block_items_in_order(item, chapter=None, render_media=True, include_runs=True):
     if not isinstance(item, dict):
         return False
     if render_media and paragraph_item_is_image_item(item):
@@ -216,13 +227,55 @@ def render_rich_text_block_items_in_order(item, chapter=None, render_media=True)
         render_table_item(item)
         return True
     rendered = False
-    for nested in item.get('runs') or []:
-        rendered = render_rich_text_block_items_in_order(nested, chapter=chapter, render_media=False) or rendered
+    if include_runs:
+        for nested in item.get('runs') or []:
+            rendered = render_rich_text_block_items_in_order(nested, chapter=chapter, render_media=False) or rendered
     for nested in item.get('items') or []:
         rendered = render_rich_text_block_items_in_order(nested, chapter=chapter, render_media=True) or rendered
     for cell in item.get('table_cell_items') or []:
         for nested in cell.get('items') or []:
             rendered = render_rich_text_block_items_in_order(nested, chapter=chapter, render_media=True) or rendered
+    return rendered
+
+
+def rich_text_has_run_display_math(item):
+    if not isinstance(item, dict):
+        return False
+    for run in item.get('runs') or []:
+        if paragraph_item_has_display_math(run):
+            return True
+    return False
+
+
+def render_rich_text_runs_with_display_breaks(item, chapter=None):
+    if not isinstance(item, dict):
+        return False
+    runs = item.get('runs') or []
+    if not runs:
+        return add_rich_text_runs(item, role='body', first_indent=True, render_item_media=False) is not None
+
+    rendered = False
+    pending_runs = []
+
+    def flush_pending_runs():
+        nonlocal rendered, pending_runs
+        if not pending_runs:
+            return
+        if add_rich_text_runs({'runs': list(pending_runs)}, role='body', first_indent=True, render_item_media=False) is not None:
+            rendered = True
+        pending_runs = []
+
+    for run in runs:
+        if isinstance(run, dict) and paragraph_item_has_direct_display_math(run):
+            flush_pending_runs()
+            rendered = render_ordered_math_item(run, chapter=chapter) or rendered
+        else:
+            pending_runs.append(run)
+        if isinstance(run, dict) and run.get('items'):
+            flush_pending_runs()
+            for nested in run.get('items') or []:
+                rendered = render_rich_text_block_items_in_order(nested, chapter=chapter, render_media=True) or rendered
+    flush_pending_runs()
     return rendered
 
 
@@ -249,8 +302,12 @@ def looks_like_list_bridge_text(text):
 
 def render_paragraph_item(item, code_sensitive=False, chapter=None):
     if isinstance(item, dict) and item.get('role') == 'rich_text':
-        add_rich_text_runs(item, role='body', first_indent=True, render_item_media=False)
-        render_rich_text_block_items_in_order(item, chapter=chapter)
+        if rich_text_has_run_display_math(item):
+            render_rich_text_runs_with_display_breaks(item, chapter=chapter)
+            render_rich_text_block_items_in_order(item, chapter=chapter, include_runs=False)
+        else:
+            add_rich_text_runs(item, role='body', first_indent=True, render_item_media=False)
+            render_rich_text_block_items_in_order(item, chapter=chapter)
         return
     if isinstance(item, dict) and item.get('role') == 'formula_problem':
         add_text(item.get('text') or '', role='body', first_indent=True)

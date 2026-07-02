@@ -2158,6 +2158,99 @@ def script_generator_preserves_rich_item_inline_formula_shape_in_landscape_table
 
 
 @case
+def script_generator_preserves_rich_run_display_formula_shape_in_landscape_tables_bridge() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Rich run display formula first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich run display formula first header {idx}" for idx in range(1, 10)],
+                    [f"Rich run display formula first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            {
+                "role": "rich_text",
+                "text": "Run display formula bridge should keep display shape.",
+                "runs": [
+                    {"type": "text", "text": "Run display formula bridge before block math."},
+                    {
+                        "type": "math",
+                        "text": r"F=ma",
+                        "math": [{"type": "display", "text": r"F=ma", "latex": r"F=ma"}],
+                    },
+                    {"type": "text", "text": "Run display formula bridge after block math."},
+                ],
+                "math": [{"type": "display", "text": r"F=ma", "latex": r"F=ma"}],
+            },
+            {"role": "table_caption", "text": "表 2 Rich run display formula second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich run display formula second header {idx}" for idx in range(1, 10)],
+                    [f"Rich run display formula second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after rich run display formula landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("landscape_tables_rich_run_display_formula_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "rich_text run display formula bridge should split adjacent landscape tables into separate landscape sections",
+    )
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+    m_ns = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def child_has_loose_inline_math(child: ET.Element) -> bool:
+        parents = {id(desc): parent for parent in child.iter() for desc in parent}
+        return any(
+            node.tag == f"{m_ns}oMath" and parents.get(id(node)) is not None and parents[id(node)].tag != f"{m_ns}oMathPara"
+            for node in child.iter()
+        )
+
+    def child_has_display_math(child: ET.Element) -> bool:
+        return any(node.tag == f"{m_ns}oMathPara" for node in child.iter())
+
+    before_idx = next(
+        (idx for idx, child in enumerate(children) if "Run display formula bridge before block math." in child_text(child)),
+        -1,
+    )
+    formula_idx = next((idx for idx, child in enumerate(children) if child_has_display_math(child) or child_has_loose_inline_math(child)), -1)
+    after_idx = next(
+        (idx for idx, child in enumerate(children) if "Run display formula bridge after block math." in child_text(child)),
+        -1,
+    )
+    assert_true(min(before_idx, formula_idx, after_idx) >= 0, "rich run display formula bridge markers missing")
+    assert_true(
+        before_idx < formula_idx < after_idx,
+        "rich_text run display formula should stay in source order between surrounding text runs",
+    )
+    assert_true(child_has_display_math(children[formula_idx]), "display formula run should render as display OMML math")
+    assert_true(not child_has_loose_inline_math(children[formula_idx]), "display formula run should not be collapsed into inline OMML math")
+    counts = result["manifest"]["counts"]
+    assert_true(counts.get("content_formulas_rendered", 0) >= 1, f"rich_text run display formula not counted: {counts}")
+
+
+@case
 def script_generator_does_not_promote_landscape_numbered_heading_bridge_to_table_caption() -> None:
     landscape_setup = {
         "orientation": "landscape",
