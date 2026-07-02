@@ -111,11 +111,11 @@ def _rich_text_item_math_entries(item):
     return entries
 
 
-def add_rich_text_runs(item, role='body', first_indent=True):
+def add_rich_text_runs(item, role='body', first_indent=True, render_item_media=True):
     prof = profile(role)
     runs = item.get('runs') or []
-    has_item_images = bool(_rich_text_image_items(item))
-    item_math_entries = _rich_text_item_math_entries(item)
+    has_item_images = render_item_media and bool(_rich_text_image_items(item))
+    item_math_entries = _rich_text_item_math_entries(item) if render_item_media else []
     if not runs:
         text = str(item.get('text') or '').strip()
         if text:

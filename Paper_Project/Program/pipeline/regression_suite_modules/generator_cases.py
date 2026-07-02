@@ -1948,6 +1948,109 @@ def script_generator_preserves_rich_item_block_order_in_landscape_tables_bridge(
 
 
 @case
+def script_generator_preserves_rich_item_media_order_in_landscape_tables_bridge() -> None:
+    img_src = new_workdir("landscape_rich_item_media_order_src")
+    write_sample_png(img_src / "ordered_media_bridge.png", width=180, height=120)
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Rich item media ordered bridge first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich item media ordered first header {idx}" for idx in range(1, 10)],
+                    [f"Rich item media ordered first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            {
+                "role": "rich_text",
+                "text": "Ordered media bridge should keep source order.",
+                "items": [
+                    {
+                        "role": "code",
+                        "code": "media_order_code_marker = 11",
+                    },
+                    {
+                        "role": "image",
+                        "image": "ordered_media_bridge.png",
+                    },
+                    {
+                        "role": "figure_caption",
+                        "text": "Figure 11 Ordered media bridge caption",
+                    },
+                    {
+                        "role": "table",
+                        "table_rows": [["Ordered media bridge metric", "Ordered media bridge value"]],
+                    },
+                ],
+            },
+            {"role": "table_caption", "text": "表 2 Rich item media ordered bridge second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich item media ordered second header {idx}" for idx in range(1, 10)],
+                    [f"Rich item media ordered second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after rich item media ordered bridge landscape tables.",
+        ],
+        meta_tables=3,
+    )
+    content["_meta"]["images_dir"] = str(img_src)
+    content["_meta"]["images_extracted"] = 1
+    content["sections"][0]["images"] = ["ordered_media_bridge.png"]
+    result = run_generated_case("landscape_tables_rich_item_media_ordered_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "rich_text.items ordered media bridge should split adjacent landscape tables into separate landscape sections",
+    )
+    assert_true("<w:drawing>" in result["xml"], "rich_text.items ordered media bridge should render the nested image")
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def child_has_drawing(child: ET.Element) -> bool:
+        return any(node.tag == f"{W_NS}drawing" for node in child.iter())
+
+    bridge_text_idx = next(
+        (idx for idx, child in enumerate(children) if "Ordered media bridge should keep source order." in child_text(child)),
+        -1,
+    )
+    code_idx = next(
+        (idx for idx, child in enumerate(children) if "media_order_code_marker = 11" in child_text(child)),
+        -1,
+    )
+    image_idx = next((idx for idx, child in enumerate(children) if child_has_drawing(child)), -1)
+    caption_idx = next(
+        (idx for idx, child in enumerate(children) if "Fig. 11 Ordered media bridge caption" in child_text(child)),
+        -1,
+    )
+    bridge_table_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Ordered media bridge metric" in child_text(child)),
+        -1,
+    )
+    assert_true(min(bridge_text_idx, code_idx, image_idx, caption_idx, bridge_table_idx) >= 0, "rich item ordered media bridge markers missing")
+    assert_true(
+        bridge_text_idx < code_idx < image_idx < caption_idx < bridge_table_idx,
+        "rich_text.items media and block children should render in source order after the bridge text",
+    )
+
+
+@case
 def script_generator_does_not_promote_landscape_numbered_heading_bridge_to_table_caption() -> None:
     landscape_setup = {
         "orientation": "landscape",

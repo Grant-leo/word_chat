@@ -26,6 +26,14 @@ def paragraph_item_has_image(item):
     return False
 
 
+def paragraph_item_is_image_item(item):
+    if not isinstance(item, dict):
+        return False
+    role = str(item.get('role') or '').strip()
+    kind = str(item.get('type') or '').strip()
+    return role in ('image', 'figure') or kind in ('image', 'figure') or bool(item.get('image') or item.get('filename') or item.get('asset'))
+
+
 def paragraph_item_has_display_math(item):
     if not isinstance(item, dict):
         return False
@@ -140,9 +148,38 @@ def paragraph_item_has_caption(item):
     return bool(paragraph_item_nested_caption_items(item))
 
 
-def render_rich_text_block_items_in_order(item, chapter=None):
+def paragraph_item_is_formula_item(item):
     if not isinstance(item, dict):
         return False
+    role = str(item.get('role') or '').strip()
+    kind = str(item.get('type') or '').strip()
+    if role == 'rich_text':
+        return False
+    return role == 'formula' or kind in ('formula', 'math') or bool(item.get('latex') or item.get('xml') or item.get('math'))
+
+
+def render_ordered_math_item(item, chapter=None):
+    if item.get('math') and not item.get('latex') and not item.get('xml'):
+        rendered = False
+        for math_entry in _math_entry_list(item.get('math')):
+            sub_item = dict(item)
+            sub_item['math'] = [math_entry]
+            sub_item['text'] = clean_formula_text(math_entry.get('text') or item.get('text') or '')
+            render_formula(sub_item, chapter)
+            rendered = True
+        return rendered
+    render_formula(item, chapter)
+    return True
+
+
+def render_rich_text_block_items_in_order(item, chapter=None, render_media=True):
+    if not isinstance(item, dict):
+        return False
+    if render_media and paragraph_item_is_image_item(item):
+        render_image(item.get('image') or item.get('filename') or item.get('asset') or '', item.get('caption') or '')
+        return True
+    if render_media and paragraph_item_is_formula_item(item):
+        return render_ordered_math_item(item, chapter=chapter)
     if paragraph_item_is_caption(item):
         caption_role = 'figure_caption' if item.get('role') == 'figure_caption' else 'table_caption'
         add_caption(item.get('text') or '', caption_role)
@@ -155,12 +192,12 @@ def render_rich_text_block_items_in_order(item, chapter=None):
         return True
     rendered = False
     for nested in item.get('runs') or []:
-        rendered = render_rich_text_block_items_in_order(nested, chapter=chapter) or rendered
+        rendered = render_rich_text_block_items_in_order(nested, chapter=chapter, render_media=False) or rendered
     for nested in item.get('items') or []:
-        rendered = render_rich_text_block_items_in_order(nested, chapter=chapter) or rendered
+        rendered = render_rich_text_block_items_in_order(nested, chapter=chapter, render_media=True) or rendered
     for cell in item.get('table_cell_items') or []:
         for nested in cell.get('items') or []:
-            rendered = render_rich_text_block_items_in_order(nested, chapter=chapter) or rendered
+            rendered = render_rich_text_block_items_in_order(nested, chapter=chapter, render_media=True) or rendered
     return rendered
 
 
@@ -187,7 +224,7 @@ def looks_like_list_bridge_text(text):
 
 def render_paragraph_item(item, code_sensitive=False, chapter=None):
     if isinstance(item, dict) and item.get('role') == 'rich_text':
-        add_rich_text_runs(item, role='body', first_indent=True)
+        add_rich_text_runs(item, role='body', first_indent=True, render_item_media=False)
         render_rich_text_block_items_in_order(item, chapter=chapter)
         return
     if isinstance(item, dict) and item.get('role') == 'formula_problem':
