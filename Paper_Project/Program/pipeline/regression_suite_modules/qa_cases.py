@@ -193,6 +193,60 @@ def qa_flags_generated_script_unicode_escape_normalized_codec_names() -> None:
 
 
 @case
+def qa_flags_generated_script_unicode_escape_decoder_factories() -> None:
+    text = "中文字符保持原样：编码测试。"
+    scripts = {
+        "qa_generated_unicode_getdecoder": (
+            "import codecs\n"
+            "decoder = codecs.getdecoder('unicode-escape')\n"
+            "text = decoder(b'\\\\u4e2d\\\\u6587')[0]\n"
+        ),
+        "qa_generated_unicode_lookup_decode": (
+            "import codecs\n"
+            "text = codecs.lookup('Unicode Escape').decode(b'\\\\u4e2d\\\\u6587')[0]\n"
+        ),
+        "qa_generated_unicode_lookup_alias_decode": (
+            "from codecs import lookup as lookup_codec\n"
+            "text = lookup_codec('unicode-escape').decode(b'\\\\u4e2d\\\\u6587')[0]\n"
+        ),
+        "qa_generated_unicode_getdecoder_attribute_alias": (
+            "import codecs\n"
+            "decode_factory = codecs.getdecoder\n"
+            "text = decode_factory('unicode_escape')(b'\\\\u4e2d\\\\u6587')[0]\n"
+        ),
+        "qa_generated_unicode_getdecoder_alias": (
+            "from codecs import getdecoder as decode_factory\n"
+            "text = decode_factory('raw unicode escape')(b'\\\\u4e2d\\\\u6587')[0]\n"
+        ),
+    }
+
+    for name, script in scripts.items():
+        work = new_workdir(name)
+        doc = Document()
+        doc.add_paragraph("Synthetic Thesis")
+        doc.add_paragraph("1 Introduction")
+        doc.add_paragraph(text)
+        doc.save(work / "out.docx")
+        write_json(work / "content.json", base_content([text]))
+        write_json(work / "format.json", base_format())
+        write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {}})
+        write_json(work / "workflow_mode.json", {"mode": "user"})
+        (work / "build_generated.py").write_text(script, encoding="utf-8")
+
+        report = check_output(str(work), mode="user", output_docx_name="out.docx")
+        codes = [item["code"] for item in report["issues"]]
+        assert_true(
+            "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" in codes,
+            f"QA did not flag unsafe unicode decoder factory {name}: {report}",
+        )
+        action = f"{report.get('next_action')}\n{json.dumps(report.get('repair_plan') or {}, ensure_ascii=False)}"
+        assert_true(
+            "getdecoder" in action or "lookup" in action,
+            f"decoder-factory guidance did not name the unsafe factory route: {action}",
+        )
+
+
+@case
 def qa_counts_nested_note_refs_when_meta_is_missing() -> None:
     work = new_workdir("qa_nested_note_refs_without_meta")
     doc = Document()
