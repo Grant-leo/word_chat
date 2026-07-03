@@ -460,6 +460,32 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = modules['text_codecs'].decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
         ),
+        "qa_generated_list_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "routes = [codecs.decode]\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = routes[0](text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_tuple_getattr_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "routes = (getattr(codecs, 'decode'),)\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = routes[0](text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_function_returns_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "def get_decoder():\n"
+            "    return codecs.decode\n"
+            "mojibake = get_decoder()(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_function_returns_getattr_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "def get_decoder():\n"
+            "    return getattr(codecs, 'decode')\n"
+            "mojibake = get_decoder()(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
     }
 
     for name, script in scripts.items():
@@ -554,6 +580,14 @@ def qa_flags_generated_script_partial_codecs_decode_text_reencoding() -> None:
             "text = '中文字符保持原样：编码测试。'\n"
             "decode_text = partial(codecs.decode)\n"
             "mojibake = decode_text(text.encode('utf-8'), errors='ignore')\n"
+        ),
+        "qa_generated_codecs_decode_partial_function_return_wrong_charset": (
+            "import codecs\n"
+            "from functools import partial\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "def get_decoder():\n"
+            "    return partial(codecs.decode, encoding='gbk')\n"
+            "mojibake = get_decoder()(text.encode('utf-8'), errors='ignore')\n"
         ),
     }
 
@@ -668,6 +702,28 @@ def qa_flags_generated_script_method_decode_text_reencoding() -> None:
             "payload = text.encode('utf-8')\n"
             "decode_routes = {'decode': methodcaller('decode', 'gbk', errors='ignore')}\n"
             "mojibake = decode_routes['decode'](payload)\n"
+        ),
+        "qa_generated_function_returns_bound_method_decode_wrong_charset": (
+            "text = '中文字符保持原样：编码测试。'\n"
+            "payload = text.encode('utf-8')\n"
+            "def get_decoder():\n"
+            "    return payload.decode\n"
+            "mojibake = get_decoder()('gbk', errors='ignore')\n"
+        ),
+        "qa_generated_function_returns_getattr_method_decode_wrong_charset": (
+            "text = '中文字符保持原样：编码测试。'\n"
+            "payload = text.encode('utf-8')\n"
+            "def get_decoder():\n"
+            "    return getattr(payload, 'decode')\n"
+            "mojibake = get_decoder()('gbk', errors='ignore')\n"
+        ),
+        "qa_generated_function_returns_operator_methodcaller_decode_wrong_charset": (
+            "import operator\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "payload = text.encode('utf-8')\n"
+            "def get_decoder():\n"
+            "    return operator.methodcaller('decode', 'gbk', errors='ignore')\n"
+            "mojibake = get_decoder()(payload)\n"
         ),
         "qa_generated_str_constructor_wrong_charset_direct": (
             "text = '中文字符保持原样：编码测试。'\n"
