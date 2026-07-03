@@ -77,7 +77,7 @@ def production_code_avoids_unicode_escape_string_decoding() -> None:
         offenders.extend(f"{rel}: {call}" for call in calls)
     assert_true(
         not offenders,
-        "production code must not call unicode escape decoders on text: " + ", ".join(offenders),
+        "production code must not call unsafe generated-script text decoders: " + ", ".join(offenders),
     )
 
 

@@ -1,4 +1,4 @@
-"""AST helpers for detecting unsafe unicode-escape decoding."""
+"""AST helpers for detecting unsafe generated-script text decoding."""
 from __future__ import annotations
 
 import ast
@@ -19,6 +19,10 @@ def _normalize_codec_name(name: str) -> str:
 
 def _is_dangerous_unicode_codec(name: str) -> bool:
     return _normalize_codec_name(name) in DANGEROUS_UNICODE_CODECS
+
+
+def _codec_label(name: str) -> str:
+    return name or "<dynamic>"
 
 
 def _static_string_value(node: ast.AST, constants: Dict[str, str]) -> Optional[str]:
@@ -399,8 +403,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             base = _call_name(node.func.value)
             if base in module_aliases:
                 encoding = _codecs_decode_encoding(node, constants)
-                if _is_dangerous_unicode_codec(encoding):
-                    hits.append(f"{name}({encoding})")
+                hits.append(f"{name}({_codec_label(encoding)})")
                 continue
             encoding = _method_decode_encoding(node, constants)
             if _is_dangerous_unicode_codec(encoding):
@@ -408,8 +411,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             continue
         if name in decode_aliases:
             encoding = _codecs_decode_encoding(node, constants)
-            if _is_dangerous_unicode_codec(encoding):
-                hits.append(f"{name}({encoding})")
+            hits.append(f"{name}({_codec_label(encoding)})")
             continue
         if name in escape_decode_aliases or name.endswith("escape_decode"):
             hits.append(name)
@@ -442,8 +444,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
                     if not _is_decode_function_ref(decoder_node, module_aliases, decode_aliases):
                         continue
                     encoding = _wrapper_call_encoding(node, higher_order_wrapper, codec_param, constants)
-                    if _is_dangerous_unicode_codec(encoding):
-                        hits.append(f"{name}({encoding})")
+                    hits.append(f"{name}({_codec_label(encoding)})")
     return sorted(set(hits))
 
 

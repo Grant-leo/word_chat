@@ -54,7 +54,7 @@ def run_artifact_checks(out_dir: str, paths: Dict[str, str], counts: Dict[str, A
             add(
                 "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE",
                 "error",
-                "生成脚本包含可能破坏中文字符的 unicode-escape 解码调用。",
+                "生成脚本包含可能破坏中文字符的二次/错误解码调用。",
                 ", ".join(unsafe_decode_calls),
             )
 

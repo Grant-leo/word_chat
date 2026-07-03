@@ -388,6 +388,57 @@ def qa_flags_generated_script_unicode_escape_higher_order_decode() -> None:
 
 
 @case
+def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
+    text = "中文字符保持原样：编码测试。"
+    scripts = {
+        "qa_generated_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = codecs.decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_codecs_decode_alias_wrong_charset": (
+            "import codecs\n"
+            "decode_text = codecs.decode\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = decode_text(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_codecs_decode_higher_order_wrong_charset": (
+            "import codecs\n"
+            "\n"
+            "def apply_decoder(decoder, value, encoding):\n"
+            "    return decoder(value, encoding, errors='ignore')\n"
+            "\n"
+            "text = apply_decoder(codecs.decode, '中文字符保持原样：编码测试。'.encode('utf-8'), 'gbk')\n"
+        ),
+    }
+
+    for name, script in scripts.items():
+        work = new_workdir(name)
+        doc = Document()
+        doc.add_paragraph("Synthetic Thesis")
+        doc.add_paragraph("1 Introduction")
+        doc.add_paragraph(text)
+        doc.save(work / "out.docx")
+        write_json(work / "content.json", base_content([text]))
+        write_json(work / "format.json", base_format())
+        write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {}})
+        write_json(work / "workflow_mode.json", {"mode": "user"})
+        (work / "build_generated.py").write_text(script, encoding="utf-8")
+
+        report = check_output(str(work), mode="user", output_docx_name="out.docx")
+        codes = [item["code"] for item in report["issues"]]
+        assert_true(
+            "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" in codes,
+            f"QA did not flag general codecs.decode text re-decoding route {name}: {report}",
+        )
+        action = f"{report.get('next_action')}\n{json.dumps(report.get('repair_plan') or {}, ensure_ascii=False)}"
+        assert_true(
+            "codecs.decode" in action and "读取文件字节" in action,
+            f"general codecs.decode guidance did not explain byte-boundary decoding: {action}",
+        )
+
+
+@case
 def qa_counts_nested_note_refs_when_meta_is_missing() -> None:
     work = new_workdir("qa_nested_note_refs_without_meta")
     doc = Document()
