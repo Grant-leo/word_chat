@@ -386,6 +386,11 @@ def _encoded_text_bytes_encoding(
     direct = _text_encode_call_encoding(node, constants, byte_constructor_aliases)
     if direct is not None:
         return direct
+    if isinstance(node, ast.Call):
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "tobytes":
+            return _encoded_text_bytes_encoding(node.func.value, aliases, constants, byte_constructor_aliases)
+        if _call_name(node.func) == "memoryview" and node.args:
+            return _encoded_text_bytes_encoding(node.args[0], aliases, constants, byte_constructor_aliases)
     if isinstance(node, ast.Name):
         return aliases.get(node.id)
     return None

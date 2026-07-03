@@ -602,6 +602,17 @@ def qa_flags_generated_script_method_decode_text_reencoding() -> None:
             "payload = make_array(text, 'utf-8')\n"
             "mojibake = str(payload, 'gbk', errors='ignore')\n"
         ),
+        "qa_generated_memoryview_tobytes_decode_wrong_charset": (
+            "text = '中文字符保持原样：编码测试。'\n"
+            "payload = memoryview(text.encode('utf-8')).tobytes()\n"
+            "mojibake = payload.decode('gbk', errors='ignore')\n"
+        ),
+        "qa_generated_memoryview_alias_tobytes_str_wrong_charset": (
+            "text = '中文字符保持原样：编码测试。'\n"
+            "view = memoryview(text.encode('utf-8'))\n"
+            "payload = view.tobytes()\n"
+            "mojibake = str(payload, 'gbk', errors='ignore')\n"
+        ),
     }
 
     for name, script in scripts.items():
