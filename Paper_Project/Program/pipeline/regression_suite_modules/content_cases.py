@@ -1866,6 +1866,51 @@ def script_generator_does_not_delete_media_in_grid_after_omission_zone() -> None
 
 
 @case
+def script_generator_records_text_guard_for_row_omission_zones() -> None:
+    content = base_content(
+        [
+            {
+                "role": "table",
+                "table_rows": [["Before header", "Value"], ["Leading omitted text must stay", "Visible cell"]],
+                "table_row_grid_before": [0, 1],
+            },
+            {
+                "role": "table",
+                "table_rows": [["After header", "Value"], ["Visible cell", "Trailing omitted text must stay"]],
+                "table_row_grid_after": [0, 1],
+            },
+        ],
+        meta_tables=2,
+    )
+
+    result = run_generated_case("generator_row_omission_text_guard_generated", content, base_format())
+    root = etree.fromstring(result["xml"].encode("utf-8"))
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    before_tables = root.xpath(".//w:tbl[.//w:t='Before header']", namespaces=ns)
+    after_tables = root.xpath(".//w:tbl[.//w:t='After header']", namespaces=ns)
+    assert_true(len(before_tables) == 1, f"gridBefore text-guard table missing: {len(before_tables)}")
+    assert_true(len(after_tables) == 1, f"gridAfter text-guard table missing: {len(after_tables)}")
+    before_rows = before_tables[0].xpath("./w:tr", namespaces=ns)
+    after_rows = after_tables[0].xpath("./w:tr", namespaces=ns)
+    assert_true("Leading omitted text must stay" in result["xml"], "gridBefore text guard lost visible source text")
+    assert_true("Trailing omitted text must stay" in result["xml"], "gridAfter text guard lost visible source text")
+    before_grid = before_rows[1].xpath("./w:trPr/w:gridBefore/@w:val", namespaces=ns)
+    after_grid = after_rows[1].xpath("./w:trPr/w:gridAfter/@w:val", namespaces=ns)
+    assert_true(before_grid == [], "row omission should not be restored when leading omitted zone carries text")
+    assert_true(after_grid == [], "row omission should not be restored when trailing omitted zone carries text")
+    counts = result["manifest"]["counts"]
+    assert_true(
+        counts.get("content_table_grid_before_text_guard_rows_skipped") == 1,
+        f"gridBefore text guard did not record the protected row: {counts}",
+    )
+    assert_true(
+        counts.get("content_table_grid_after_text_guard_rows_skipped") == 1,
+        f"gridAfter text guard did not record the protected row: {counts}",
+    )
+    assert_true(result["report"]["passed"] is True, f"text row-omission render should pass QA: {result['report']}")
+
+
+@case
 def script_generator_preserves_math_list_formula_in_grid_after_omission_zone() -> None:
     content = base_content(
         [

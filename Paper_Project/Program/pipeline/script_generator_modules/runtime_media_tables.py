@@ -745,6 +745,15 @@ def row_omission_zone_has_media(media_by_cell, row_idx, col_indexes):
     return False
 
 
+def row_omission_zone_has_text(source_row, col_indexes):
+    if not isinstance(source_row, (list, tuple)):
+        return False
+    for col_idx in col_indexes:
+        if col_idx < len(source_row) and str(source_row[col_idx] or '').strip():
+            return True
+    return False
+
+
 def apply_row_grid_before(table, row_grid_before, rows=None, col_widths=None, media_by_cell=None):
     if not row_grid_before:
         return 0
@@ -760,7 +769,8 @@ def apply_row_grid_before(table, row_grid_before, rows=None, col_widths=None, me
         if count <= 0 or row_idx >= len(table.rows):
             continue
         source_row = rows[row_idx] if row_idx < len(rows) and isinstance(rows[row_idx], (list, tuple)) else []
-        if any(str(source_row[idx] or '').strip() for idx in range(min(count, len(source_row)))):
+        if row_omission_zone_has_text(source_row, range(min(count, len(source_row)))):
+            BUILD_STATS['content_table_grid_before_text_guard_rows_skipped'] = BUILD_STATS.get('content_table_grid_before_text_guard_rows_skipped', 0) + 1
             continue
         if row_omission_zone_has_media(media_by_cell, row_idx, range(count)):
             BUILD_STATS['content_table_grid_before_media_guard_rows_skipped'] = BUILD_STATS.get('content_table_grid_before_media_guard_rows_skipped', 0) + 1
@@ -815,7 +825,8 @@ def apply_row_grid_after(table, row_grid_after, rows=None, col_widths=None, medi
         if len(source_row) < count:
             continue
         tail_start = len(source_row) - count
-        if any(str(source_row[idx] or '').strip() for idx in range(tail_start, len(source_row))):
+        if row_omission_zone_has_text(source_row, range(tail_start, len(source_row))):
+            BUILD_STATS['content_table_grid_after_text_guard_rows_skipped'] = BUILD_STATS.get('content_table_grid_after_text_guard_rows_skipped', 0) + 1
             continue
         if row_omission_zone_has_media(media_by_cell, row_idx, range(tail_start, len(source_row))):
             BUILD_STATS['content_table_grid_after_media_guard_rows_skipped'] = BUILD_STATS.get('content_table_grid_after_media_guard_rows_skipped', 0) + 1
