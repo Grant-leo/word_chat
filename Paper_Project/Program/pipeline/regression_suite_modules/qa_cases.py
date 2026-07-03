@@ -8,7 +8,12 @@ from docx import Document
 
 from qa_checker import check_output
 from qa_checker_modules.content_samples import _content_toc_pollution_samples
-from qa_checker_modules.content_metrics import _count_content_formulas, _count_content_images
+from qa_checker_modules.content_metrics import (
+    _content_text_chars,
+    _count_content_formulas,
+    _count_content_images,
+    _count_content_tables,
+)
 from qa_checker_modules.registry import OWNER_BY_CODE
 from qa_checker_modules.report_phase import build_report
 from qa_checker_modules.repair import build_repair_plan
@@ -16,6 +21,7 @@ from qa_checker_modules.repair_guides import REPAIR_GUIDES
 from qa_checker_modules.reports import repair_plan_to_markdown
 from qa_conformance_modules.reports import build_report as build_conformance_report
 from qa_conformance_modules.content_checks import _expected_paragraphs, _find_body_start_index, _find_para_by_text
+from qa_conformance_modules.requirements import build_requirements
 from qa_visual_modules.checks import check_visual
 
 from regression_suite_modules.generated_docx import run_generated_case
@@ -89,6 +95,68 @@ def qa_manifest_detects_missing_footnote_render() -> None:
 
 
 @case
+def qa_counts_nested_note_refs_when_meta_is_missing() -> None:
+    work = new_workdir("qa_nested_note_refs_without_meta")
+    doc = Document()
+    doc.add_paragraph("1 Introduction")
+    doc.add_paragraph("Nested notes should still be QA-visible.")
+    doc.save(work / "out.docx")
+    content = base_content(
+        [
+            {
+                "role": "rich_text",
+                "text": "Nested notes should still be QA-visible.",
+                "items": [
+                    {
+                        "role": "rich_text",
+                        "text": "Nested footnote",
+                        "runs": [
+                            {"type": "text", "text": "Nested footnote"},
+                            {"type": "note_ref", "note_type": "footnote", "text": "Nested footnote text."},
+                        ],
+                    }
+                ],
+                "runs": [
+                    {
+                        "type": "text",
+                        "text": "run cell note",
+                        "table_cell_items": [
+                            {
+                                "row": 0,
+                                "col": 0,
+                                "items": [
+                                    {
+                                        "role": "rich_text",
+                                        "text": "Nested endnote",
+                                        "runs": [
+                                            {"type": "text", "text": "Nested endnote"},
+                                            {"type": "note_ref", "note_type": "endnote", "text": "Nested endnote text."},
+                                        ],
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    )
+    write_json(work / "content.json", content)
+    write_json(work / "format.json", base_format())
+    write_json(
+        work / "build_manifest.json",
+        {"schema_version": 1, "counts": {"footnote_references_rendered": 0, "endnote_references_rendered": 0}},
+    )
+    write_json(work / "workflow_mode.json", {"mode": "developer"})
+    (work / "build_generated.py").write_text("# synthetic generated script\n", encoding="utf-8")
+
+    report = check_output(str(work), mode="developer", output_docx_name="out.docx")
+    codes = [item["code"] for item in report["issues"]]
+    assert_true("FOOTNOTE_RENDER_COUNT_MISMATCH" in codes, f"Nested footnote refs were not counted: {report['issues']}")
+    assert_true("ENDNOTE_RENDER_COUNT_MISMATCH" in codes, f"Nested endnote refs were not counted: {report['issues']}")
+
+
+@case
 def code_table_is_not_body_table() -> None:
     content = base_content(
         [
@@ -120,6 +188,92 @@ def qa_counts_image_fields_even_when_role_varies() -> None:
         {"role": "media", "filename": "figure_a.png", "caption": "Figure A"},
     ])
     assert_true(_count_content_images(content) == 1, "QA should count image items by image fields, not only by role")
+
+
+@case
+def qa_counts_nested_rich_media_and_tables_recursively() -> None:
+    content = base_content(
+        [
+            {
+                "role": "rich_text",
+                "text": "Rich parent with nested content.",
+                "runs": [
+                    {"type": "text", "text": "Before "},
+                    {
+                        "type": "text",
+                        "text": "run-items",
+                        "items": [
+                            {"role": "image", "image": "run_item.png"},
+                            {"role": "formula", "latex": "a+b"},
+                            {"role": "table", "table_rows": [["run", "table"]]},
+                        ],
+                    },
+                    {
+                        "type": "text",
+                        "text": "cell-items",
+                        "table_cell_items": [
+                            {
+                                "row": 0,
+                                "col": 0,
+                                "items": [
+                                    {"role": "image", "image": "run_cell.png"},
+                                    {"role": "formula", "latex": "c+d"},
+                                    {"role": "table", "table_rows": [["cell", "table"]]},
+                                ],
+                            }
+                        ],
+                    },
+                ],
+                "items": [
+                    {"role": "image", "image": "rich_item.png"},
+                    {"role": "formula", "latex": "e+f"},
+                    {"role": "table", "table_rows": [["rich", "table"]]},
+                ],
+            }
+        ]
+    )
+
+    assert_true(_count_content_images(content) == 3, "Structural QA should count nested rich_text images recursively")
+    assert_true(_count_content_formulas(content) == 3, "Structural QA should count nested rich_text formulas recursively")
+    assert_true(_count_content_tables(content) == 3, "Structural QA should count nested rich_text tables recursively")
+    req = build_requirements(base_format(), content)
+    assert_true(
+        req["expected_counts"] == {"images": 3, "tables": 3, "formulas": 3},
+        f"Strict QA expected counts should recurse into nested rich content: {req['expected_counts']}",
+    )
+
+
+@case
+def qa_counts_deep_nested_rich_text_chars_recursively() -> None:
+    deep_text = "深层中文正文" * 80
+    content = base_content(
+        [
+            {
+                "role": "rich_text",
+                "text": "",
+                "runs": [
+                    {
+                        "type": "text",
+                        "text": "",
+                        "items": [
+                            {
+                                "role": "rich_text",
+                                "text": "",
+                                "items": [
+                                    {"role": "paragraph", "text": deep_text},
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    )
+
+    assert_true(
+        _content_text_chars(content) >= len(deep_text),
+        "Structural QA should count deep nested rich text when judging content/docx text loss",
+    )
 
 
 @case

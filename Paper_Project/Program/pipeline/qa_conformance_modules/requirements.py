@@ -40,15 +40,25 @@ def _profile_from_format(fmt: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 
 def _content_counts(content: Dict[str, Any]) -> Dict[str, int]:
-    def count_tables(item: Any) -> int:
-        if not isinstance(item, dict):
-            return 0
-        total = 1 if item.get("table_rows") and item.get("role") != "code" else 0
+    def iter_child_items(item: Dict[str, Any]):
+        for nested in item.get("items") or []:
+            yield nested
         for cell in item.get("table_cell_items") or []:
             if not isinstance(cell, dict):
                 continue
             for nested in cell.get("items") or []:
-                total += count_tables(nested)
+                yield nested
+        for run in item.get("runs") or []:
+            if not isinstance(run, dict):
+                continue
+            yield run
+
+    def count_tables(item: Any) -> int:
+        if not isinstance(item, dict):
+            return 0
+        total = 1 if item.get("table_rows") and item.get("role") != "code" else 0
+        for nested in iter_child_items(item):
+            total += count_tables(nested)
         return total
 
     def image_names_from_item(item: Any) -> list[str]:
@@ -59,12 +69,35 @@ def _content_counts(content: Dict[str, Any]) -> Dict[str, int]:
             name = str(item.get("image") or item.get("filename") or item.get("asset") or "")
             if name:
                 names.append(name)
+        for nested in iter_child_items(item):
+            names.extend(image_names_from_item(nested))
+        return names
+
+    def direct_formula_count(item: Dict[str, Any]) -> int:
+        math_items = item.get("math") or []
+        if math_items:
+            return len(math_items)
+        if item.get("role") == "formula" or item.get("latex") or item.get("xml"):
+            return 1
+        return 0
+
+    def count_formulas(item: Any, skip_direct: bool = False) -> int:
+        if not isinstance(item, dict):
+            return 0
+        total = 0 if skip_direct else direct_formula_count(item)
+        parent_has_math = bool(item.get("math"))
+        for nested in item.get("items") or []:
+            total += count_formulas(nested)
         for cell in item.get("table_cell_items") or []:
             if not isinstance(cell, dict):
                 continue
             for nested in cell.get("items") or []:
-                names.extend(image_names_from_item(nested))
-        return names
+                total += count_formulas(nested)
+        for run in item.get("runs") or []:
+            if not isinstance(run, dict):
+                continue
+            total += count_formulas(run, skip_direct=parent_has_math)
+        return total
 
     inline_images = 0
     inline_names = []
@@ -84,11 +117,7 @@ def _content_counts(content: Dict[str, Any]) -> Dict[str, int]:
                 inline_images += len(item_image_names)
                 inline_names.extend(name for name in item_image_names if name)
             tables += count_tables(item)
-            math_items = item.get("math") or []
-            if math_items:
-                formulas += len(math_items)
-            elif item.get("role") == "formula" or item.get("latex") or item.get("xml"):
-                formulas += 1
+            formulas += count_formulas(item)
     if inline_images:
         extra_section_only = [name for name in section_names if name and name not in inline_names]
         images = inline_images + len(extra_section_only)
