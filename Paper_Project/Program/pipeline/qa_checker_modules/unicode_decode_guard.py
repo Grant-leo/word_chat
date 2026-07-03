@@ -669,6 +669,67 @@ def _decoder_factory_result_aliases(
     return decoder_results, lookup_results
 
 
+def _decoder_factory_container_aliases(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    getdecoder_aliases: Set[str],
+    lookup_aliases: Set[str],
+    constants: Dict[str, str],
+    decoder_results: Dict[str, str],
+    lookup_results: Dict[str, str],
+) -> Tuple[Dict[str, Dict[Tuple[str, str], str]], Dict[str, Dict[Tuple[str, str], str]]]:
+    decoder_containers: Dict[str, Dict[Tuple[str, str], str]] = {}
+    lookup_containers: Dict[str, Dict[Tuple[str, str], str]] = {}
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if value is None:
+                continue
+            if isinstance(value, ast.Name) and value.id in decoder_containers:
+                decoder_items = dict(decoder_containers[value.id])
+            else:
+                decoder_items: Dict[Tuple[str, str], str] = {}
+            if isinstance(value, ast.Name) and value.id in lookup_containers:
+                lookup_items = dict(lookup_containers[value.id])
+            else:
+                lookup_items: Dict[Tuple[str, str], str] = {}
+            if not decoder_items and not lookup_items:
+                for key, item in _literal_container_items(value, constants):
+                    if isinstance(item, ast.Name) and item.id in decoder_results:
+                        decoder_items[key] = decoder_results[item.id]
+                        continue
+                    if isinstance(item, ast.Name) and item.id in lookup_results:
+                        lookup_items[key] = lookup_results[item.id]
+                        continue
+                    kind, encoding = _factory_call_encoding(item, module_aliases, getdecoder_aliases, lookup_aliases, constants)
+                    if kind == "getdecoder":
+                        decoder_items[key] = encoding
+                    elif kind == "lookup":
+                        lookup_items[key] = encoding
+            if not decoder_items and not lookup_items:
+                continue
+            for target in targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                if decoder_items and decoder_containers.get(target.id) != decoder_items:
+                    decoder_containers[target.id] = dict(decoder_items)
+                    changed = True
+                if lookup_items and lookup_containers.get(target.id) != lookup_items:
+                    lookup_containers[target.id] = dict(lookup_items)
+                    changed = True
+        if not changed:
+            break
+    return decoder_containers, lookup_containers
+
+
 def _method_decode_encoding(node: ast.Call, constants: Dict[str, str]) -> str:
     if node.args:
         return _string_constant(node.args[0], constants)
@@ -1368,6 +1429,74 @@ def _codecs_decode_function_results(
     return functions
 
 
+def _decoder_factory_function_results(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    getdecoder_aliases: Set[str],
+    lookup_aliases: Set[str],
+    constants: Dict[str, str],
+    decoder_results: Dict[str, str],
+    lookup_results: Dict[str, str],
+    decoder_containers: Dict[str, Dict[Tuple[str, str], str]],
+    lookup_containers: Dict[str, Dict[Tuple[str, str], str]],
+) -> Tuple[Dict[str, str], Dict[str, str]]:
+    decoder_functions: Dict[str, str] = {}
+    lookup_functions: Dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+            continue
+        value = _single_return_value(node)
+        if value is None:
+            continue
+        if isinstance(value, ast.Name) and value.id in decoder_results:
+            decoder_functions[node.name] = decoder_results[value.id]
+            continue
+        if isinstance(value, ast.Name) and value.id in lookup_results:
+            lookup_functions[node.name] = lookup_results[value.id]
+            continue
+        container_decoder = _container_subscript_lookup(value, decoder_containers, constants)
+        if container_decoder is not None:
+            decoder_functions[node.name] = container_decoder
+            continue
+        container_lookup = _container_subscript_lookup(value, lookup_containers, constants)
+        if container_lookup is not None:
+            lookup_functions[node.name] = container_lookup
+            continue
+        kind, encoding = _factory_call_encoding(value, module_aliases, getdecoder_aliases, lookup_aliases, constants)
+        if kind == "getdecoder":
+            decoder_functions[node.name] = encoding
+        elif kind == "lookup":
+            lookup_functions[node.name] = encoding
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if not isinstance(value, ast.Name):
+                continue
+            if value.id in decoder_functions:
+                encoding = decoder_functions[value.id]
+                for target in targets:
+                    if isinstance(target, ast.Name) and decoder_functions.get(target.id) != encoding:
+                        decoder_functions[target.id] = encoding
+                        changed = True
+            if value.id in lookup_functions:
+                encoding = lookup_functions[value.id]
+                for target in targets:
+                    if isinstance(target, ast.Name) and lookup_functions.get(target.id) != encoding:
+                        lookup_functions[target.id] = encoding
+                        changed = True
+        if not changed:
+            break
+    return decoder_functions, lookup_functions
+
+
 def _is_mismatched_text_redecode(encode_encoding: str, decode_encoding: str) -> bool:
     if not encode_encoding or not decode_encoding:
         return True
@@ -1828,6 +1957,15 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         lookup_aliases,
         constants,
     )
+    decoder_containers, lookup_containers = _decoder_factory_container_aliases(
+        tree,
+        module_aliases,
+        getdecoder_aliases,
+        lookup_aliases,
+        constants,
+        decoder_results,
+        lookup_results,
+    )
     byte_constructor_aliases = _byte_constructor_aliases(tree, constants)
     encoded_text_bytes = _encoded_text_byte_aliases(tree, constants, byte_constructor_aliases)
     decode_method_results = _decode_method_result_aliases(
@@ -1870,6 +2008,17 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         module_dict_aliases,
         decode_dict_aliases,
         codec_decode_containers,
+    )
+    decoder_functions, lookup_functions = _decoder_factory_function_results(
+        tree,
+        module_aliases,
+        getdecoder_aliases,
+        lookup_aliases,
+        constants,
+        decoder_results,
+        lookup_results,
+        decoder_containers,
+        lookup_containers,
     )
     decode_method_functions = _decode_method_function_results(
         tree,
@@ -2041,6 +2190,14 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         if kind == "getdecoder":
             hits.append(f"{name or kind}({_codec_label(encoding)})")
             continue
+        container_decoder_encoding = _container_subscript_lookup(node.func, decoder_containers, constants)
+        if container_decoder_encoding is not None:
+            hits.append(f"{_subscript_call_label(node.func)}({_codec_label(container_decoder_encoding)})")
+            continue
+        function_decoder_name = _zero_arg_function_call_name(node.func)
+        if function_decoder_name in decoder_functions:
+            hits.append(f"{function_decoder_name}()({_codec_label(decoder_functions[function_decoder_name])})")
+            continue
         if _getattr_on_static_codecs_module(
             node.func,
             module_aliases,
@@ -2057,6 +2214,14 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             base = _call_name(node.func.value)
             if base in lookup_results:
                 hits.append(f"{name}({_codec_label(lookup_results[base])})")
+                continue
+            container_lookup_encoding = _container_subscript_lookup(node.func.value, lookup_containers, constants)
+            if container_lookup_encoding is not None:
+                hits.append(f"{_subscript_call_label(node.func.value)}.decode({_codec_label(container_lookup_encoding)})")
+                continue
+            function_lookup_name = _zero_arg_function_call_name(node.func.value)
+            if function_lookup_name in lookup_functions:
+                hits.append(f"{function_lookup_name}().decode({_codec_label(lookup_functions[function_lookup_name])})")
                 continue
             kind, encoding = _factory_call_encoding(
                 node.func.value,

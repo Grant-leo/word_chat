@@ -888,6 +888,47 @@ def qa_flags_generated_script_general_codecs_decoder_factories_text_reencoding()
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = codec.decode(text.encode('utf-8'), errors='ignore')[0]\n"
         ),
+        "qa_generated_codecs_getdecoder_list_wrong_charset": (
+            "import codecs\n"
+            "routes = [codecs.getdecoder('gbk')]\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = routes[0](text.encode('utf-8'), errors='ignore')[0]\n"
+        ),
+        "qa_generated_codecs_getdecoder_alias_list_wrong_charset": (
+            "import codecs\n"
+            "decoder = codecs.getdecoder('gbk')\n"
+            "routes = [decoder]\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = routes[0](text.encode('utf-8'), errors='ignore')[0]\n"
+        ),
+        "qa_generated_codecs_getdecoder_function_return_wrong_charset": (
+            "import codecs\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "def get_decoder():\n"
+            "    return codecs.getdecoder('gbk')\n"
+            "mojibake = get_decoder()(text.encode('utf-8'), errors='ignore')[0]\n"
+        ),
+        "qa_generated_codecs_getdecoder_alias_function_return_wrong_charset": (
+            "import codecs\n"
+            "decoder = codecs.getdecoder('gbk')\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "def get_decoder():\n"
+            "    return decoder\n"
+            "mojibake = get_decoder()(text.encode('utf-8'), errors='ignore')[0]\n"
+        ),
+        "qa_generated_codecs_lookup_list_wrong_charset": (
+            "import codecs\n"
+            "routes = [codecs.lookup('gbk')]\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = routes[0].decode(text.encode('utf-8'), errors='ignore')[0]\n"
+        ),
+        "qa_generated_codecs_lookup_function_return_wrong_charset": (
+            "import codecs\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "def get_codec():\n"
+            "    return codecs.lookup('gbk')\n"
+            "mojibake = get_codec().decode(text.encode('utf-8'), errors='ignore')[0]\n"
+        ),
     }
 
     for name, script in scripts.items():
