@@ -311,11 +311,18 @@ def _method_encode_encoding_or_default(node: ast.Call, constants: Dict[str, str]
 
 
 def _text_encode_call_encoding(node: ast.AST, constants: Dict[str, str]) -> Optional[str]:
-    return (
-        _method_encode_encoding_or_default(node, constants)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "encode"
-        else None
-    )
+    if not isinstance(node, ast.Call):
+        return None
+    if isinstance(node.func, ast.Attribute) and node.func.attr == "encode":
+        return _method_encode_encoding_or_default(node, constants)
+    if _call_name(node.func) != "bytes":
+        return None
+    if len(node.args) >= 2:
+        return _string_constant(node.args[1], constants)
+    keyword = _keyword_node(node, "encoding")
+    if keyword is not None:
+        return _string_constant(keyword, constants)
+    return None
 
 
 def _encoded_text_bytes_encoding(
@@ -362,6 +369,15 @@ def _is_mismatched_text_redecode(encode_encoding: str, decode_encoding: str) -> 
     if not encode_encoding or not decode_encoding:
         return True
     return _normalize_codec_name(encode_encoding) != _normalize_codec_name(decode_encoding)
+
+
+def _str_constructor_decode_encoding(node: ast.Call, constants: Dict[str, str]) -> str:
+    if len(node.args) >= 2:
+        return _string_constant(node.args[1], constants)
+    keyword = _keyword_node(node, "encoding")
+    if keyword is not None:
+        return _string_constant(keyword, constants)
+    return ""
 
 
 def _codecs_decode_encoding(node: ast.Call, constants: Dict[str, str]) -> str:
@@ -645,6 +661,13 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         if not isinstance(node, ast.Call):
             continue
         name = _call_name(node.func)
+        if name == "str" and node.args:
+            encoded_as = _encoded_text_bytes_encoding(node.args[0], encoded_text_bytes, constants)
+            if encoded_as is not None:
+                encoding = _str_constructor_decode_encoding(node, constants)
+                if _is_mismatched_text_redecode(encoded_as, encoding):
+                    hits.append(f"str({_codec_label(encoding)} after encode {_codec_label(encoded_as)})")
+                    continue
         partial_encoding = _partial_decode_encoding(
             node.func,
             functools_module_aliases,
