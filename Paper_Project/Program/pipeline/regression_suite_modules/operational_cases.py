@@ -1,6 +1,7 @@
 ﻿"""Privacy, visual QA, and CLI regression cases."""
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -50,19 +51,69 @@ def privacy_sanitizes_absolute_paths() -> None:
 
 @case
 def production_code_avoids_unicode_escape_string_decoding() -> None:
-    dangerous_tokens = ("codecs.decode", "unicode_escape", "raw_unicode_escape", "escape_decode")
+    dangerous_codecs = {"unicode_escape", "raw_unicode_escape"}
+
+    def read_source(path: Path) -> str:
+        data = path.read_bytes()
+        last_error: UnicodeDecodeError | None = None
+        for encoding in ("utf-8-sig", "gb18030"):
+            try:
+                return data.decode(encoding)
+            except UnicodeDecodeError as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+        return ""
+
+    def string_constant(node: ast.AST) -> str:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        return ""
+
+    def call_name(node: ast.AST) -> str:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            parent = call_name(node.value)
+            return f"{parent}.{node.attr}" if parent else node.attr
+        return ""
+
+    def keyword_value(node: ast.Call, *names: str) -> str:
+        wanted = set(names)
+        for keyword in node.keywords or []:
+            if keyword.arg in wanted:
+                return string_constant(keyword.value)
+        return ""
+
     offenders = []
     for path in PIPELINE_DIR.rglob("*.py"):
         rel = path.relative_to(PIPELINE_DIR).as_posix()
         if rel.startswith("regression_suite_modules/"):
             continue
-        text = path.read_text(encoding="utf-8", errors="ignore")
-        for token in dangerous_tokens:
-            if token in text:
-                offenders.append(f"{rel}: {token}")
+        text = read_source(path)
+        try:
+            tree = ast.parse(text, filename=str(path))
+        except SyntaxError:
+            offenders.append(f"{rel}: syntax error while scanning unicode decode safety")
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = call_name(node.func)
+            if name == "codecs.decode":
+                offenders.append(f"{rel}: codecs.decode")
+                continue
+            if name.endswith(".decode"):
+                encoding = string_constant(node.args[0]) if node.args else ""
+                encoding = encoding or keyword_value(node, "encoding")
+                if encoding in dangerous_codecs:
+                    offenders.append(f"{rel}: {name}({encoding})")
+                continue
+            if name.endswith("escape_decode"):
+                offenders.append(f"{rel}: {name}")
     assert_true(
         not offenders,
-        "production code must not decode already-Unicode strings with unicode escape codecs: " + ", ".join(offenders),
+        "production code must not call unicode escape decoders on text: " + ", ".join(offenders),
     )
 
 

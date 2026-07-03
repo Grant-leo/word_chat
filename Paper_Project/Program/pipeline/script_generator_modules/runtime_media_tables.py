@@ -919,6 +919,21 @@ def render_table_cell_rich_text(cell, item, prof, force_new_paragraph=False):
 def render_table_cell_media_item(cell, media, ncols, prof, force_new_paragraph=False):
     if not isinstance(media, dict):
         return False
+    if media.get('role') == 'formula' or media.get('latex') or media.get('xml'):
+        p = cell.add_paragraph() if force_new_paragraph else (
+            cell.paragraphs[0] if cell.paragraphs and not cell.paragraphs[0].text.strip() else cell.add_paragraph()
+        )
+        apply_paragraph_profile(p, prof, first_indent_override=0)
+        return append_inline_formula(p, media)
+    if media.get('math') and media.get('role') != 'rich_text':
+        p = cell.add_paragraph() if force_new_paragraph else (
+            cell.paragraphs[0] if cell.paragraphs and not cell.paragraphs[0].text.strip() else cell.add_paragraph()
+        )
+        apply_paragraph_profile(p, prof, first_indent_override=0)
+        wrote = False
+        for m in _math_entries_from_item(media):
+            wrote = append_inline_formula(p, m) or wrote
+        return wrote
     if media.get('role') == 'rich_text' or media.get('math'):
         return render_table_cell_rich_text(cell, media, prof, force_new_paragraph=force_new_paragraph)
     if media.get('role') == 'image' or media.get('image'):

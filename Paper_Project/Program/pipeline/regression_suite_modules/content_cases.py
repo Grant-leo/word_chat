@@ -1752,6 +1752,60 @@ def script_generator_does_not_delete_media_in_grid_before_omission_zone() -> Non
 
 
 @case
+def script_generator_preserves_nested_formula_in_grid_before_omission_zone() -> None:
+    content = base_content(
+        [
+            {
+                "role": "table",
+                "table_rows": [["Header", "Value"], ["", "Visible cell"]],
+                "table_row_grid_before": [0, 1],
+                "table_cell_items": [
+                    {
+                        "row": 1,
+                        "col": 0,
+                        "items": [
+                            {
+                                "role": "table",
+                                "table_rows": [["Nested head"], ["Nested formula cell"]],
+                                "table_cell_items": [
+                                    {
+                                        "row": 1,
+                                        "col": 0,
+                                        "items": [
+                                            {"role": "formula", "latex": "z=1", "text": "z=1"},
+                                        ],
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        meta_tables=1,
+    )
+
+    result = run_generated_case("generator_grid_before_nested_formula_guard_generated", content, base_format())
+    root = etree.fromstring(result["xml"].encode("utf-8"))
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    tables = root.xpath(".//w:tbl[.//w:t='Header']", namespaces=ns)
+    assert_true(len(tables) == 1, f"outer table missing or duplicated: {len(tables)}")
+    rows = tables[0].xpath("./w:tr", namespaces=ns)
+    second_grid_before = rows[1].xpath("./w:trPr/w:gridBefore/@w:val", namespaces=ns)
+    assert_true(second_grid_before == [], "row omission should not be restored when omitted zone carries a nested table")
+    assert_true("Nested formula cell" in result["xml"], "nested table text in omitted grid zone was dropped")
+    assert_true(omath_count(result["xml"]) >= 1, "nested direct formula in omitted grid zone did not render as native math")
+    counts = result["manifest"]["counts"]
+    assert_true(counts.get("content_nested_tables_rendered", 0) >= 1, f"nested table render count missing: {counts}")
+    assert_true(counts.get("inline_formulas_rendered", 0) >= 1, f"nested direct formula render count missing: {counts}")
+    assert_true(
+        counts.get("content_table_grid_before_media_guard_rows_skipped") == 1,
+        f"gridBefore guard did not record the nested-table protected row: {counts}",
+    )
+    assert_true(result["report"]["passed"] is True, f"nested direct formula row-omission render should pass QA: {result['report']}")
+
+
+@case
 def script_generator_does_not_delete_media_in_grid_after_omission_zone() -> None:
     work = new_workdir("generator_grid_after_media_guard")
     image = work / "tail_omission_zone.png"
@@ -1809,6 +1863,49 @@ def script_generator_does_not_delete_media_in_grid_after_omission_zone() -> None
         counts.get("content_table_grid_after_media_guard_rows_skipped") == 1,
         f"gridAfter media guard did not record the protected row: {counts}",
     )
+
+
+@case
+def script_generator_preserves_math_list_formula_in_grid_after_omission_zone() -> None:
+    content = base_content(
+        [
+            {
+                "role": "table",
+                "table_rows": [["Header", "Value"], ["Visible cell", ""]],
+                "table_row_grid_after": [0, 1],
+                "table_cell_items": [
+                    {
+                        "row": 1,
+                        "col": 1,
+                        "items": [
+                            {
+                                "text": "q=1",
+                                "math": [{"type": "inline", "latex": "q=1", "text": "q=1"}],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        meta_tables=1,
+    )
+
+    result = run_generated_case("generator_grid_after_math_list_guard_generated", content, base_format())
+    root = etree.fromstring(result["xml"].encode("utf-8"))
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    tables = root.xpath(".//w:tbl[.//w:t='Header']", namespaces=ns)
+    assert_true(len(tables) == 1, f"generated table missing or duplicated: {len(tables)}")
+    rows = tables[0].xpath("./w:tr", namespaces=ns)
+    second_grid_after = rows[1].xpath("./w:trPr/w:gridAfter/@w:val", namespaces=ns)
+    assert_true(second_grid_after == [], "row omission should not be restored when omitted zone carries a math list")
+    assert_true(omath_count(result["xml"]) >= 1, "math-list formula in omitted grid zone did not render as native math")
+    counts = result["manifest"]["counts"]
+    assert_true(counts.get("inline_formulas_rendered", 0) >= 1, f"math-list formula render count missing: {counts}")
+    assert_true(
+        counts.get("content_table_grid_after_media_guard_rows_skipped") == 1,
+        f"gridAfter guard did not record the math-list protected row: {counts}",
+    )
+    assert_true(result["report"]["passed"] is True, f"math-list row-omission render should pass QA: {result['report']}")
 
 
 @case

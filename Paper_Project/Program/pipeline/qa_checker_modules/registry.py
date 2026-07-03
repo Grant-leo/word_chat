@@ -7,6 +7,7 @@ VALID_MODES = {"user", "developer"}
 OWNER_BY_CODE = {
     "MISSING_DOCX": "script_generator.py",
     "MISSING_BUILD_SCRIPT": "script_generator.py",
+    "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE": "script_generator.py / qa_checker.py",
     "MISSING_FORMAT_JSON": "format_extractor.py / md_parser.py",
     "MISSING_CONTENT_JSON": "content_parser.py / md_parser.py",
     "FORMAT_EMPTY": "format_extractor.py / md_parser.py",

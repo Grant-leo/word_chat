@@ -95,6 +95,34 @@ def qa_manifest_detects_missing_footnote_render() -> None:
 
 
 @case
+def qa_flags_generated_script_unicode_escape_decoding() -> None:
+    work = new_workdir("qa_generated_unicode_decode_guard")
+    text = "中文字符保持原样：编码测试。"
+    doc = Document()
+    doc.add_paragraph("Synthetic Thesis")
+    doc.add_paragraph("1 Introduction")
+    doc.add_paragraph(text)
+    doc.save(work / "out.docx")
+    write_json(work / "content.json", base_content([text]))
+    write_json(work / "format.json", base_format())
+    write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {}})
+    write_json(work / "workflow_mode.json", {"mode": "user"})
+    (work / "build_generated.py").write_text(
+        "import codecs\n"
+        "text = codecs.decode('中文', 'unicode_escape')\n",
+        encoding="utf-8",
+    )
+
+    report = check_output(str(work), mode="user", output_docx_name="out.docx")
+    codes = [item["code"] for item in report["issues"]]
+    assert_true("GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" in codes, f"QA did not flag unsafe unicode decoding: {report}")
+    assert_true(report["passed"] is False, f"unsafe unicode decoding should block structural QA: {report}")
+    action = f"{report.get('next_action')}\n{json.dumps(report.get('repair_plan') or {}, ensure_ascii=False)}"
+    assert_true("codecs.decode" in action and "build_generated.py" in action and "重跑" in action,
+                f"unsafe unicode decode guidance was not beginner-facing enough: {action}")
+
+
+@case
 def qa_counts_nested_note_refs_when_meta_is_missing() -> None:
     work = new_workdir("qa_nested_note_refs_without_meta")
     doc = Document()
