@@ -929,6 +929,60 @@ def qa_flags_generated_script_general_codecs_decoder_factories_text_reencoding()
             "    return codecs.lookup('gbk')\n"
             "mojibake = get_codec().decode(text.encode('utf-8'), errors='ignore')[0]\n"
         ),
+        "qa_generated_codecs_getdecoder_attribute_wrong_charset": (
+            "import codecs\n"
+            "class Box:\n"
+            "    pass\n"
+            "box = Box()\n"
+            "box.decoder = codecs.getdecoder('gbk')\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = box.decoder(text.encode('utf-8'), errors='ignore')[0]\n"
+        ),
+        "qa_generated_codecs_lookup_attribute_wrong_charset": (
+            "import codecs\n"
+            "class Box:\n"
+            "    pass\n"
+            "box = Box()\n"
+            "box.codec = codecs.lookup('gbk')\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = box.codec.decode(text.encode('utf-8'), errors='ignore')[0]\n"
+        ),
+        "qa_generated_codecs_getdecoder_namespace_attribute_wrong_charset": (
+            "import codecs\n"
+            "from types import SimpleNamespace\n"
+            "ns = SimpleNamespace(decoder=codecs.getdecoder('gbk'))\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = ns.decoder(text.encode('utf-8'), errors='ignore')[0]\n"
+        ),
+        "qa_generated_codecs_lookup_namespace_attribute_wrong_charset": (
+            "import codecs\n"
+            "from types import SimpleNamespace\n"
+            "ns = SimpleNamespace(codec=codecs.lookup('gbk'))\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = ns.codec.decode(text.encode('utf-8'), errors='ignore')[0]\n"
+        ),
+        "qa_generated_codecs_getdecoder_attribute_function_return_wrong_charset": (
+            "import codecs\n"
+            "class Box:\n"
+            "    pass\n"
+            "box = Box()\n"
+            "box.decoder = codecs.getdecoder('gbk')\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "def get_decoder():\n"
+            "    return box.decoder\n"
+            "mojibake = get_decoder()(text.encode('utf-8'), errors='ignore')[0]\n"
+        ),
+        "qa_generated_codecs_lookup_attribute_function_return_wrong_charset": (
+            "import codecs\n"
+            "class Box:\n"
+            "    pass\n"
+            "box = Box()\n"
+            "box.codec = codecs.lookup('gbk')\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "def get_codec():\n"
+            "    return box.codec\n"
+            "mojibake = get_codec().decode(text.encode('utf-8'), errors='ignore')[0]\n"
+        ),
     }
 
     for name, script in scripts.items():
