@@ -1,19 +1,19 @@
 ﻿"""Artifact and manifest checks for structural QA."""
 from __future__ import annotations
 
-import ast
 import os
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict
 
 try:
     from qa_checker_modules.metrics import _load_json, _load_manifest_counts
     from qa_checker_modules.registry import VALID_MODES
+    from qa_checker_modules.unicode_decode_guard import unsafe_unicode_decode_calls
 except ImportError:  # pragma: no cover - package-style imports
     from .metrics import _load_json, _load_manifest_counts
     from .registry import VALID_MODES
+    from .unicode_decode_guard import unsafe_unicode_decode_calls
 
 AddIssue = Callable[..., None]
-DANGEROUS_UNICODE_CODECS = {"unicode_escape", "raw_unicode_escape"}
 
 
 def build_output_paths(out_dir: str, output_docx_name: str) -> Dict[str, str]:
@@ -25,56 +25,6 @@ def build_output_paths(out_dir: str, output_docx_name: str) -> Dict[str, str]:
         "workflow": os.path.join(out_dir, "workflow_mode.json"),
         "manifest": os.path.join(out_dir, "build_manifest.json"),
     }
-
-
-def _string_constant(node: ast.AST) -> str:
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
-    return ""
-
-
-def _call_name(node: ast.AST) -> str:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        parent = _call_name(node.value)
-        return f"{parent}.{node.attr}" if parent else node.attr
-    return ""
-
-
-def _keyword_value(node: ast.Call, *names: str) -> str:
-    wanted = set(names)
-    for keyword in node.keywords or []:
-        if keyword.arg in wanted:
-            return _string_constant(keyword.value)
-    return ""
-
-
-def _unsafe_unicode_decode_calls(path: str) -> List[str]:
-    try:
-        text = open(path, "r", encoding="utf-8", errors="ignore").read()
-        tree = ast.parse(text, filename=path)
-    except Exception:
-        return []
-    hits: List[str] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        name = _call_name(node.func)
-        if name == "codecs.decode":
-            hits.append("codecs.decode")
-            continue
-        if name.endswith(".decode"):
-            encoding = ""
-            if node.args:
-                encoding = _string_constant(node.args[0])
-            encoding = encoding or _keyword_value(node, "encoding")
-            if encoding in DANGEROUS_UNICODE_CODECS:
-                hits.append(f"{name}({encoding})")
-            continue
-        if name.endswith("escape_decode"):
-            hits.append(name)
-    return sorted(set(hits))
 
 
 def run_artifact_checks(out_dir: str, paths: Dict[str, str], counts: Dict[str, Any], add: AddIssue) -> Dict[str, Any]:
@@ -98,7 +48,7 @@ def run_artifact_checks(out_dir: str, paths: Dict[str, str], counts: Dict[str, A
             add(code, "error", message, paths[key])
 
     if os.path.exists(paths["build"]):
-        unsafe_decode_calls = _unsafe_unicode_decode_calls(paths["build"])
+        unsafe_decode_calls = unsafe_unicode_decode_calls(paths["build"])
         if unsafe_decode_calls:
             counts["unsafe_unicode_decode_calls"] = len(unsafe_decode_calls)
             add(
