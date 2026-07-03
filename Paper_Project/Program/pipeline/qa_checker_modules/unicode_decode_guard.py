@@ -150,6 +150,21 @@ def _functools_import_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str]]:
     return module_aliases, partial_aliases
 
 
+def _builtins_constructor_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str]]:
+    module_aliases = {"builtins"}
+    constructor_aliases: Set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "builtins":
+                    module_aliases.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "builtins":
+            for alias in node.names:
+                if alias.name in {"bytes", "bytearray"}:
+                    constructor_aliases.add(alias.asname or alias.name)
+    return module_aliases, constructor_aliases
+
+
 def _attribute_on_module_alias(node: ast.AST, module_aliases: Set[str], attr: str) -> bool:
     return (
         isinstance(node, ast.Attribute)
@@ -310,8 +325,12 @@ def _method_encode_encoding_or_default(node: ast.Call, constants: Dict[str, str]
     return "utf-8"
 
 
-def _byte_constructor_aliases(tree: ast.AST) -> Set[str]:
-    aliases = {"bytes", "bytearray"}
+def _byte_constructor_aliases(tree: ast.AST, constants: Dict[str, str]) -> Set[str]:
+    builtins_module_aliases, builtins_import_aliases = _builtins_constructor_aliases(tree)
+    aliases = {"bytes", "bytearray"} | builtins_import_aliases
+    for module_alias in builtins_module_aliases:
+        aliases.add(f"{module_alias}.bytes")
+        aliases.add(f"{module_alias}.bytearray")
     for _ in range(4):
         changed = False
         for node in ast.walk(tree):
@@ -323,7 +342,12 @@ def _byte_constructor_aliases(tree: ast.AST) -> Set[str]:
                 targets = [node.target]
             else:
                 continue
-            if _call_name(value) not in aliases:
+            value_name = _call_name(value)
+            is_constructor = value_name in aliases or any(
+                _getattr_on_module_alias(value, builtins_module_aliases, constructor, constants)
+                for constructor in ("bytes", "bytearray")
+            )
+            if not is_constructor:
                 continue
             for target in targets:
                 if isinstance(target, ast.Name) and target.id not in aliases:
@@ -680,7 +704,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         lookup_aliases,
         constants,
     )
-    byte_constructor_aliases = _byte_constructor_aliases(tree)
+    byte_constructor_aliases = _byte_constructor_aliases(tree, constants)
     encoded_text_bytes = _encoded_text_byte_aliases(tree, constants, byte_constructor_aliases)
     partial_results = _partial_decode_result_aliases(
         tree,

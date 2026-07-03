@@ -582,6 +582,26 @@ def qa_flags_generated_script_method_decode_text_reencoding() -> None:
             "payload = make_array(text, 'utf-8')\n"
             "mojibake = str(payload, 'gbk', errors='ignore')\n"
         ),
+        "qa_generated_builtins_bytes_import_alias_decode_wrong_charset": (
+            "from builtins import bytes as make_bytes\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "payload = make_bytes(text, 'utf-8')\n"
+            "mojibake = payload.decode('gbk', errors='ignore')\n"
+        ),
+        "qa_generated_builtins_getattr_bytes_alias_decode_wrong_charset": (
+            "import builtins\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "make_bytes = getattr(builtins, 'bytes')\n"
+            "payload = make_bytes(text, 'utf-8')\n"
+            "mojibake = payload.decode('gbk', errors='ignore')\n"
+        ),
+        "qa_generated_builtins_getattr_bytearray_alias_str_wrong_charset": (
+            "import builtins as bi\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "make_array = getattr(bi, 'bytearray')\n"
+            "payload = make_array(text, 'utf-8')\n"
+            "mojibake = str(payload, 'gbk', errors='ignore')\n"
+        ),
     }
 
     for name, script in scripts.items():
