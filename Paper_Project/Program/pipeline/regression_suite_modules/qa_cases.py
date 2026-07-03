@@ -596,6 +596,47 @@ def qa_flags_generated_script_method_decode_text_reencoding() -> None:
             "payload = text.encode('utf-8')\n"
             "mojibake = payload.decode('gbk', errors='ignore')\n"
         ),
+        "qa_generated_getattr_method_decode_wrong_charset": (
+            "text = '中文字符保持原样：编码测试。'\n"
+            "payload = text.encode('utf-8')\n"
+            "mojibake = getattr(payload, 'decode')('gbk', errors='ignore')\n"
+        ),
+        "qa_generated_getattr_method_decode_alias_wrong_charset": (
+            "text = '中文字符保持原样：编码测试。'\n"
+            "payload = text.encode('utf-8')\n"
+            "decode_payload = getattr(payload, 'decode')\n"
+            "mojibake = decode_payload('gbk', errors='ignore')\n"
+        ),
+        "qa_generated_bound_method_decode_alias_wrong_charset": (
+            "text = '中文字符保持原样：编码测试。'\n"
+            "payload = text.encode('utf-8')\n"
+            "decode_payload = payload.decode\n"
+            "mojibake = decode_payload('gbk', errors='ignore')\n"
+        ),
+        "qa_generated_dunder_getattribute_decode_wrong_charset": (
+            "text = '中文字符保持原样：编码测试。'\n"
+            "payload = text.encode('utf-8')\n"
+            "mojibake = payload.__getattribute__('decode')('gbk', errors='ignore')\n"
+        ),
+        "qa_generated_operator_methodcaller_decode_wrong_charset": (
+            "import operator\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "payload = text.encode('utf-8')\n"
+            "mojibake = operator.methodcaller('decode', 'gbk', errors='ignore')(payload)\n"
+        ),
+        "qa_generated_operator_methodcaller_alias_wrong_charset": (
+            "from operator import methodcaller\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "payload = text.encode('utf-8')\n"
+            "decode_payload = methodcaller('decode', 'gbk', errors='ignore')\n"
+            "mojibake = decode_payload(payload)\n"
+        ),
+        "qa_generated_operator_attrgetter_decode_wrong_charset": (
+            "import operator\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "payload = text.encode('utf-8')\n"
+            "mojibake = operator.attrgetter('decode')(payload)('gbk', errors='ignore')\n"
+        ),
         "qa_generated_str_constructor_wrong_charset_direct": (
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = str(text.encode('utf-8'), 'gbk', errors='ignore')\n"

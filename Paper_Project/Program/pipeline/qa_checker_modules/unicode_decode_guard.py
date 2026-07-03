@@ -165,6 +165,25 @@ def _importlib_import_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str]]:
     return module_aliases, import_module_aliases
 
 
+def _operator_import_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str], Set[str]]:
+    module_aliases = {"operator"}
+    methodcaller_aliases: Set[str] = set()
+    attrgetter_aliases: Set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "operator":
+                    module_aliases.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "operator":
+            for alias in node.names:
+                imported_name = alias.asname or alias.name
+                if alias.name == "methodcaller":
+                    methodcaller_aliases.add(imported_name)
+                elif alias.name == "attrgetter":
+                    attrgetter_aliases.add(imported_name)
+    return module_aliases, methodcaller_aliases, attrgetter_aliases
+
+
 def _builtins_constructor_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str]]:
     module_aliases = {"builtins", "__builtins__"}
     constructor_aliases: Set[str] = set()
@@ -784,6 +803,180 @@ def _encoded_text_byte_aliases(
     return aliases
 
 
+def _operator_methodcaller_decode_encoding(
+    node: ast.AST,
+    operator_module_aliases: Set[str],
+    methodcaller_aliases: Set[str],
+    constants: Dict[str, str],
+) -> Optional[str]:
+    if not isinstance(node, ast.Call):
+        return None
+    is_methodcaller = (
+        _call_name(node.func) in methodcaller_aliases
+        or _attribute_on_module_alias(node.func, operator_module_aliases, "methodcaller")
+    )
+    if not is_methodcaller or not node.args:
+        return None
+    if _string_constant(node.args[0], constants) != "decode":
+        return None
+    if len(node.args) >= 2:
+        return _string_constant(node.args[1], constants)
+    keyword = _keyword_node(node, "encoding")
+    if keyword is not None:
+        return _string_constant(keyword, constants)
+    return "utf-8"
+
+
+def _operator_attrgetter_decode_ref(
+    node: ast.AST,
+    operator_module_aliases: Set[str],
+    attrgetter_aliases: Set[str],
+    constants: Dict[str, str],
+) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and node.args
+        and _string_constant(node.args[0], constants) == "decode"
+        and (
+            _call_name(node.func) in attrgetter_aliases
+            or _attribute_on_module_alias(node.func, operator_module_aliases, "attrgetter")
+        )
+    )
+
+
+def _decode_method_source_encoding(
+    node: ast.AST,
+    encoded_text_aliases: Dict[str, str],
+    constants: Dict[str, str],
+    byte_constructor_aliases: Set[str],
+    operator_module_aliases: Set[str],
+    attrgetter_aliases: Set[str],
+) -> Optional[str]:
+    if isinstance(node, ast.Attribute) and node.attr == "decode":
+        return _encoded_text_bytes_encoding(
+            node.value,
+            encoded_text_aliases,
+            constants,
+            byte_constructor_aliases,
+        )
+    if (
+        isinstance(node, ast.Call)
+        and _call_name(node.func) == "getattr"
+        and len(node.args) >= 2
+        and _string_constant(node.args[1], constants) == "decode"
+    ):
+        return _encoded_text_bytes_encoding(
+            node.args[0],
+            encoded_text_aliases,
+            constants,
+            byte_constructor_aliases,
+        )
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "__getattribute__"
+        and node.args
+        and _string_constant(node.args[0], constants) == "decode"
+    ):
+        return _encoded_text_bytes_encoding(
+            node.func.value,
+            encoded_text_aliases,
+            constants,
+            byte_constructor_aliases,
+        )
+    if (
+        isinstance(node, ast.Call)
+        and _operator_attrgetter_decode_ref(
+            node.func,
+            operator_module_aliases,
+            attrgetter_aliases,
+            constants,
+        )
+        and node.args
+    ):
+        return _encoded_text_bytes_encoding(
+            node.args[0],
+            encoded_text_aliases,
+            constants,
+            byte_constructor_aliases,
+        )
+    return None
+
+
+def _decode_method_result_aliases(
+    tree: ast.AST,
+    encoded_text_aliases: Dict[str, str],
+    constants: Dict[str, str],
+    byte_constructor_aliases: Set[str],
+    operator_module_aliases: Set[str],
+    attrgetter_aliases: Set[str],
+) -> Dict[str, str]:
+    aliases: Dict[str, str] = {}
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if value is None:
+                continue
+            if isinstance(value, ast.Name) and value.id in aliases:
+                encoded_as = aliases[value.id]
+            else:
+                encoded_as = _decode_method_source_encoding(
+                    value,
+                    encoded_text_aliases,
+                    constants,
+                    byte_constructor_aliases,
+                    operator_module_aliases,
+                    attrgetter_aliases,
+                )
+            if encoded_as is None:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and aliases.get(target.id) != encoded_as:
+                    aliases[target.id] = encoded_as
+                    changed = True
+        if not changed:
+            break
+    return aliases
+
+
+def _operator_methodcaller_result_aliases(
+    tree: ast.AST,
+    operator_module_aliases: Set[str],
+    methodcaller_aliases: Set[str],
+    constants: Dict[str, str],
+) -> Dict[str, str]:
+    aliases: Dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            value = node.value
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            value = node.value
+            targets = [node.target]
+        else:
+            continue
+        encoding = _operator_methodcaller_decode_encoding(
+            value,
+            operator_module_aliases,
+            methodcaller_aliases,
+            constants,
+        )
+        if encoding is None:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                aliases[target.id] = encoding
+    return aliases
+
+
 def _is_mismatched_text_redecode(encode_encoding: str, decode_encoding: str) -> bool:
     if not encode_encoding or not decode_encoding:
         return True
@@ -1104,6 +1297,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
     module_aliases, decode_aliases, escape_decode_aliases, getdecoder_aliases, lookup_aliases = _codec_import_aliases(tree)
     functools_module_aliases, partial_aliases = _functools_import_aliases(tree)
     importlib_module_aliases, import_module_aliases = _importlib_import_aliases(tree)
+    operator_module_aliases, methodcaller_aliases, attrgetter_aliases = _operator_import_aliases(tree)
     module_dict_aliases: Dict[str, Set[str]] = {}
     decode_dict_aliases: Dict[str, Set[str]] = {}
     _add_simple_module_assignment_aliases(
@@ -1175,6 +1369,20 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
     )
     byte_constructor_aliases = _byte_constructor_aliases(tree, constants)
     encoded_text_bytes = _encoded_text_byte_aliases(tree, constants, byte_constructor_aliases)
+    decode_method_results = _decode_method_result_aliases(
+        tree,
+        encoded_text_bytes,
+        constants,
+        byte_constructor_aliases,
+        operator_module_aliases,
+        attrgetter_aliases,
+    )
+    methodcaller_results = _operator_methodcaller_result_aliases(
+        tree,
+        operator_module_aliases,
+        methodcaller_aliases,
+        constants,
+    )
     partial_results = _partial_decode_result_aliases(
         tree,
         functools_module_aliases,
@@ -1199,6 +1407,52 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
                 if _is_mismatched_text_redecode(encoded_as, encoding):
                     hits.append(f"str({_codec_label(encoding)} after encode {_codec_label(encoded_as)})")
                     continue
+        methodcaller_encoding = _operator_methodcaller_decode_encoding(
+            node.func,
+            operator_module_aliases,
+            methodcaller_aliases,
+            constants,
+        )
+        if methodcaller_encoding is not None and node.args:
+            encoded_as = _encoded_text_bytes_encoding(
+                node.args[0],
+                encoded_text_bytes,
+                constants,
+                byte_constructor_aliases,
+            )
+            if encoded_as is not None and _is_mismatched_text_redecode(encoded_as, methodcaller_encoding):
+                hits.append(f"operator.methodcaller(decode {_codec_label(methodcaller_encoding)} after encode {_codec_label(encoded_as)})")
+                continue
+        if name in methodcaller_results and node.args:
+            encoded_as = _encoded_text_bytes_encoding(
+                node.args[0],
+                encoded_text_bytes,
+                constants,
+                byte_constructor_aliases,
+            )
+            encoding = methodcaller_results[name]
+            if encoded_as is not None and _is_mismatched_text_redecode(encoded_as, encoding):
+                hits.append(f"{name}(decode {_codec_label(encoding)} after encode {_codec_label(encoded_as)})")
+                continue
+        bound_encoded_as = _decode_method_source_encoding(
+            node.func,
+            encoded_text_bytes,
+            constants,
+            byte_constructor_aliases,
+            operator_module_aliases,
+            attrgetter_aliases,
+        )
+        if bound_encoded_as is not None:
+            encoding = _method_decode_encoding_or_default(node, constants)
+            if _is_mismatched_text_redecode(bound_encoded_as, encoding):
+                hits.append(f"bound decode({_codec_label(encoding)} after encode {_codec_label(bound_encoded_as)})")
+                continue
+        if name in decode_method_results:
+            encoding = _method_decode_encoding_or_default(node, constants)
+            encoded_as = decode_method_results[name]
+            if _is_mismatched_text_redecode(encoded_as, encoding):
+                hits.append(f"{name}({_codec_label(encoding)} after encode {_codec_label(encoded_as)})")
+                continue
         partial_encoding = _partial_decode_encoding(
             node.func,
             functools_module_aliases,
