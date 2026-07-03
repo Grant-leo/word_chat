@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import ast
 import codecs
-from typing import List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 DANGEROUS_UNICODE_CODECS = {"unicode-escape", "raw-unicode-escape"}
 
@@ -21,10 +21,64 @@ def _is_dangerous_unicode_codec(name: str) -> bool:
     return _normalize_codec_name(name) in DANGEROUS_UNICODE_CODECS
 
 
-def _string_constant(node: ast.AST) -> str:
+def _static_string_value(node: ast.AST, constants: Dict[str, str]) -> Optional[str]:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
+    if isinstance(node, ast.Name):
+        return constants.get(node.id)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _static_string_value(node.left, constants)
+        right = _static_string_value(node.right, constants)
+        if left is not None and right is not None:
+            return left + right
+    if isinstance(node, ast.JoinedStr):
+        parts: List[str] = []
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                parts.append(value.value)
+            elif isinstance(value, ast.FormattedValue):
+                item = _static_string_value(value.value, constants)
+                if item is None:
+                    return None
+                parts.append(item)
+            else:
+                return None
+        return "".join(parts)
+    return None
+
+
+def _string_constant(node: ast.AST, constants: Dict[str, str] | None = None) -> str:
+    value = _static_string_value(node, constants or {})
+    if value is not None:
+        return value
     return ""
+
+
+def _constant_string_aliases(tree: ast.AST) -> Dict[str, str]:
+    constants: Dict[str, str] = {}
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if value is None:
+                continue
+            item = _static_string_value(value, constants)
+            if item is None:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and constants.get(target.id) != item:
+                    constants[target.id] = item
+                    changed = True
+        if not changed:
+            break
+    return constants
 
 
 def _call_name(node: ast.AST) -> str:
@@ -36,11 +90,11 @@ def _call_name(node: ast.AST) -> str:
     return ""
 
 
-def _keyword_value(node: ast.Call, *names: str) -> str:
+def _keyword_value(node: ast.Call, constants: Dict[str, str], *names: str) -> str:
     wanted = set(names)
     for keyword in node.keywords or []:
         if keyword.arg in wanted:
-            return _string_constant(keyword.value)
+            return _string_constant(keyword.value, constants)
     return ""
 
 
@@ -107,26 +161,27 @@ def _add_simple_factory_assignment_aliases(
                     lookup_aliases.add(target.id)
 
 
-def _method_decode_encoding(node: ast.Call) -> str:
+def _method_decode_encoding(node: ast.Call, constants: Dict[str, str]) -> str:
     if node.args:
-        return _string_constant(node.args[0])
-    return _keyword_value(node, "encoding")
+        return _string_constant(node.args[0], constants)
+    return _keyword_value(node, constants, "encoding")
 
 
-def _codecs_decode_encoding(node: ast.Call) -> str:
+def _codecs_decode_encoding(node: ast.Call, constants: Dict[str, str]) -> str:
     if len(node.args) >= 2:
-        return _string_constant(node.args[1])
-    return _keyword_value(node, "encoding")
+        return _string_constant(node.args[1], constants)
+    return _keyword_value(node, constants, "encoding")
 
 
-def _codec_factory_encoding(node: ast.Call) -> str:
+def _codec_factory_encoding(node: ast.Call, constants: Dict[str, str]) -> str:
     if node.args:
-        return _string_constant(node.args[0])
-    return _keyword_value(node, "encoding")
+        return _string_constant(node.args[0], constants)
+    return _keyword_value(node, constants, "encoding")
 
 
 def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated>") -> List[str]:
     tree = ast.parse(text, filename=filename)
+    constants = _constant_string_aliases(tree)
     module_aliases, decode_aliases, escape_decode_aliases, getdecoder_aliases, lookup_aliases = _codec_import_aliases(tree)
     _add_simple_factory_assignment_aliases(tree, module_aliases, getdecoder_aliases, lookup_aliases)
     hits: List[str] = []
@@ -137,16 +192,16 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         if isinstance(node.func, ast.Attribute) and node.func.attr == "decode":
             base = _call_name(node.func.value)
             if base in module_aliases:
-                encoding = _codecs_decode_encoding(node)
+                encoding = _codecs_decode_encoding(node, constants)
                 if _is_dangerous_unicode_codec(encoding):
                     hits.append(f"{name}({encoding})")
                 continue
-            encoding = _method_decode_encoding(node)
+            encoding = _method_decode_encoding(node, constants)
             if _is_dangerous_unicode_codec(encoding):
                 hits.append(f"{name}({encoding})")
             continue
         if name in decode_aliases:
-            encoding = _codecs_decode_encoding(node)
+            encoding = _codecs_decode_encoding(node, constants)
             if _is_dangerous_unicode_codec(encoding):
                 hits.append(f"{name}({encoding})")
             continue
@@ -159,7 +214,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             or _attribute_on_module_alias(node.func, module_aliases, "getdecoder")
             or _attribute_on_module_alias(node.func, module_aliases, "lookup")
         ):
-            encoding = _codec_factory_encoding(node)
+            encoding = _codec_factory_encoding(node, constants)
             if _is_dangerous_unicode_codec(encoding):
                 hits.append(f"{name}({encoding})")
     return sorted(set(hits))

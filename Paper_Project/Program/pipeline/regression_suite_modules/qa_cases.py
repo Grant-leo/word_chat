@@ -247,6 +247,57 @@ def qa_flags_generated_script_unicode_escape_decoder_factories() -> None:
 
 
 @case
+def qa_flags_generated_script_unicode_escape_static_codec_expressions() -> None:
+    text = "中文字符保持原样：编码测试。"
+    scripts = {
+        "qa_generated_unicode_codec_variable": (
+            "import codecs\n"
+            "codec = 'unicode_escape'\n"
+            "text = codecs.decode('中文', codec)\n"
+        ),
+        "qa_generated_unicode_codec_concat": (
+            "import codecs\n"
+            "codec = 'unicode' + '_escape'\n"
+            "text = codecs.decode('中文', codec)\n"
+        ),
+        "qa_generated_unicode_codec_keyword_variable": (
+            "codec = 'raw' + '_unicode_escape'\n"
+            "text = b'abc'.decode(encoding=codec)\n"
+        ),
+        "qa_generated_unicode_factory_codec_variable": (
+            "import codecs\n"
+            "codec = 'Unicode Escape'\n"
+            "decoder = codecs.getdecoder(codec)\n"
+            "text = decoder(b'\\\\u4e2d\\\\u6587')[0]\n"
+        ),
+        "qa_generated_unicode_lookup_direct_concat": (
+            "import codecs\n"
+            "text = codecs.lookup('unicode' + '-escape').decode(b'\\\\u4e2d\\\\u6587')[0]\n"
+        ),
+    }
+
+    for name, script in scripts.items():
+        work = new_workdir(name)
+        doc = Document()
+        doc.add_paragraph("Synthetic Thesis")
+        doc.add_paragraph("1 Introduction")
+        doc.add_paragraph(text)
+        doc.save(work / "out.docx")
+        write_json(work / "content.json", base_content([text]))
+        write_json(work / "format.json", base_format())
+        write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {}})
+        write_json(work / "workflow_mode.json", {"mode": "user"})
+        (work / "build_generated.py").write_text(script, encoding="utf-8")
+
+        report = check_output(str(work), mode="user", output_docx_name="out.docx")
+        codes = [item["code"] for item in report["issues"]]
+        assert_true(
+            "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" in codes,
+            f"QA did not flag unsafe unicode static codec expression {name}: {report}",
+        )
+
+
+@case
 def qa_counts_nested_note_refs_when_meta_is_missing() -> None:
     work = new_workdir("qa_nested_note_refs_without_meta")
     doc = Document()

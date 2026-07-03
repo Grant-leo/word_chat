@@ -248,8 +248,8 @@ REPAIR_GUIDES = {
     },
     "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE": {
         "title": "生成脚本含危险中文解码",
-        "why": "`codecs.decode(..., 'unicode_escape')`、`.decode('unicode_escape')`、`codecs.getdecoder(...)`、`codecs.lookup(...).decode(...)` 或 `raw_unicode_escape` 会把已经是 Python Unicode 字符串的中文二次解码成乱码。",
-        "user_action": "让 AI 打开本次输出目录的 `build_generated.py`，删除 `codecs.decode` / `codecs.getdecoder` / `codecs.lookup` / `unicode_escape` / `raw_unicode_escape` 这类二次解码；文本只应在读取文件字节时按 UTF-8/GB18030 解码一次。修完后重跑当前 `build_generated.py`，再重跑 QA。",
+        "why": "`codecs.decode(..., 'unicode_escape')`、`.decode('unicode_escape')`、`codecs.getdecoder(...)`、`codecs.lookup(...).decode(...)`、危险编码名变量/拼接或 `raw_unicode_escape` 会把已经是 Python Unicode 字符串的中文二次解码成乱码。",
+        "user_action": "让 AI 打开本次输出目录的 `build_generated.py`，删除 `codecs.decode` / `codecs.getdecoder` / `codecs.lookup` / `unicode_escape` / `raw_unicode_escape` 以及编码名变量/拼接这类二次解码；文本只应在读取文件字节时按 UTF-8/GB18030 解码一次。修完后重跑当前 `build_generated.py`，再重跑 QA。",
         "developer_action": "检查 `script_generator.py`、`script_generator_modules/` 和自动修复提示，确保生成脚本不会引入 unicode-escape 解码或 decoder factory；如需处理 Markdown 编码，只在文件读取层按字节解码一次。",
         "auto_level": "developer_fix",
     },
