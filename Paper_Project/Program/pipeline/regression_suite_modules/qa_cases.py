@@ -155,6 +155,44 @@ def qa_flags_generated_script_unicode_escape_decode_aliases() -> None:
 
 
 @case
+def qa_flags_generated_script_unicode_escape_normalized_codec_names() -> None:
+    text = "中文字符保持原样：编码测试。"
+    scripts = {
+        "qa_generated_unicode_hyphen_codec": (
+            "import codecs\n"
+            "text = codecs.decode('中文', 'unicode-escape')\n"
+        ),
+        "qa_generated_unicode_space_case_codec": (
+            "text = b'\\\\u4e2d\\\\u6587'.decode('Unicode Escape')\n"
+        ),
+        "qa_generated_raw_unicode_space_codec": (
+            "import codecs\n"
+            "text = codecs.decode('中文', encoding='raw unicode escape')\n"
+        ),
+    }
+
+    for name, script in scripts.items():
+        work = new_workdir(name)
+        doc = Document()
+        doc.add_paragraph("Synthetic Thesis")
+        doc.add_paragraph("1 Introduction")
+        doc.add_paragraph(text)
+        doc.save(work / "out.docx")
+        write_json(work / "content.json", base_content([text]))
+        write_json(work / "format.json", base_format())
+        write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {}})
+        write_json(work / "workflow_mode.json", {"mode": "user"})
+        (work / "build_generated.py").write_text(script, encoding="utf-8")
+
+        report = check_output(str(work), mode="user", output_docx_name="out.docx")
+        codes = [item["code"] for item in report["issues"]]
+        assert_true(
+            "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" in codes,
+            f"QA did not flag normalized unsafe unicode codec {name}: {report}",
+        )
+
+
+@case
 def qa_counts_nested_note_refs_when_meta_is_missing() -> None:
     work = new_workdir("qa_nested_note_refs_without_meta")
     doc = Document()

@@ -2,9 +2,23 @@
 from __future__ import annotations
 
 import ast
+import codecs
 from typing import List, Set, Tuple
 
-DANGEROUS_UNICODE_CODECS = {"unicode_escape", "raw_unicode_escape"}
+DANGEROUS_UNICODE_CODECS = {"unicode-escape", "raw-unicode-escape"}
+
+
+def _normalize_codec_name(name: str) -> str:
+    if not name:
+        return ""
+    try:
+        return codecs.lookup(name).name
+    except LookupError:
+        return name.strip().lower().replace("_", "-").replace(" ", "-")
+
+
+def _is_dangerous_unicode_codec(name: str) -> bool:
+    return _normalize_codec_name(name) in DANGEROUS_UNICODE_CODECS
 
 
 def _string_constant(node: ast.AST) -> str:
@@ -73,16 +87,16 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             base = _call_name(node.func.value)
             if base in module_aliases:
                 encoding = _codecs_decode_encoding(node)
-                if encoding in DANGEROUS_UNICODE_CODECS:
+                if _is_dangerous_unicode_codec(encoding):
                     hits.append(f"{name}({encoding})")
                 continue
             encoding = _method_decode_encoding(node)
-            if encoding in DANGEROUS_UNICODE_CODECS:
+            if _is_dangerous_unicode_codec(encoding):
                 hits.append(f"{name}({encoding})")
             continue
         if name in decode_aliases:
             encoding = _codecs_decode_encoding(node)
-            if encoding in DANGEROUS_UNICODE_CODECS:
+            if _is_dangerous_unicode_codec(encoding):
                 hits.append(f"{name}({encoding})")
             continue
         if name in escape_decode_aliases or name.endswith("escape_decode"):
