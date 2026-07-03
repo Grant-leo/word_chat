@@ -1909,6 +1909,117 @@ def script_generator_preserves_math_list_formula_in_grid_after_omission_zone() -
 
 
 @case
+def script_generator_preserves_note_only_in_grid_after_omission_zone() -> None:
+    note_text = "Trailing omitted-zone endnote must stay attached to the table cell."
+    content = base_content(
+        [
+            {
+                "role": "table",
+                "table_rows": [["Header", "Value"], ["Visible cell", ""]],
+                "table_row_grid_after": [0, 1],
+                "table_cell_items": [
+                    {
+                        "row": 1,
+                        "col": 1,
+                        "items": [
+                            {
+                                "role": "rich_text",
+                                "location": "table_cell",
+                                "replace_paragraph_index": 0,
+                                "runs": [
+                                    {
+                                        "type": "note_ref",
+                                        "note_type": "endnote",
+                                        "source_id": "42",
+                                        "text": note_text,
+                                    }
+                                ],
+                                "notes": [
+                                    {
+                                        "type": "endnote",
+                                        "source_id": "42",
+                                        "text": note_text,
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        meta_tables=1,
+    )
+    content["_meta"]["endnote_references_extracted"] = 1
+    content["_meta"]["endnote_definitions_extracted"] = 1
+
+    result = run_generated_case("generator_grid_after_note_only_guard_generated", content, base_format())
+    root = etree.fromstring(result["xml"].encode("utf-8"))
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    tables = root.xpath(".//w:tbl[.//w:t='Header']", namespaces=ns)
+    assert_true(len(tables) == 1, f"generated table missing or duplicated: {len(tables)}")
+    rows = tables[0].xpath("./w:tr", namespaces=ns)
+    second_grid_after = rows[1].xpath("./w:trPr/w:gridAfter/@w:val", namespaces=ns)
+    assert_true(second_grid_after == [], "row omission should not be restored when omitted zone carries only a note")
+    assert_true("<w:endnoteReference" in result["xml"], "note-only omitted grid zone did not render as native endnote")
+    counts = result["manifest"]["counts"]
+    assert_true(counts.get("endnote_references_rendered") == 1, f"endnote reference count missing: {counts}")
+    assert_true(
+        counts.get("content_table_grid_after_media_guard_rows_skipped") == 1,
+        f"gridAfter guard did not record the note-only protected row: {counts}",
+    )
+    assert_true(result["report"]["passed"] is True, f"note-only row-omission render should pass QA: {result['report']}")
+
+
+@case
+def script_generator_renders_direct_note_ref_in_grid_before_omission_zone() -> None:
+    note_text = "Leading omitted-zone footnote must render from a direct note item."
+    content = base_content(
+        [
+            {
+                "role": "table",
+                "table_rows": [["Header", "Value"], ["", "Visible cell"]],
+                "table_row_grid_before": [0, 1],
+                "table_cell_items": [
+                    {
+                        "row": 1,
+                        "col": 0,
+                        "items": [
+                            {
+                                "role": "note_ref",
+                                "type": "note_ref",
+                                "note_type": "footnote",
+                                "source_id": "31",
+                                "text": note_text,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        meta_tables=1,
+    )
+    content["_meta"]["footnote_references_extracted"] = 1
+    content["_meta"]["footnote_definitions_extracted"] = 1
+
+    result = run_generated_case("generator_grid_before_direct_note_guard_generated", content, base_format())
+    root = etree.fromstring(result["xml"].encode("utf-8"))
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    tables = root.xpath(".//w:tbl[.//w:t='Header']", namespaces=ns)
+    assert_true(len(tables) == 1, f"generated table missing or duplicated: {len(tables)}")
+    rows = tables[0].xpath("./w:tr", namespaces=ns)
+    second_grid_before = rows[1].xpath("./w:trPr/w:gridBefore/@w:val", namespaces=ns)
+    assert_true(second_grid_before == [], "row omission should not be restored when omitted zone carries a direct note")
+    assert_true("<w:footnoteReference" in result["xml"], "direct note item in omitted grid zone did not render natively")
+    counts = result["manifest"]["counts"]
+    assert_true(counts.get("footnote_references_rendered") == 1, f"footnote reference count missing: {counts}")
+    assert_true(
+        counts.get("content_table_grid_before_media_guard_rows_skipped") == 1,
+        f"gridBefore guard did not record the direct-note protected row: {counts}",
+    )
+    assert_true(result["report"]["passed"] is True, f"direct-note row-omission render should pass QA: {result['report']}")
+
+
+@case
 def content_parser_repairs_grid_before_mismatched_2d_merge_without_fake_vertical_merge() -> None:
     work = new_workdir("parser_grid_before_mismatched_2d_merge")
     docx = work / "grid_before_mismatched_2d_merge.docx"

@@ -936,6 +936,12 @@ def render_table_cell_media_item(cell, media, ncols, prof, force_new_paragraph=F
         return wrote
     if media.get('role') == 'rich_text' or media.get('math'):
         return render_table_cell_rich_text(cell, media, prof, force_new_paragraph=force_new_paragraph)
+    if media.get('role') == 'note_ref' or media.get('type') == 'note_ref':
+        p = cell.add_paragraph() if force_new_paragraph else (
+            cell.paragraphs[0] if cell.paragraphs and not cell.paragraphs[0].text.strip() else cell.add_paragraph()
+        )
+        apply_paragraph_profile(p, prof, first_indent_override=0)
+        return append_note_reference(p, media)
     if media.get('role') == 'image' or media.get('image'):
         render_table_cell_image(
             cell,
