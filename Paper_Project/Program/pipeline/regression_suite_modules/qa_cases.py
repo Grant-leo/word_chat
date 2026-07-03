@@ -298,6 +298,96 @@ def qa_flags_generated_script_unicode_escape_static_codec_expressions() -> None:
 
 
 @case
+def qa_flags_generated_script_unicode_escape_forwarded_to_wrapper() -> None:
+    text = "中文字符保持原样：编码测试。"
+    work = new_workdir("qa_generated_unicode_wrapper_forward")
+    doc = Document()
+    doc.add_paragraph("Synthetic Thesis")
+    doc.add_paragraph("1 Introduction")
+    doc.add_paragraph(text)
+    doc.save(work / "out.docx")
+    write_json(work / "content.json", base_content([text]))
+    write_json(work / "format.json", base_format())
+    write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {}})
+    write_json(work / "workflow_mode.json", {"mode": "user"})
+    (work / "build_generated.py").write_text(
+        "import codecs\n"
+        "\n"
+        "def decode_text(value, encoding):\n"
+        "    return codecs.decode(value, encoding)\n"
+        "\n"
+        "text = decode_text('中文字符保持原样：编码测试。', 'unicode_escape')\n",
+        encoding="utf-8",
+    )
+
+    report = check_output(str(work), mode="user", output_docx_name="out.docx")
+    codes = [item["code"] for item in report["issues"]]
+    assert_true(
+        "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" in codes,
+        f"QA did not flag unsafe unicode codec forwarded through wrapper: {report}",
+    )
+
+
+@case
+def qa_flags_generated_script_unicode_escape_decode_alias_assignment() -> None:
+    text = "中文字符保持原样：编码测试。"
+    work = new_workdir("qa_generated_unicode_decode_alias_assignment")
+    doc = Document()
+    doc.add_paragraph("Synthetic Thesis")
+    doc.add_paragraph("1 Introduction")
+    doc.add_paragraph(text)
+    doc.save(work / "out.docx")
+    write_json(work / "content.json", base_content([text]))
+    write_json(work / "format.json", base_format())
+    write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {}})
+    write_json(work / "workflow_mode.json", {"mode": "user"})
+    (work / "build_generated.py").write_text(
+        "import codecs\n"
+        "decode_text = codecs.decode\n"
+        "text = decode_text('中文字符保持原样：编码测试。', 'unicode_escape')\n",
+        encoding="utf-8",
+    )
+
+    report = check_output(str(work), mode="user", output_docx_name="out.docx")
+    codes = [item["code"] for item in report["issues"]]
+    assert_true(
+        "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" in codes,
+        f"QA did not flag unsafe unicode codec passed through decode function alias assignment: {report}",
+    )
+
+
+@case
+def qa_flags_generated_script_unicode_escape_higher_order_decode() -> None:
+    text = "中文字符保持原样：编码测试。"
+    work = new_workdir("qa_generated_unicode_higher_order_decode")
+    doc = Document()
+    doc.add_paragraph("Synthetic Thesis")
+    doc.add_paragraph("1 Introduction")
+    doc.add_paragraph(text)
+    doc.save(work / "out.docx")
+    write_json(work / "content.json", base_content([text]))
+    write_json(work / "format.json", base_format())
+    write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {}})
+    write_json(work / "workflow_mode.json", {"mode": "user"})
+    (work / "build_generated.py").write_text(
+        "import codecs\n"
+        "\n"
+        "def apply_decoder(decoder, value, encoding):\n"
+        "    return decoder(value, encoding)\n"
+        "\n"
+        "text = apply_decoder(codecs.decode, '中文字符保持原样：编码测试。', 'unicode_escape')\n",
+        encoding="utf-8",
+    )
+
+    report = check_output(str(work), mode="user", output_docx_name="out.docx")
+    codes = [item["code"] for item in report["issues"]]
+    assert_true(
+        "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" in codes,
+        f"QA did not flag unsafe unicode codec passed with codecs.decode function object: {report}",
+    )
+
+
+@case
 def qa_counts_nested_note_refs_when_meta_is_missing() -> None:
     work = new_workdir("qa_nested_note_refs_without_meta")
     doc = Document()
