@@ -143,6 +143,21 @@ def _attribute_on_module_alias(node: ast.AST, module_aliases: Set[str], attr: st
     )
 
 
+def _getattr_on_module_alias(
+    node: ast.AST,
+    module_aliases: Set[str],
+    attr: str,
+    constants: Dict[str, str],
+) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and _call_name(node.func) == "getattr"
+        and len(node.args) >= 2
+        and _call_name(node.args[0]) in module_aliases
+        and _string_constant(node.args[1], constants) == attr
+    )
+
+
 def _add_simple_factory_assignment_aliases(
     tree: ast.AST,
     module_aliases: Set[str],
@@ -177,6 +192,7 @@ def _add_simple_decode_assignment_aliases(
     tree: ast.AST,
     module_aliases: Set[str],
     decode_aliases: Set[str],
+    constants: Dict[str, str],
 ) -> None:
     for _ in range(4):
         changed = False
@@ -192,7 +208,11 @@ def _add_simple_decode_assignment_aliases(
             if value is None:
                 continue
             value_name = _call_name(value)
-            is_decode = value_name in decode_aliases or _attribute_on_module_alias(value, module_aliases, "decode")
+            is_decode = (
+                value_name in decode_aliases
+                or _attribute_on_module_alias(value, module_aliases, "decode")
+                or _getattr_on_module_alias(value, module_aliases, "decode", constants)
+            )
             if not is_decode:
                 continue
             for target in targets:
@@ -339,6 +359,8 @@ def _codec_wrapper_functions(
             if isinstance(node.func, ast.Attribute) and node.func.attr == "decode":
                 base = _call_name(node.func.value)
                 codec_node = _codecs_decode_encoding_node(node) if base in module_aliases else _method_decode_encoding_node(node)
+            elif _getattr_on_module_alias(node.func, module_aliases, "decode", constants):
+                codec_node = _codecs_decode_encoding_node(node)
             elif name in decode_aliases:
                 codec_node = _codecs_decode_encoding_node(node)
             elif (
@@ -425,18 +447,27 @@ def _wrapper_call_encoding(node: ast.Call, wrapper: Dict[str, object], param_nam
     return ""
 
 
-def _is_decode_function_ref(node: Optional[ast.AST], module_aliases: Set[str], decode_aliases: Set[str]) -> bool:
+def _is_decode_function_ref(
+    node: Optional[ast.AST],
+    module_aliases: Set[str],
+    decode_aliases: Set[str],
+    constants: Dict[str, str],
+) -> bool:
     if node is None:
         return False
     name = _call_name(node)
-    return name in decode_aliases or _attribute_on_module_alias(node, module_aliases, "decode")
+    return (
+        name in decode_aliases
+        or _attribute_on_module_alias(node, module_aliases, "decode")
+        or _getattr_on_module_alias(node, module_aliases, "decode", constants)
+    )
 
 
 def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated>") -> List[str]:
     tree = ast.parse(text, filename=filename)
     constants = _constant_string_aliases(tree)
     module_aliases, decode_aliases, escape_decode_aliases, getdecoder_aliases, lookup_aliases = _codec_import_aliases(tree)
-    _add_simple_decode_assignment_aliases(tree, module_aliases, decode_aliases)
+    _add_simple_decode_assignment_aliases(tree, module_aliases, decode_aliases, constants)
     _add_simple_factory_assignment_aliases(tree, module_aliases, getdecoder_aliases, lookup_aliases)
     wrappers = _codec_wrapper_functions(tree, module_aliases, decode_aliases, getdecoder_aliases, lookup_aliases, constants)
     _add_simple_wrapper_assignment_aliases(tree, wrappers)
@@ -457,6 +488,10 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         kind, encoding = _factory_call_encoding(node.func, module_aliases, getdecoder_aliases, lookup_aliases, constants)
         if kind == "getdecoder":
             hits.append(f"{name or kind}({_codec_label(encoding)})")
+            continue
+        if _getattr_on_module_alias(node.func, module_aliases, "decode", constants):
+            encoding = _codecs_decode_encoding(node, constants)
+            hits.append(f"getattr(codecs, decode)({_codec_label(encoding)})")
             continue
         if isinstance(node.func, ast.Attribute) and node.func.attr == "decode":
             base = _call_name(node.func.value)
@@ -516,7 +551,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             if isinstance(decode_arg_pairs, set):
                 for decoder_param, codec_param in decode_arg_pairs:
                     decoder_node = _wrapper_call_arg_node(node, higher_order_wrapper, decoder_param)
-                    if not _is_decode_function_ref(decoder_node, module_aliases, decode_aliases):
+                    if not _is_decode_function_ref(decoder_node, module_aliases, decode_aliases, constants):
                         continue
                     encoding = _wrapper_call_encoding(node, higher_order_wrapper, codec_param, constants)
                     hits.append(f"{name}({_codec_label(encoding)})")
