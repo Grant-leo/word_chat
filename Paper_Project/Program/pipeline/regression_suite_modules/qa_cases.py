@@ -439,6 +439,50 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
 
 
 @case
+def qa_flags_generated_script_general_codecs_decoder_factories_text_reencoding() -> None:
+    text = "中文字符保持原样：编码测试。"
+    scripts = {
+        "qa_generated_codecs_getdecoder_wrong_charset": (
+            "import codecs\n"
+            "decoder = codecs.getdecoder('gbk')\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = decoder(text.encode('utf-8'), errors='ignore')[0]\n"
+        ),
+        "qa_generated_codecs_lookup_decode_wrong_charset": (
+            "import codecs\n"
+            "codec = codecs.lookup('gbk')\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = codec.decode(text.encode('utf-8'), errors='ignore')[0]\n"
+        ),
+    }
+
+    for name, script in scripts.items():
+        work = new_workdir(name)
+        doc = Document()
+        doc.add_paragraph("Synthetic Thesis")
+        doc.add_paragraph("1 Introduction")
+        doc.add_paragraph(text)
+        doc.save(work / "out.docx")
+        write_json(work / "content.json", base_content([text]))
+        write_json(work / "format.json", base_format())
+        write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {}})
+        write_json(work / "workflow_mode.json", {"mode": "user"})
+        (work / "build_generated.py").write_text(script, encoding="utf-8")
+
+        report = check_output(str(work), mode="user", output_docx_name="out.docx")
+        codes = [item["code"] for item in report["issues"]]
+        assert_true(
+            "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" in codes,
+            f"QA did not flag general codecs decoder-factory route {name}: {report}",
+        )
+        action = f"{report.get('next_action')}\n{json.dumps(report.get('repair_plan') or {}, ensure_ascii=False)}"
+        assert_true(
+            ("getdecoder" in action or "lookup" in action) and "读取文件字节" in action,
+            f"general decoder-factory guidance did not explain byte-boundary decoding: {action}",
+        )
+
+
+@case
 def qa_counts_nested_note_refs_when_meta_is_missing() -> None:
     work = new_workdir("qa_nested_note_refs_without_meta")
     doc = Document()

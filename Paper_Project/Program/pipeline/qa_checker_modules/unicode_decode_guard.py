@@ -203,6 +203,54 @@ def _add_simple_decode_assignment_aliases(
             break
 
 
+def _factory_call_encoding(
+    node: ast.AST,
+    module_aliases: Set[str],
+    getdecoder_aliases: Set[str],
+    lookup_aliases: Set[str],
+    constants: Dict[str, str],
+) -> Tuple[str, str]:
+    if not isinstance(node, ast.Call):
+        return "", ""
+    name = _call_name(node.func)
+    if name in getdecoder_aliases or _attribute_on_module_alias(node.func, module_aliases, "getdecoder"):
+        return "getdecoder", _codec_factory_encoding(node, constants)
+    if name in lookup_aliases or _attribute_on_module_alias(node.func, module_aliases, "lookup"):
+        return "lookup", _codec_factory_encoding(node, constants)
+    return "", ""
+
+
+def _decoder_factory_result_aliases(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    getdecoder_aliases: Set[str],
+    lookup_aliases: Set[str],
+    constants: Dict[str, str],
+) -> Tuple[Dict[str, str], Dict[str, str]]:
+    decoder_results: Dict[str, str] = {}
+    lookup_results: Dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            value = node.value
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            value = node.value
+            targets = [node.target]
+        else:
+            continue
+        kind, encoding = _factory_call_encoding(value, module_aliases, getdecoder_aliases, lookup_aliases, constants)
+        if not kind:
+            continue
+        for target in targets:
+            if not isinstance(target, ast.Name):
+                continue
+            if kind == "getdecoder":
+                decoder_results[target.id] = encoding
+            elif kind == "lookup":
+                lookup_results[target.id] = encoding
+    return decoder_results, lookup_results
+
+
 def _method_decode_encoding(node: ast.Call, constants: Dict[str, str]) -> str:
     if node.args:
         return _string_constant(node.args[0], constants)
@@ -394,13 +442,37 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
     _add_simple_wrapper_assignment_aliases(tree, wrappers)
     higher_order_wrappers = _higher_order_decode_wrappers(tree, constants)
     _add_simple_wrapper_assignment_aliases(tree, higher_order_wrappers)
+    decoder_results, lookup_results = _decoder_factory_result_aliases(
+        tree,
+        module_aliases,
+        getdecoder_aliases,
+        lookup_aliases,
+        constants,
+    )
     hits: List[str] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         name = _call_name(node.func)
+        kind, encoding = _factory_call_encoding(node.func, module_aliases, getdecoder_aliases, lookup_aliases, constants)
+        if kind == "getdecoder":
+            hits.append(f"{name or kind}({_codec_label(encoding)})")
+            continue
         if isinstance(node.func, ast.Attribute) and node.func.attr == "decode":
             base = _call_name(node.func.value)
+            if base in lookup_results:
+                hits.append(f"{name}({_codec_label(lookup_results[base])})")
+                continue
+            kind, encoding = _factory_call_encoding(
+                node.func.value,
+                module_aliases,
+                getdecoder_aliases,
+                lookup_aliases,
+                constants,
+            )
+            if kind == "lookup":
+                hits.append(f"{name}({_codec_label(encoding)})")
+                continue
             if base in module_aliases:
                 encoding = _codecs_decode_encoding(node, constants)
                 hits.append(f"{name}({_codec_label(encoding)})")
@@ -412,6 +484,9 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         if name in decode_aliases:
             encoding = _codecs_decode_encoding(node, constants)
             hits.append(f"{name}({_codec_label(encoding)})")
+            continue
+        if name in decoder_results:
+            hits.append(f"{name}({_codec_label(decoder_results[name])})")
             continue
         if name in escape_decode_aliases or name.endswith("escape_decode"):
             hits.append(name)
