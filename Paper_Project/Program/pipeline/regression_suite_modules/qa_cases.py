@@ -637,6 +637,38 @@ def qa_flags_generated_script_method_decode_text_reencoding() -> None:
             "payload = text.encode('utf-8')\n"
             "mojibake = operator.attrgetter('decode')(payload)('gbk', errors='ignore')\n"
         ),
+        "qa_generated_list_bound_method_decode_wrong_charset": (
+            "text = '中文字符保持原样：编码测试。'\n"
+            "payload = text.encode('utf-8')\n"
+            "decode_routes = [payload.decode]\n"
+            "mojibake = decode_routes[0]('gbk', errors='ignore')\n"
+        ),
+        "qa_generated_tuple_getattr_method_decode_wrong_charset": (
+            "text = '中文字符保持原样：编码测试。'\n"
+            "payload = text.encode('utf-8')\n"
+            "decode_routes = (getattr(payload, 'decode'),)\n"
+            "mojibake = decode_routes[0]('gbk', errors='ignore')\n"
+        ),
+        "qa_generated_dict_bound_method_decode_wrong_charset": (
+            "text = '中文字符保持原样：编码测试。'\n"
+            "payload = text.encode('utf-8')\n"
+            "decode_routes = {'decode': payload.decode}\n"
+            "mojibake = decode_routes['decode']('gbk', errors='ignore')\n"
+        ),
+        "qa_generated_list_operator_methodcaller_decode_wrong_charset": (
+            "import operator\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "payload = text.encode('utf-8')\n"
+            "decode_routes = [operator.methodcaller('decode', 'gbk', errors='ignore')]\n"
+            "mojibake = decode_routes[0](payload)\n"
+        ),
+        "qa_generated_dict_operator_methodcaller_decode_wrong_charset": (
+            "from operator import methodcaller\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "payload = text.encode('utf-8')\n"
+            "decode_routes = {'decode': methodcaller('decode', 'gbk', errors='ignore')}\n"
+            "mojibake = decode_routes['decode'](payload)\n"
+        ),
         "qa_generated_str_constructor_wrong_charset_direct": (
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = str(text.encode('utf-8'), 'gbk', errors='ignore')\n"

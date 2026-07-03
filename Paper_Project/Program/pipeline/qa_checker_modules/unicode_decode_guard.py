@@ -947,6 +947,106 @@ def _decode_method_result_aliases(
     return aliases
 
 
+def _container_key_from_literal(node: ast.AST, constants: Dict[str, str]) -> Optional[Tuple[str, str]]:
+    if isinstance(node, ast.Constant) and isinstance(node.value, int) and node.value >= 0:
+        return ("index", str(node.value))
+    string_value = _static_string_value(node, constants)
+    if string_value is not None:
+        return ("key", string_value)
+    return None
+
+
+def _literal_container_items(
+    node: ast.AST,
+    constants: Dict[str, str],
+) -> List[Tuple[Tuple[str, str], ast.AST]]:
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return [(("index", str(index)), item) for index, item in enumerate(node.elts)]
+    if isinstance(node, ast.Dict):
+        items: List[Tuple[Tuple[str, str], ast.AST]] = []
+        for key_node, value_node in zip(node.keys, node.values):
+            if key_node is None:
+                continue
+            key = _container_key_from_literal(key_node, constants)
+            if key is not None:
+                items.append((key, value_node))
+        return items
+    return []
+
+
+def _container_subscript_lookup(
+    node: ast.AST,
+    aliases: Dict[str, Dict[Tuple[str, str], str]],
+    constants: Dict[str, str],
+) -> Optional[str]:
+    if not isinstance(node, ast.Subscript) or not isinstance(node.value, ast.Name):
+        return None
+    key = _container_key_from_literal(node.slice, constants)
+    if key is None:
+        return None
+    return aliases.get(node.value.id, {}).get(key)
+
+
+def _subscript_call_label(node: ast.AST) -> str:
+    if not isinstance(node, ast.Subscript) or not isinstance(node.value, ast.Name):
+        return "container"
+    if isinstance(node.slice, ast.Constant):
+        return f"{node.value.id}[{node.slice.value!r}]"
+    return f"{node.value.id}[...]"
+
+
+def _decode_method_container_aliases(
+    tree: ast.AST,
+    encoded_text_aliases: Dict[str, str],
+    constants: Dict[str, str],
+    byte_constructor_aliases: Set[str],
+    operator_module_aliases: Set[str],
+    attrgetter_aliases: Set[str],
+    method_aliases: Dict[str, str],
+) -> Dict[str, Dict[Tuple[str, str], str]]:
+    aliases: Dict[str, Dict[Tuple[str, str], str]] = {}
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if value is None:
+                continue
+            if isinstance(value, ast.Name) and value.id in aliases:
+                container_items = dict(aliases[value.id])
+            else:
+                container_items: Dict[Tuple[str, str], str] = {}
+                for key, item in _literal_container_items(value, constants):
+                    if isinstance(item, ast.Name) and item.id in method_aliases:
+                        encoded_as = method_aliases[item.id]
+                    else:
+                        encoded_as = _decode_method_source_encoding(
+                            item,
+                            encoded_text_aliases,
+                            constants,
+                            byte_constructor_aliases,
+                            operator_module_aliases,
+                            attrgetter_aliases,
+                        )
+                    if encoded_as is not None:
+                        container_items[key] = encoded_as
+            if not container_items:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and aliases.get(target.id) != container_items:
+                    aliases[target.id] = dict(container_items)
+                    changed = True
+        if not changed:
+            break
+    return aliases
+
+
 def _operator_methodcaller_result_aliases(
     tree: ast.AST,
     operator_module_aliases: Set[str],
@@ -974,6 +1074,54 @@ def _operator_methodcaller_result_aliases(
         for target in targets:
             if isinstance(target, ast.Name):
                 aliases[target.id] = encoding
+    return aliases
+
+
+def _operator_methodcaller_container_aliases(
+    tree: ast.AST,
+    operator_module_aliases: Set[str],
+    methodcaller_aliases: Set[str],
+    constants: Dict[str, str],
+    methodcaller_result_aliases: Dict[str, str],
+) -> Dict[str, Dict[Tuple[str, str], str]]:
+    aliases: Dict[str, Dict[Tuple[str, str], str]] = {}
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if value is None:
+                continue
+            if isinstance(value, ast.Name) and value.id in aliases:
+                container_items = dict(aliases[value.id])
+            else:
+                container_items: Dict[Tuple[str, str], str] = {}
+                for key, item in _literal_container_items(value, constants):
+                    if isinstance(item, ast.Name) and item.id in methodcaller_result_aliases:
+                        encoding = methodcaller_result_aliases[item.id]
+                    else:
+                        encoding = _operator_methodcaller_decode_encoding(
+                            item,
+                            operator_module_aliases,
+                            methodcaller_aliases,
+                            constants,
+                        )
+                    if encoding is not None:
+                        container_items[key] = encoding
+            if not container_items:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and aliases.get(target.id) != container_items:
+                    aliases[target.id] = dict(container_items)
+                    changed = True
+        if not changed:
+            break
     return aliases
 
 
@@ -1383,6 +1531,22 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         methodcaller_aliases,
         constants,
     )
+    decode_method_containers = _decode_method_container_aliases(
+        tree,
+        encoded_text_bytes,
+        constants,
+        byte_constructor_aliases,
+        operator_module_aliases,
+        attrgetter_aliases,
+        decode_method_results,
+    )
+    methodcaller_containers = _operator_methodcaller_container_aliases(
+        tree,
+        operator_module_aliases,
+        methodcaller_aliases,
+        constants,
+        methodcaller_results,
+    )
     partial_results = _partial_decode_result_aliases(
         tree,
         functools_module_aliases,
@@ -1434,6 +1598,18 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             if encoded_as is not None and _is_mismatched_text_redecode(encoded_as, encoding):
                 hits.append(f"{name}(decode {_codec_label(encoding)} after encode {_codec_label(encoded_as)})")
                 continue
+        container_methodcaller_encoding = _container_subscript_lookup(node.func, methodcaller_containers, constants)
+        if container_methodcaller_encoding is not None and node.args:
+            encoded_as = _encoded_text_bytes_encoding(
+                node.args[0],
+                encoded_text_bytes,
+                constants,
+                byte_constructor_aliases,
+            )
+            if encoded_as is not None and _is_mismatched_text_redecode(encoded_as, container_methodcaller_encoding):
+                label = _subscript_call_label(node.func)
+                hits.append(f"{label}(decode {_codec_label(container_methodcaller_encoding)} after encode {_codec_label(encoded_as)})")
+                continue
         bound_encoded_as = _decode_method_source_encoding(
             node.func,
             encoded_text_bytes,
@@ -1446,6 +1622,13 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             encoding = _method_decode_encoding_or_default(node, constants)
             if _is_mismatched_text_redecode(bound_encoded_as, encoding):
                 hits.append(f"bound decode({_codec_label(encoding)} after encode {_codec_label(bound_encoded_as)})")
+                continue
+        container_bound_encoded_as = _container_subscript_lookup(node.func, decode_method_containers, constants)
+        if container_bound_encoded_as is not None:
+            encoding = _method_decode_encoding_or_default(node, constants)
+            if _is_mismatched_text_redecode(container_bound_encoded_as, encoding):
+                label = _subscript_call_label(node.func)
+                hits.append(f"{label}({_codec_label(encoding)} after encode {_codec_label(container_bound_encoded_as)})")
                 continue
         if name in decode_method_results:
             encoding = _method_decode_encoding_or_default(node, constants)
