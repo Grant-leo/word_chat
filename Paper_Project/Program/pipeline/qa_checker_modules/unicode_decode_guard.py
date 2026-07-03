@@ -150,6 +150,21 @@ def _functools_import_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str]]:
     return module_aliases, partial_aliases
 
 
+def _importlib_import_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str]]:
+    module_aliases = {"importlib"}
+    import_module_aliases: Set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "importlib":
+                    module_aliases.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "importlib":
+            for alias in node.names:
+                if alias.name == "import_module":
+                    import_module_aliases.add(alias.asname or alias.name)
+    return module_aliases, import_module_aliases
+
+
 def _builtins_constructor_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str]]:
     module_aliases = {"builtins", "__builtins__"}
     constructor_aliases: Set[str] = set()
@@ -188,6 +203,244 @@ def _getattr_on_module_alias(
     )
 
 
+def _importlib_codecs_module_call(
+    node: ast.AST,
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    constants: Dict[str, str],
+) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and len(node.args) >= 1
+        and _string_constant(node.args[0], constants) == "codecs"
+        and (
+            _call_name(node.func) in import_module_aliases
+            or _attribute_on_module_alias(node.func, importlib_module_aliases, "import_module")
+        )
+    )
+
+
+def _globals_or_locals_module_subscript(
+    node: ast.AST,
+    module_aliases: Set[str],
+    constants: Dict[str, str],
+) -> bool:
+    return (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Call)
+        and _call_name(node.value.func) in {"globals", "locals"}
+        and _string_constant(node.slice, constants) in module_aliases
+    )
+
+
+def _literal_dict_subscript(
+    node: ast.AST,
+    aliases: Dict[str, Set[str]],
+    constants: Dict[str, str],
+) -> bool:
+    return (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Name)
+        and _string_constant(node.slice, constants) in aliases.get(node.value.id, set())
+    )
+
+
+def _static_codecs_module_ref(
+    node: ast.AST,
+    module_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+) -> bool:
+    if _call_name(node) in module_aliases:
+        return True
+    if (
+        isinstance(node, ast.Call)
+        and _call_name(node.func) == "__import__"
+        and len(node.args) >= 1
+        and _string_constant(node.args[0], constants) == "codecs"
+    ):
+        return True
+    if _importlib_codecs_module_call(node, importlib_module_aliases, import_module_aliases, constants):
+        return True
+    if _globals_or_locals_module_subscript(node, module_aliases, constants):
+        return True
+    if _literal_dict_subscript(node, module_dict_aliases, constants):
+        return True
+    return False
+
+
+def _getattr_on_static_codecs_module(
+    node: ast.AST,
+    module_aliases: Set[str],
+    attr: str,
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and _call_name(node.func) == "getattr"
+        and len(node.args) >= 2
+        and _static_codecs_module_ref(
+            node.args[0],
+            module_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+        )
+        and _string_constant(node.args[1], constants) == attr
+    )
+
+
+def _module_dict_decode_subscript(
+    node: ast.AST,
+    module_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+) -> bool:
+    if not isinstance(node, ast.Subscript) or _string_constant(node.slice, constants) != "decode":
+        return False
+    value = node.value
+    if isinstance(value, ast.Attribute) and value.attr == "__dict__":
+        return _static_codecs_module_ref(
+            value.value,
+            module_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+        )
+    if isinstance(value, ast.Call) and _call_name(value.func) == "vars" and value.args:
+        return _static_codecs_module_ref(
+            value.args[0],
+            module_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+        )
+    return False
+
+
+def _static_codecs_decode_ref(
+    node: Optional[ast.AST],
+    module_aliases: Set[str],
+    decode_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    decode_dict_aliases: Dict[str, Set[str]],
+) -> bool:
+    if node is None:
+        return False
+    name = _call_name(node)
+    if name in decode_aliases:
+        return True
+    if isinstance(node, ast.Attribute) and node.attr == "decode":
+        return _static_codecs_module_ref(
+            node.value,
+            module_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+        )
+    if _getattr_on_static_codecs_module(
+        node,
+        module_aliases,
+        "decode",
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+    ):
+        return True
+    if _module_dict_decode_subscript(
+        node,
+        module_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+    ):
+        return True
+    return _literal_dict_subscript(node, decode_dict_aliases, constants)
+
+
+def _literal_dict_codec_aliases(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    decode_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
+    module_dict_aliases: Dict[str, Set[str]] = {}
+    decode_dict_aliases: Dict[str, Set[str]] = {}
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if not isinstance(value, ast.Dict):
+                continue
+            module_keys: Set[str] = set()
+            decode_keys: Set[str] = set()
+            for key_node, value_node in zip(value.keys, value.values):
+                if key_node is None:
+                    continue
+                key = _string_constant(key_node, constants)
+                if not key:
+                    continue
+                if _static_codecs_module_ref(
+                    value_node,
+                    module_aliases,
+                    constants,
+                    importlib_module_aliases,
+                    import_module_aliases,
+                    module_dict_aliases,
+                ):
+                    module_keys.add(key)
+                if _static_codecs_decode_ref(
+                    value_node,
+                    module_aliases,
+                    decode_aliases,
+                    constants,
+                    importlib_module_aliases,
+                    import_module_aliases,
+                    module_dict_aliases,
+                    decode_dict_aliases,
+                ):
+                    decode_keys.add(key)
+            if not module_keys and not decode_keys:
+                continue
+            for target in targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                before_module = set(module_dict_aliases.get(target.id, set()))
+                before_decode = set(decode_dict_aliases.get(target.id, set()))
+                module_dict_aliases.setdefault(target.id, set()).update(module_keys)
+                decode_dict_aliases.setdefault(target.id, set()).update(decode_keys)
+                changed = changed or before_module != module_dict_aliases[target.id]
+                changed = changed or before_decode != decode_dict_aliases[target.id]
+        if not changed:
+            break
+    return module_dict_aliases, decode_dict_aliases
+
+
 def _builtins_subscript_constructor(node: ast.AST, constants: Dict[str, str]) -> bool:
     return (
         isinstance(node, ast.Subscript)
@@ -196,12 +449,41 @@ def _builtins_subscript_constructor(node: ast.AST, constants: Dict[str, str]) ->
     )
 
 
+def _bytearray_zero_arg_call(node: ast.AST) -> bool:
+    return isinstance(node, ast.Call) and _call_name(node.func) == "bytearray" and not node.args and not node.keywords
+
+
+def _static_byte_constructor_factory(node: ast.AST) -> bool:
+    if (
+        isinstance(node, ast.Call)
+        and _call_name(node.func) == "type"
+        and len(node.args) == 1
+        and not node.keywords
+    ):
+        value = node.args[0]
+        return (
+            isinstance(value, ast.Constant)
+            and isinstance(value.value, (bytes, bytearray))
+        ) or _bytearray_zero_arg_call(value)
+    if isinstance(node, ast.Attribute) and node.attr == "__class__":
+        value = node.value
+        return (
+            isinstance(value, ast.Constant)
+            and isinstance(value.value, (bytes, bytearray))
+        ) or _bytearray_zero_arg_call(value)
+    return False
+
+
 def _is_byte_constructor_ref(
     node: ast.AST,
     aliases: Set[str],
     constants: Dict[str, str],
 ) -> bool:
-    return _call_name(node) in aliases or _builtins_subscript_constructor(node, constants)
+    return (
+        _call_name(node) in aliases
+        or _builtins_subscript_constructor(node, constants)
+        or _static_byte_constructor_factory(node)
+    )
 
 
 def _add_simple_factory_assignment_aliases(
@@ -234,11 +516,53 @@ def _add_simple_factory_assignment_aliases(
                     lookup_aliases.add(target.id)
 
 
+def _add_simple_module_assignment_aliases(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+) -> None:
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if value is None:
+                continue
+            if not _static_codecs_module_ref(
+                value,
+                module_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+            ):
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id not in module_aliases:
+                    module_aliases.add(target.id)
+                    changed = True
+        if not changed:
+            break
+
+
 def _add_simple_decode_assignment_aliases(
     tree: ast.AST,
     module_aliases: Set[str],
     decode_aliases: Set[str],
     constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    decode_dict_aliases: Dict[str, Set[str]],
 ) -> None:
     for _ in range(4):
         changed = False
@@ -255,7 +579,16 @@ def _add_simple_decode_assignment_aliases(
                 continue
             value_name = _call_name(value)
             is_decode = (
-                value_name in decode_aliases
+                _static_codecs_decode_ref(
+                    value,
+                    module_aliases,
+                    decode_aliases,
+                    constants,
+                    importlib_module_aliases,
+                    import_module_aliases,
+                    module_dict_aliases,
+                    decode_dict_aliases,
+                )
                 or _attribute_on_module_alias(value, module_aliases, "decode")
                 or _getattr_on_module_alias(value, module_aliases, "decode", constants)
             )
@@ -532,6 +865,10 @@ def _codec_wrapper_functions(
     getdecoder_aliases: Set[str],
     lookup_aliases: Set[str],
     constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    decode_dict_aliases: Dict[str, Set[str]],
 ) -> Dict[str, Dict[str, object]]:
     wrappers: Dict[str, Dict[str, object]] = {}
     for func in [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]:
@@ -547,10 +884,29 @@ def _codec_wrapper_functions(
             codec_node: Optional[ast.AST] = None
             if isinstance(node.func, ast.Attribute) and node.func.attr == "decode":
                 base = _call_name(node.func.value)
-                codec_node = _codecs_decode_encoding_node(node) if base in module_aliases else _method_decode_encoding_node(node)
+                if _static_codecs_module_ref(
+                    node.func.value,
+                    module_aliases,
+                    constants,
+                    importlib_module_aliases,
+                    import_module_aliases,
+                    module_dict_aliases,
+                ):
+                    codec_node = _codecs_decode_encoding_node(node)
+                else:
+                    codec_node = _method_decode_encoding_node(node)
             elif _getattr_on_module_alias(node.func, module_aliases, "decode", constants):
                 codec_node = _codecs_decode_encoding_node(node)
-            elif name in decode_aliases:
+            elif _static_codecs_decode_ref(
+                node.func,
+                module_aliases,
+                decode_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+                decode_dict_aliases,
+            ):
                 codec_node = _codecs_decode_encoding_node(node)
             elif (
                 name in getdecoder_aliases
@@ -641,14 +997,20 @@ def _is_decode_function_ref(
     module_aliases: Set[str],
     decode_aliases: Set[str],
     constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    decode_dict_aliases: Dict[str, Set[str]],
 ) -> bool:
-    if node is None:
-        return False
-    name = _call_name(node)
-    return (
-        name in decode_aliases
-        or _attribute_on_module_alias(node, module_aliases, "decode")
-        or _getattr_on_module_alias(node, module_aliases, "decode", constants)
+    return _static_codecs_decode_ref(
+        node,
+        module_aliases,
+        decode_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        decode_dict_aliases,
     )
 
 
@@ -669,12 +1031,25 @@ def _partial_decode_encoding(
     codec_module_aliases: Set[str],
     decode_aliases: Set[str],
     constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    decode_dict_aliases: Dict[str, Set[str]],
 ) -> Optional[str]:
     if not _is_functools_partial_call(node, functools_module_aliases, partial_aliases):
         return None
     if not isinstance(node, ast.Call) or not node.args:
         return None
-    if not _is_decode_function_ref(node.args[0], codec_module_aliases, decode_aliases, constants):
+    if not _is_decode_function_ref(
+        node.args[0],
+        codec_module_aliases,
+        decode_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        decode_dict_aliases,
+    ):
         return None
     if len(node.args) >= 3:
         return _string_constant(node.args[2], constants)
@@ -688,6 +1063,10 @@ def _partial_decode_result_aliases(
     codec_module_aliases: Set[str],
     decode_aliases: Set[str],
     constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    decode_dict_aliases: Dict[str, Set[str]],
 ) -> Dict[str, str]:
     results: Dict[str, str] = {}
     for node in ast.walk(tree):
@@ -706,6 +1085,10 @@ def _partial_decode_result_aliases(
             codec_module_aliases,
             decode_aliases,
             constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            decode_dict_aliases,
         )
         if encoding is None:
             continue
@@ -720,9 +1103,66 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
     constants = _constant_string_aliases(tree)
     module_aliases, decode_aliases, escape_decode_aliases, getdecoder_aliases, lookup_aliases = _codec_import_aliases(tree)
     functools_module_aliases, partial_aliases = _functools_import_aliases(tree)
-    _add_simple_decode_assignment_aliases(tree, module_aliases, decode_aliases, constants)
+    importlib_module_aliases, import_module_aliases = _importlib_import_aliases(tree)
+    module_dict_aliases: Dict[str, Set[str]] = {}
+    decode_dict_aliases: Dict[str, Set[str]] = {}
+    _add_simple_module_assignment_aliases(
+        tree,
+        module_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+    )
+    _add_simple_decode_assignment_aliases(
+        tree,
+        module_aliases,
+        decode_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        decode_dict_aliases,
+    )
+    module_dict_aliases, decode_dict_aliases = _literal_dict_codec_aliases(
+        tree,
+        module_aliases,
+        decode_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+    )
+    _add_simple_module_assignment_aliases(
+        tree,
+        module_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+    )
+    _add_simple_decode_assignment_aliases(
+        tree,
+        module_aliases,
+        decode_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        decode_dict_aliases,
+    )
     _add_simple_factory_assignment_aliases(tree, module_aliases, getdecoder_aliases, lookup_aliases)
-    wrappers = _codec_wrapper_functions(tree, module_aliases, decode_aliases, getdecoder_aliases, lookup_aliases, constants)
+    wrappers = _codec_wrapper_functions(
+        tree,
+        module_aliases,
+        decode_aliases,
+        getdecoder_aliases,
+        lookup_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        decode_dict_aliases,
+    )
     _add_simple_wrapper_assignment_aliases(tree, wrappers)
     higher_order_wrappers = _higher_order_decode_wrappers(tree, constants)
     _add_simple_wrapper_assignment_aliases(tree, higher_order_wrappers)
@@ -742,6 +1182,10 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         module_aliases,
         decode_aliases,
         constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        decode_dict_aliases,
     )
     hits: List[str] = []
     for node in ast.walk(tree):
@@ -762,6 +1206,10 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             module_aliases,
             decode_aliases,
             constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            decode_dict_aliases,
         )
         if partial_encoding is not None:
             hits.append(f"functools.partial(codecs.decode)({_codec_label(partial_encoding)})")
@@ -770,7 +1218,15 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         if kind == "getdecoder":
             hits.append(f"{name or kind}({_codec_label(encoding)})")
             continue
-        if _getattr_on_module_alias(node.func, module_aliases, "decode", constants):
+        if _getattr_on_static_codecs_module(
+            node.func,
+            module_aliases,
+            "decode",
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+        ):
             encoding = _codecs_decode_encoding(node, constants)
             hits.append(f"getattr(codecs, decode)({_codec_label(encoding)})")
             continue
@@ -789,7 +1245,14 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             if kind == "lookup":
                 hits.append(f"{name}({_codec_label(encoding)})")
                 continue
-            if base in module_aliases:
+            if _static_codecs_module_ref(
+                node.func.value,
+                module_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+            ):
                 encoding = _codecs_decode_encoding(node, constants)
                 hits.append(f"{name}({_codec_label(encoding)})")
                 continue
@@ -802,6 +1265,19 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             encoding = _method_decode_encoding(node, constants)
             if _is_dangerous_unicode_codec(encoding):
                 hits.append(f"{name}({encoding})")
+            continue
+        if _static_codecs_decode_ref(
+            node.func,
+            module_aliases,
+            decode_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            decode_dict_aliases,
+        ):
+            encoding = _codecs_decode_encoding(node, constants)
+            hits.append(f"{name or 'codecs.decode'}({_codec_label(encoding)})")
             continue
         if name in decode_aliases:
             encoding = _codecs_decode_encoding(node, constants)
@@ -841,7 +1317,16 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             if isinstance(decode_arg_pairs, set):
                 for decoder_param, codec_param in decode_arg_pairs:
                     decoder_node = _wrapper_call_arg_node(node, higher_order_wrapper, decoder_param)
-                    if not _is_decode_function_ref(decoder_node, module_aliases, decode_aliases, constants):
+                    if not _is_decode_function_ref(
+                        decoder_node,
+                        module_aliases,
+                        decode_aliases,
+                        constants,
+                        importlib_module_aliases,
+                        import_module_aliases,
+                        module_dict_aliases,
+                        decode_dict_aliases,
+                    ):
                         continue
                     encoding = _wrapper_call_encoding(node, higher_order_wrapper, codec_param, constants)
                     hits.append(f"{name}({_codec_label(encoding)})")
