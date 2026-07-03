@@ -135,6 +135,21 @@ def _codec_import_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str], Set[str], 
     return module_aliases, decode_aliases, escape_decode_aliases, getdecoder_aliases, lookup_aliases
 
 
+def _functools_import_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str]]:
+    module_aliases = {"functools"}
+    partial_aliases: Set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "functools":
+                    module_aliases.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "functools":
+            for alias in node.names:
+                if alias.name == "partial":
+                    partial_aliases.add(alias.asname or alias.name)
+    return module_aliases, partial_aliases
+
+
 def _attribute_on_module_alias(node: ast.AST, module_aliases: Set[str], attr: str) -> bool:
     return (
         isinstance(node, ast.Attribute)
@@ -463,10 +478,74 @@ def _is_decode_function_ref(
     )
 
 
+def _is_functools_partial_call(node: ast.AST, module_aliases: Set[str], partial_aliases: Set[str]) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and (
+            _call_name(node.func) in partial_aliases
+            or _attribute_on_module_alias(node.func, module_aliases, "partial")
+        )
+    )
+
+
+def _partial_decode_encoding(
+    node: ast.AST,
+    functools_module_aliases: Set[str],
+    partial_aliases: Set[str],
+    codec_module_aliases: Set[str],
+    decode_aliases: Set[str],
+    constants: Dict[str, str],
+) -> Optional[str]:
+    if not _is_functools_partial_call(node, functools_module_aliases, partial_aliases):
+        return None
+    if not isinstance(node, ast.Call) or not node.args:
+        return None
+    if not _is_decode_function_ref(node.args[0], codec_module_aliases, decode_aliases, constants):
+        return None
+    if len(node.args) >= 3:
+        return _string_constant(node.args[2], constants)
+    return _keyword_value(node, constants, "encoding")
+
+
+def _partial_decode_result_aliases(
+    tree: ast.AST,
+    functools_module_aliases: Set[str],
+    partial_aliases: Set[str],
+    codec_module_aliases: Set[str],
+    decode_aliases: Set[str],
+    constants: Dict[str, str],
+) -> Dict[str, str]:
+    results: Dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            value = node.value
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            value = node.value
+            targets = [node.target]
+        else:
+            continue
+        encoding = _partial_decode_encoding(
+            value,
+            functools_module_aliases,
+            partial_aliases,
+            codec_module_aliases,
+            decode_aliases,
+            constants,
+        )
+        if encoding is None:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                results[target.id] = encoding
+    return results
+
+
 def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated>") -> List[str]:
     tree = ast.parse(text, filename=filename)
     constants = _constant_string_aliases(tree)
     module_aliases, decode_aliases, escape_decode_aliases, getdecoder_aliases, lookup_aliases = _codec_import_aliases(tree)
+    functools_module_aliases, partial_aliases = _functools_import_aliases(tree)
     _add_simple_decode_assignment_aliases(tree, module_aliases, decode_aliases, constants)
     _add_simple_factory_assignment_aliases(tree, module_aliases, getdecoder_aliases, lookup_aliases)
     wrappers = _codec_wrapper_functions(tree, module_aliases, decode_aliases, getdecoder_aliases, lookup_aliases, constants)
@@ -480,11 +559,30 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         lookup_aliases,
         constants,
     )
+    partial_results = _partial_decode_result_aliases(
+        tree,
+        functools_module_aliases,
+        partial_aliases,
+        module_aliases,
+        decode_aliases,
+        constants,
+    )
     hits: List[str] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         name = _call_name(node.func)
+        partial_encoding = _partial_decode_encoding(
+            node.func,
+            functools_module_aliases,
+            partial_aliases,
+            module_aliases,
+            decode_aliases,
+            constants,
+        )
+        if partial_encoding is not None:
+            hits.append(f"functools.partial(codecs.decode)({_codec_label(partial_encoding)})")
+            continue
         kind, encoding = _factory_call_encoding(node.func, module_aliases, getdecoder_aliases, lookup_aliases, constants)
         if kind == "getdecoder":
             hits.append(f"{name or kind}({_codec_label(encoding)})")
@@ -522,6 +620,9 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             continue
         if name in decoder_results:
             hits.append(f"{name}({_codec_label(decoder_results[name])})")
+            continue
+        if name in partial_results:
+            hits.append(f"{name}({_codec_label(partial_results[name])})")
             continue
         if name in escape_decode_aliases or name.endswith("escape_decode"):
             hits.append(name)
