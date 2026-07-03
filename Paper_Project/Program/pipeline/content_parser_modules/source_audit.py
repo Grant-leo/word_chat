@@ -460,9 +460,11 @@ def _table_geometry_stats(xml_text: str) -> Dict[str, int]:
                 elif vmerge_kind == "continue":
                     expected = active_vmerges.get(col_idx)
                     cell_irregular = False
+                    visible_vmerge_counted = False
                     if _cell_has_rich_visible_content(cell):
                         stats["visible_vmerge_continuation_count"] += 1
                         table_irregular = True
+                        visible_vmerge_counted = True
                     if expected is None:
                         cell_irregular = True
                         expected_span = span
@@ -478,6 +480,8 @@ def _table_geometry_stats(xml_text: str) -> Dict[str, int]:
                     if cell_irregular:
                         stats["irregular_vmerge_count"] += 1
                         table_irregular = True
+                        if not visible_vmerge_counted and _cell_has_visible_content(cell):
+                            stats["visible_vmerge_continuation_count"] += 1
                     active = {"span": expected_span, "hmerge_width": expected_hmerge_width}
                     for offset in range(span):
                         next_active[col_idx + offset] = active

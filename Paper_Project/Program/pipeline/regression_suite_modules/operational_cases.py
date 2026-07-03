@@ -854,6 +854,81 @@ def source_audit_counts_grid_after_row_omissions_as_columns() -> None:
 
 
 @case
+def source_audit_counts_visible_vmerge_content_in_grid_after_mismatched_2d_merge() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_grid_after_mismatched_visible_vmerge")
+    path = work / "grid_after_mismatched_visible_vmerge.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=3)
+    table.cell(0, 0).text = "Left header"
+    table.cell(0, 1).text = "Merged header"
+    table.cell(0, 2).text = "Header continuation"
+    table.cell(1, 0).text = "Left body"
+    table.cell(1, 1).text = "Sensitive continuation text"
+    table.cell(1, 2).text = "Omitted tail"
+    doc.save(path)
+
+    def inject_grid_after_mismatched_2d(xml: str) -> str:
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + W_NS + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(W_NS + "tr")
+        assert_true(len(rows) == 2, "test rows missing")
+        first_cells = rows[0].findall(W_NS + "tc")
+        second_cells = rows[1].findall(W_NS + "tc")
+        assert_true(len(first_cells) == 3 and len(second_cells) == 3, "test cell grid changed")
+
+        def ensure_tc_pr(cell: ET.Element) -> ET.Element:
+            tc_pr = cell.find(W_NS + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(W_NS + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        first_pr = ensure_tc_pr(first_cells[1])
+        grid_span = first_pr.find(W_NS + "gridSpan")
+        if grid_span is None:
+            grid_span = ET.SubElement(first_pr, W_NS + "gridSpan")
+        grid_span.set(W_NS + "val", "2")
+        hmerge = ET.SubElement(first_pr, W_NS + "hMerge")
+        hmerge.set(W_NS + "val", "restart")
+        vmerge = ET.SubElement(first_pr, W_NS + "vMerge")
+        vmerge.set(W_NS + "val", "restart")
+        rows[0].remove(first_cells[2])
+
+        rows[1].remove(second_cells[2])
+        tr_pr = rows[1].find(W_NS + "trPr")
+        if tr_pr is None:
+            tr_pr = ET.Element(W_NS + "trPr")
+            rows[1].insert(0, tr_pr)
+        grid_after = ET.SubElement(tr_pr, W_NS + "gridAfter")
+        grid_after.set(W_NS + "val", "1")
+        ET.SubElement(ensure_tc_pr(second_cells[1]), W_NS + "vMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(path, "word/document.xml", inject_grid_after_mismatched_2d)
+
+    audit = audit_docx_source(str(path))
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert_true("COMPLEX_TABLE_UNSUPPORTED" in codes, f"mismatched gridAfter vMerge should require review: {audit}")
+    assert_true(audit["counts"].get("irregular_vmerge_count") == 1, f"mismatched vMerge count missing: {audit}")
+    assert_true(
+        audit["counts"].get("visible_vmerge_continuation_count") == 1,
+        f"visible mismatched vMerge continuation count missing: {audit}",
+    )
+    assert_true(
+        "Sensitive continuation text" not in str(audit),
+        f"source audit leaked visible mismatched vMerge continuation text: {audit}",
+    )
+    detail = " ".join(str(issue.get("detail") or "") for issue in audit["issues"] if issue.get("code") == "COMPLEX_TABLE_UNSUPPORTED")
+    assert_true(
+        "visible_vmerge_continuations=1" in detail,
+        f"complex table detail did not name visible mismatched vMerge continuation count: {audit}",
+    )
+
+
+@case
 def source_audit_counts_revision_wrapped_table_rows_as_visible_width() -> None:
     from content_parser_modules.source_audit import audit_docx_source
 
