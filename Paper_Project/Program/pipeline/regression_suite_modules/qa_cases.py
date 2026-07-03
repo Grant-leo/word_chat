@@ -602,6 +602,34 @@ def qa_flags_generated_script_method_decode_text_reencoding() -> None:
             "payload = make_array(text, 'utf-8')\n"
             "mojibake = str(payload, 'gbk', errors='ignore')\n"
         ),
+        "qa_generated_bytes_new_decode_wrong_charset": (
+            "text = '中文字符保持原样：编码测试。'\n"
+            "payload = bytes.__new__(bytes, text, 'utf-8')\n"
+            "mojibake = payload.decode('gbk', errors='ignore')\n"
+        ),
+        "qa_generated_constructor_alias_new_decode_wrong_charset": (
+            "text = '中文字符保持原样：编码测试。'\n"
+            "make_bytes = bytes\n"
+            "payload = make_bytes.__new__(make_bytes, text, 'utf-8')\n"
+            "mojibake = payload.decode('gbk', errors='ignore')\n"
+        ),
+        "qa_generated_dunder_builtins_attr_bytes_str_wrong_charset": (
+            "text = '中文字符保持原样：编码测试。'\n"
+            "payload = __builtins__.bytes(text, 'utf-8')\n"
+            "mojibake = str(payload, 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_dunder_builtins_getattr_bytes_decode_wrong_charset": (
+            "text = '中文字符保持原样：编码测试。'\n"
+            "make_bytes = getattr(__builtins__, 'bytes')\n"
+            "payload = make_bytes(text, 'utf-8')\n"
+            "mojibake = payload.decode('gbk', errors='ignore')\n"
+        ),
+        "qa_generated_dunder_builtins_subscript_bytes_decode_wrong_charset": (
+            "text = '中文字符保持原样：编码测试。'\n"
+            "make_bytes = __builtins__['bytes']\n"
+            "payload = make_bytes(text, 'utf-8')\n"
+            "mojibake = payload.decode('gbk', errors='ignore')\n"
+        ),
         "qa_generated_memoryview_tobytes_decode_wrong_charset": (
             "text = '中文字符保持原样：编码测试。'\n"
             "payload = memoryview(text.encode('utf-8')).tobytes()\n"

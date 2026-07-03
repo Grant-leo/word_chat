@@ -151,7 +151,7 @@ def _functools_import_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str]]:
 
 
 def _builtins_constructor_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str]]:
-    module_aliases = {"builtins"}
+    module_aliases = {"builtins", "__builtins__"}
     constructor_aliases: Set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -186,6 +186,22 @@ def _getattr_on_module_alias(
         and _call_name(node.args[0]) in module_aliases
         and _string_constant(node.args[1], constants) == attr
     )
+
+
+def _builtins_subscript_constructor(node: ast.AST, constants: Dict[str, str]) -> bool:
+    return (
+        isinstance(node, ast.Subscript)
+        and _call_name(node.value) == "__builtins__"
+        and _string_constant(node.slice, constants) in {"bytes", "bytearray"}
+    )
+
+
+def _is_byte_constructor_ref(
+    node: ast.AST,
+    aliases: Set[str],
+    constants: Dict[str, str],
+) -> bool:
+    return _call_name(node) in aliases or _builtins_subscript_constructor(node, constants)
 
 
 def _add_simple_factory_assignment_aliases(
@@ -342,8 +358,7 @@ def _byte_constructor_aliases(tree: ast.AST, constants: Dict[str, str]) -> Set[s
                 targets = [node.target]
             else:
                 continue
-            value_name = _call_name(value)
-            is_constructor = value_name in aliases or any(
+            is_constructor = _is_byte_constructor_ref(value, aliases, constants) or any(
                 _getattr_on_module_alias(value, builtins_module_aliases, constructor, constants)
                 for constructor in ("bytes", "bytearray")
             )
@@ -367,7 +382,16 @@ def _text_encode_call_encoding(
         return None
     if isinstance(node.func, ast.Attribute) and node.func.attr == "encode":
         return _method_encode_encoding_or_default(node, constants)
-    if _call_name(node.func) not in byte_constructor_aliases:
+    if isinstance(node.func, ast.Attribute) and node.func.attr == "__new__":
+        if not _is_byte_constructor_ref(node.func.value, byte_constructor_aliases, constants):
+            return None
+        if len(node.args) >= 3:
+            return _string_constant(node.args[2], constants)
+        keyword = _keyword_node(node, "encoding")
+        if keyword is not None:
+            return _string_constant(keyword, constants)
+        return None
+    if not _is_byte_constructor_ref(node.func, byte_constructor_aliases, constants):
         return None
     if len(node.args) >= 2:
         return _string_constant(node.args[1], constants)
