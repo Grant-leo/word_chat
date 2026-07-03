@@ -310,12 +310,40 @@ def _method_encode_encoding_or_default(node: ast.Call, constants: Dict[str, str]
     return "utf-8"
 
 
-def _text_encode_call_encoding(node: ast.AST, constants: Dict[str, str]) -> Optional[str]:
+def _byte_constructor_aliases(tree: ast.AST) -> Set[str]:
+    aliases = {"bytes", "bytearray"}
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if _call_name(value) not in aliases:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id not in aliases:
+                    aliases.add(target.id)
+                    changed = True
+        if not changed:
+            break
+    return aliases
+
+
+def _text_encode_call_encoding(
+    node: ast.AST,
+    constants: Dict[str, str],
+    byte_constructor_aliases: Set[str],
+) -> Optional[str]:
     if not isinstance(node, ast.Call):
         return None
     if isinstance(node.func, ast.Attribute) and node.func.attr == "encode":
         return _method_encode_encoding_or_default(node, constants)
-    if _call_name(node.func) not in {"bytes", "bytearray"}:
+    if _call_name(node.func) not in byte_constructor_aliases:
         return None
     if len(node.args) >= 2:
         return _string_constant(node.args[1], constants)
@@ -329,8 +357,9 @@ def _encoded_text_bytes_encoding(
     node: ast.AST,
     aliases: Dict[str, str],
     constants: Dict[str, str],
+    byte_constructor_aliases: Set[str],
 ) -> Optional[str]:
-    direct = _text_encode_call_encoding(node, constants)
+    direct = _text_encode_call_encoding(node, constants, byte_constructor_aliases)
     if direct is not None:
         return direct
     if isinstance(node, ast.Name):
@@ -338,7 +367,11 @@ def _encoded_text_bytes_encoding(
     return None
 
 
-def _encoded_text_byte_aliases(tree: ast.AST, constants: Dict[str, str]) -> Dict[str, str]:
+def _encoded_text_byte_aliases(
+    tree: ast.AST,
+    constants: Dict[str, str],
+    byte_constructor_aliases: Set[str],
+) -> Dict[str, str]:
     aliases: Dict[str, str] = {}
     for _ in range(4):
         changed = False
@@ -353,7 +386,7 @@ def _encoded_text_byte_aliases(tree: ast.AST, constants: Dict[str, str]) -> Dict
                 continue
             if value is None:
                 continue
-            encoding = _encoded_text_bytes_encoding(value, aliases, constants)
+            encoding = _encoded_text_bytes_encoding(value, aliases, constants, byte_constructor_aliases)
             if encoding is None:
                 continue
             for target in targets:
@@ -647,7 +680,8 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         lookup_aliases,
         constants,
     )
-    encoded_text_bytes = _encoded_text_byte_aliases(tree, constants)
+    byte_constructor_aliases = _byte_constructor_aliases(tree)
+    encoded_text_bytes = _encoded_text_byte_aliases(tree, constants, byte_constructor_aliases)
     partial_results = _partial_decode_result_aliases(
         tree,
         functools_module_aliases,
@@ -662,7 +696,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             continue
         name = _call_name(node.func)
         if name == "str" and node.args:
-            encoded_as = _encoded_text_bytes_encoding(node.args[0], encoded_text_bytes, constants)
+            encoded_as = _encoded_text_bytes_encoding(node.args[0], encoded_text_bytes, constants, byte_constructor_aliases)
             if encoded_as is not None:
                 encoding = _str_constructor_decode_encoding(node, constants)
                 if _is_mismatched_text_redecode(encoded_as, encoding):
@@ -706,7 +740,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
                 encoding = _codecs_decode_encoding(node, constants)
                 hits.append(f"{name}({_codec_label(encoding)})")
                 continue
-            encoded_as = _encoded_text_bytes_encoding(node.func.value, encoded_text_bytes, constants)
+            encoded_as = _encoded_text_bytes_encoding(node.func.value, encoded_text_bytes, constants, byte_constructor_aliases)
             if encoded_as is not None:
                 encoding = _method_decode_encoding_or_default(node, constants)
                 if _is_mismatched_text_redecode(encoded_as, encoding):
