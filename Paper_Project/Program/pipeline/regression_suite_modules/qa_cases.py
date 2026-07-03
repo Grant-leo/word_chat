@@ -560,6 +560,16 @@ def qa_flags_generated_script_method_decode_text_reencoding() -> None:
             "payload = bytes(text, 'utf-8')\n"
             "mojibake = payload.decode('gbk', errors='ignore')\n"
         ),
+        "qa_generated_bytearray_constructor_decode_wrong_charset": (
+            "text = '中文字符保持原样：编码测试。'\n"
+            "payload = bytearray(text, 'utf-8')\n"
+            "mojibake = payload.decode('gbk', errors='ignore')\n"
+        ),
+        "qa_generated_bytearray_str_constructor_wrong_charset": (
+            "text = '中文字符保持原样：编码测试。'\n"
+            "payload = bytearray(text, 'utf-8')\n"
+            "mojibake = str(payload, 'gbk', errors='ignore')\n"
+        ),
     }
 
     for name, script in scripts.items():

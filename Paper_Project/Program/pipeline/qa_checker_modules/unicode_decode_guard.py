@@ -315,7 +315,7 @@ def _text_encode_call_encoding(node: ast.AST, constants: Dict[str, str]) -> Opti
         return None
     if isinstance(node.func, ast.Attribute) and node.func.attr == "encode":
         return _method_encode_encoding_or_default(node, constants)
-    if _call_name(node.func) != "bytes":
+    if _call_name(node.func) not in {"bytes", "bytearray"}:
         return None
     if len(node.args) >= 2:
         return _string_constant(node.args[1], constants)
