@@ -1499,6 +1499,114 @@ def _codec_literal_container_aliases(
                 changed = True
         if not changed:
             break
+    object_aliases: Dict[str, str] = {}
+    class_instances = _class_instance_aliases(tree)
+
+    def module_items_for(value: ast.AST) -> Dict[Tuple[str, str], str]:
+        if isinstance(value, ast.Name) and value.id in module_containers:
+            return dict(module_containers[value.id])
+        attr_name = _call_name(value) if isinstance(value, ast.Attribute) else ""
+        if attr_name and attr_name in module_containers:
+            return dict(module_containers[attr_name])
+        call_name = _zero_arg_function_call_name(value)
+        if call_name and call_name in module_containers:
+            return dict(module_containers[call_name])
+        items: Dict[Tuple[str, str], str] = {}
+        for key, item in _literal_container_items(value, constants):
+            if _static_codecs_module_ref(
+                item,
+                module_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+            ):
+                items[key] = "codecs"
+        return items
+
+    def decode_items_for(value: ast.AST) -> Dict[Tuple[str, str], str]:
+        if isinstance(value, ast.Name) and value.id in decode_containers:
+            return dict(decode_containers[value.id])
+        attr_name = _call_name(value) if isinstance(value, ast.Attribute) else ""
+        if attr_name and attr_name in decode_containers:
+            return dict(decode_containers[attr_name])
+        items: Dict[Tuple[str, str], str] = {}
+        for key, item in _literal_container_items(value, constants):
+            if _static_codecs_decode_ref(
+                item,
+                module_aliases,
+                decode_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+                decode_dict_aliases,
+            ):
+                items[key] = "codecs.decode"
+        return items
+
+    def set_container(
+        containers: Dict[str, Dict[Tuple[str, str], str]],
+        name: str,
+        items: Dict[Tuple[str, str], str],
+    ) -> bool:
+        if not name or not items or containers.get(name) == items:
+            return False
+        containers[name] = dict(items)
+        return True
+
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                for attr, value in _class_attribute_assignment_items(node):
+                    changed = set_container(module_containers, f"{node.name}.{attr}", module_items_for(value)) or changed
+                    changed = set_container(decode_containers, f"{node.name}.{attr}", decode_items_for(value)) or changed
+                continue
+
+            value, targets = _assignment_value_targets(node)
+            if value is None:
+                continue
+
+            if isinstance(value, ast.Name):
+                source = object_aliases.get(value.id, value.id)
+                for target in targets:
+                    if isinstance(target, ast.Name) and object_aliases.get(target.id) != source:
+                        object_aliases[target.id] = source
+                        changed = True
+
+            module_items = module_items_for(value)
+            decode_items = decode_items_for(value)
+            for target in targets:
+                if isinstance(target, ast.Attribute):
+                    attr_name = _call_name(target)
+                    changed = set_container(module_containers, attr_name, module_items) or changed
+                    changed = set_container(decode_containers, attr_name, decode_items) or changed
+                    continue
+                if not isinstance(target, ast.Name):
+                    continue
+                for attr, item in _simple_namespace_keyword_items(value):
+                    changed = set_container(module_containers, f"{target.id}.{attr}", module_items_for(item)) or changed
+                    changed = set_container(decode_containers, f"{target.id}.{attr}", decode_items_for(item)) or changed
+
+        for alias, source in list(object_aliases.items()):
+            prefix = f"{source}."
+            for name, items in list(module_containers.items()):
+                if name.startswith(prefix):
+                    changed = set_container(module_containers, f"{alias}.{name[len(prefix):]}", items) or changed
+            for name, items in list(decode_containers.items()):
+                if name.startswith(prefix):
+                    changed = set_container(decode_containers, f"{alias}.{name[len(prefix):]}", items) or changed
+        for instance, class_name in class_instances.items():
+            prefix = f"{class_name}."
+            for name, items in list(module_containers.items()):
+                if name.startswith(prefix):
+                    changed = set_container(module_containers, f"{instance}.{name[len(prefix):]}", items) or changed
+            for name, items in list(decode_containers.items()):
+                if name.startswith(prefix):
+                    changed = set_container(decode_containers, f"{instance}.{name[len(prefix):]}", items) or changed
+        if not changed:
+            break
     return module_containers, decode_containers
 
 
@@ -1511,6 +1619,8 @@ def _container_subscript_lookup(
         return None
     if isinstance(node.value, ast.Name):
         container_name = node.value.id
+    elif isinstance(node.value, ast.Attribute):
+        container_name = _call_name(node.value)
     else:
         container_name = _zero_arg_function_call_name(node.value)
     if not container_name:
