@@ -1899,6 +1899,85 @@ def _zero_arg_function_call_name(node: ast.AST) -> str:
     return _call_name(node.func)
 
 
+def _codec_module_attribute_aliases(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    module_containers: Dict[str, Dict[Tuple[str, str], str]],
+) -> Set[str]:
+    attributes: Set[str] = set()
+    object_aliases: Dict[str, str] = {}
+    class_instances = _class_instance_aliases(tree)
+
+    def value_is_module(value: ast.AST) -> bool:
+        return (
+            _static_codecs_module_ref(
+                value,
+                module_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+            )
+            or _container_subscript_lookup(value, module_containers, constants) is not None
+            or _attribute_name_alias_lookup(value, attributes)
+        )
+
+    def add_attribute(name: str) -> bool:
+        if not name or name in attributes:
+            return False
+        attributes.add(name)
+        return True
+
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                for attr, value in _class_attribute_assignment_items(node):
+                    if value_is_module(value):
+                        changed = add_attribute(f"{node.name}.{attr}") or changed
+                continue
+
+            value, targets = _assignment_value_targets(node)
+            if value is None:
+                continue
+
+            if isinstance(value, ast.Name):
+                source = object_aliases.get(value.id, value.id)
+                for target in targets:
+                    if isinstance(target, ast.Name) and object_aliases.get(target.id) != source:
+                        object_aliases[target.id] = source
+                        changed = True
+
+            for target in targets:
+                if isinstance(target, ast.Attribute):
+                    if value_is_module(value):
+                        changed = add_attribute(_call_name(target)) or changed
+                    continue
+                if not isinstance(target, ast.Name):
+                    continue
+                for attr, item in _simple_namespace_keyword_items(value):
+                    if value_is_module(item):
+                        changed = add_attribute(f"{target.id}.{attr}") or changed
+
+        for alias, source in list(object_aliases.items()):
+            prefix = f"{source}."
+            for attr_name in list(attributes):
+                if attr_name.startswith(prefix):
+                    changed = add_attribute(f"{alias}.{attr_name[len(prefix):]}") or changed
+        for instance, class_name in class_instances.items():
+            prefix = f"{class_name}."
+            for attr_name in list(attributes):
+                if attr_name.startswith(prefix):
+                    changed = add_attribute(f"{instance}.{attr_name[len(prefix):]}") or changed
+        if not changed:
+            break
+    return attributes
+
+
 def _codecs_module_function_results(
     tree: ast.AST,
     module_aliases: Set[str],
@@ -1972,7 +2051,10 @@ def _is_codecs_module_ref_or_result(
     import_module_aliases: Set[str],
     module_dict_aliases: Dict[str, Set[str]],
     module_containers: Dict[str, Dict[Tuple[str, str], str]],
+    module_attributes: Set[str],
     module_functions: Set[str],
+    class_aliases: Dict[str, str],
+    factory_aliases: Dict[str, str],
 ) -> bool:
     if node is None:
         return False
@@ -1986,6 +2068,10 @@ def _is_codecs_module_ref_or_result(
     ):
         return True
     if _container_subscript_lookup(node, module_containers, constants) is not None:
+        return True
+    if _attribute_name_alias_lookup(node, module_attributes):
+        return True
+    if _temporary_instance_attribute_name_alias_lookup(node, module_attributes, class_aliases, factory_aliases):
         return True
     return _zero_arg_function_call_name(node) in module_functions
 
@@ -2324,6 +2410,26 @@ def _codec_arg_param_name(codec_node: Optional[ast.AST], params: Set[str]) -> Op
     return None
 
 
+def _getattr_param_name(
+    node: ast.AST,
+    params: Set[str],
+    attr: str,
+    constants: Dict[str, str],
+) -> str:
+    return (
+        node.args[0].id
+        if (
+            isinstance(node, ast.Call)
+            and _call_name(node.func) == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id in params
+            and _string_constant(node.args[1], constants) == attr
+        )
+        else ""
+    )
+
+
 def _codec_wrapper_functions(
     tree: ast.AST,
     module_aliases: Set[str],
@@ -2433,6 +2539,13 @@ def _higher_order_decode_wrapper_info(func: ast.FunctionDef, constants: Dict[str
             if codec_param:
                 decode_arg_pairs.add((decoder_param, codec_param))
             continue
+        if isinstance(node.func, ast.Call):
+            module_param = _getattr_param_name(node.func, params, "decode", constants)
+            if module_param:
+                codec_param = _codec_arg_param_name(_codecs_decode_encoding_node(node), params)
+                if codec_param:
+                    module_decode_arg_pairs.add((module_param, codec_param))
+                continue
         if isinstance(node.func, ast.Call) and isinstance(node.func.func, ast.Name):
             factory_param = node.func.func.id
             if factory_param not in params:
@@ -2441,6 +2554,13 @@ def _higher_order_decode_wrapper_info(func: ast.FunctionDef, constants: Dict[str
             if codec_param:
                 decoder_factory_arg_pairs.add((factory_param, codec_param))
             continue
+        if isinstance(node.func, ast.Call):
+            module_param = _getattr_param_name(node.func.func, params, "getdecoder", constants)
+            if module_param:
+                codec_param = _codec_arg_param_name(_codec_factory_encoding_node(node.func), params)
+                if codec_param:
+                    module_getdecoder_arg_pairs.add((module_param, codec_param))
+                continue
         if (
             isinstance(node.func, ast.Call)
             and isinstance(node.func.func, ast.Attribute)
@@ -2479,6 +2599,17 @@ def _higher_order_decode_wrapper_info(func: ast.FunctionDef, constants: Dict[str
             if codec_param:
                 lookup_factory_arg_pairs.add((factory_param, codec_param))
             continue
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "decode"
+            and isinstance(node.func.value, ast.Call)
+        ):
+            module_param = _getattr_param_name(node.func.value.func, params, "lookup", constants)
+            if module_param:
+                codec_param = _codec_arg_param_name(_codec_factory_encoding_node(node.func.value), params)
+                if codec_param:
+                    module_lookup_arg_pairs.add((module_param, codec_param))
+                continue
         if (
             isinstance(node.func, ast.Attribute)
             and node.func.attr == "decode"
@@ -2785,6 +2916,15 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         import_module_aliases,
         module_dict_aliases,
         decode_dict_aliases,
+    )
+    codec_module_attributes = _codec_module_attribute_aliases(
+        tree,
+        module_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        codec_module_containers,
     )
     codec_module_functions = _codecs_module_function_results(
         tree,
@@ -3161,6 +3301,22 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             if kind == "lookup":
                 hits.append(f"{name}({_codec_label(encoding)})")
                 continue
+            if _is_codecs_module_ref_or_result(
+                node.func.value,
+                module_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+                codec_module_containers,
+                codec_module_attributes,
+                codec_module_functions,
+                class_aliases,
+                factory_aliases,
+            ):
+                encoding = _codecs_decode_encoding(node, constants)
+                hits.append(f"{name}({_codec_label(encoding)})")
+                continue
             if _container_subscript_lookup(node.func.value, codec_module_containers, constants) is not None:
                 encoding = _codecs_decode_encoding(node, constants)
                 hits.append(f"{_subscript_call_label(node.func.value)}.decode({_codec_label(encoding)})")
@@ -3301,7 +3457,10 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
                         import_module_aliases,
                         module_dict_aliases,
                         codec_module_containers,
+                        codec_module_attributes,
                         codec_module_functions,
+                        class_aliases,
+                        factory_aliases,
                     ):
                         continue
                     encoding = _wrapper_call_encoding(node, higher_order_wrapper, codec_param, constants)
@@ -3318,7 +3477,10 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
                         import_module_aliases,
                         module_dict_aliases,
                         codec_module_containers,
+                        codec_module_attributes,
                         codec_module_functions,
+                        class_aliases,
+                        factory_aliases,
                     ):
                         continue
                     encoding = _wrapper_call_encoding(node, higher_order_wrapper, codec_param, constants)
@@ -3335,7 +3497,10 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
                         import_module_aliases,
                         module_dict_aliases,
                         codec_module_containers,
+                        codec_module_attributes,
                         codec_module_functions,
+                        class_aliases,
+                        factory_aliases,
                     ):
                         continue
                     encoding = _wrapper_call_encoding(node, higher_order_wrapper, codec_param, constants)
