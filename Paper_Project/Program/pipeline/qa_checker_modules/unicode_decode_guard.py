@@ -1465,6 +1465,40 @@ def _codec_literal_container_aliases(
                     changed = True
         if not changed:
             break
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+                continue
+            value = _single_own_return_value(node)
+            if value is None:
+                continue
+            if isinstance(value, ast.Name) and value.id in module_containers:
+                module_items = dict(module_containers[value.id])
+            else:
+                call_name = _zero_arg_function_call_name(value)
+                if call_name and call_name in module_containers:
+                    module_items = dict(module_containers[call_name])
+                else:
+                    module_items = {}
+            if not module_items:
+                for key, item in _literal_container_items(value, constants):
+                    if _static_codecs_module_ref(
+                        item,
+                        module_aliases,
+                        constants,
+                        importlib_module_aliases,
+                        import_module_aliases,
+                        module_dict_aliases,
+                    ):
+                        module_items[key] = "codecs"
+            if not module_items:
+                continue
+            if module_containers.get(node.name) != module_items:
+                module_containers[node.name] = dict(module_items)
+                changed = True
+        if not changed:
+            break
     return module_containers, decode_containers
 
 
@@ -1473,12 +1507,18 @@ def _container_subscript_lookup(
     aliases: Dict[str, Dict[Tuple[str, str], str]],
     constants: Dict[str, str],
 ) -> Optional[str]:
-    if not isinstance(node, ast.Subscript) or not isinstance(node.value, ast.Name):
+    if not isinstance(node, ast.Subscript):
+        return None
+    if isinstance(node.value, ast.Name):
+        container_name = node.value.id
+    else:
+        container_name = _zero_arg_function_call_name(node.value)
+    if not container_name:
         return None
     key = _container_key_from_literal(node.slice, constants)
     if key is None:
         return None
-    return aliases.get(node.value.id, {}).get(key)
+    return aliases.get(container_name, {}).get(key)
 
 
 def _attribute_alias_lookup(node: ast.AST, aliases: Dict[str, str]) -> Optional[str]:
