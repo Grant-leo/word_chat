@@ -410,6 +410,17 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "\n"
             "text = apply_decoder(codecs.decode, '中文字符保持原样：编码测试。'.encode('utf-8'), 'gbk')\n"
         ),
+        "qa_generated_returned_higher_order_wrapper_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "\n"
+            "def build_apply():\n"
+            "    def apply_decoder(decoder, value, encoding):\n"
+            "        return decoder(value, encoding, errors='ignore')\n"
+            "    return apply_decoder\n"
+            "\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = build_apply()(codecs.decode, text.encode('utf-8'), 'gbk')\n"
+        ),
         "qa_generated_dunder_import_codecs_decode_wrong_charset": (
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = __import__('codecs').decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
@@ -1356,6 +1367,36 @@ def qa_does_not_flag_shadowed_method_factory_name_for_safe_decoder() -> None:
     assert_true(
         "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" not in codes,
         f"QA falsely treated a global unsafe local() as a same-scope child local(): {report}",
+    )
+
+    work = new_workdir("qa_shadowed_returned_higher_order_wrapper_safe_decoder")
+    doc = Document()
+    doc.add_paragraph("Synthetic Thesis")
+    doc.add_paragraph("1 Introduction")
+    doc.add_paragraph(text)
+    doc.save(work / "out.docx")
+    write_json(work / "content.json", base_content([text]))
+    write_json(work / "format.json", base_format())
+    write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {}})
+    write_json(work / "workflow_mode.json", {"mode": "user"})
+    (work / "build_generated.py").write_text(
+        "import codecs\n"
+        "def apply_decoder(decoder, value, encoding):\n"
+        "    return decoder(value, encoding, errors='ignore')\n"
+        "def build_apply():\n"
+        "    def apply_decoder(decoder, value, encoding):\n"
+        "        return value.decode('utf-8')\n"
+        "    return apply_decoder\n"
+        "text = '中文字符保持原样：编码测试。'\n"
+        "roundtrip = build_apply()(codecs.decode, text.encode('utf-8'), 'gbk')\n",
+        encoding="utf-8",
+    )
+
+    report = check_output(str(work), mode="user", output_docx_name="out.docx")
+    codes = [item["code"] for item in report["issues"]]
+    assert_true(
+        "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" not in codes,
+        f"QA falsely treated a global higher-order wrapper as the returned safe local wrapper: {report}",
     )
 
 

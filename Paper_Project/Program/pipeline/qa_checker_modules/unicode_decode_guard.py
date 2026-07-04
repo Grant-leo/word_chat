@@ -2222,29 +2222,53 @@ def _add_simple_wrapper_assignment_aliases(tree: ast.AST, wrappers: Dict[str, Di
                 wrappers[target.id] = wrappers[value_name]
 
 
+def _higher_order_decode_wrapper_info(func: ast.FunctionDef, constants: Dict[str, str]) -> Optional[Dict[str, object]]:
+    signature = _function_signature(func, constants)
+    params = signature["params"]
+    if not isinstance(params, set):
+        return None
+    decode_arg_pairs: Set[Tuple[str, str]] = set()
+    for node in ast.walk(func):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            continue
+        decoder_param = node.func.id
+        if decoder_param not in params:
+            continue
+        codec_param = _codec_arg_param_name(_codecs_decode_encoding_node(node), params)
+        if codec_param:
+            decode_arg_pairs.add((decoder_param, codec_param))
+    if not decode_arg_pairs:
+        return None
+    return {
+        "decode_arg_pairs": decode_arg_pairs,
+        "positions": signature["positions"],
+        "defaults": signature["defaults"],
+    }
+
+
 def _higher_order_decode_wrappers(tree: ast.AST, constants: Dict[str, str]) -> Dict[str, Dict[str, object]]:
     wrappers: Dict[str, Dict[str, object]] = {}
     for func in [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]:
-        signature = _function_signature(func, constants)
-        params = signature["params"]
-        if not isinstance(params, set):
+        info = _higher_order_decode_wrapper_info(func, constants)
+        if info:
+            wrappers[func.name] = info
+    return wrappers
+
+
+def _returned_higher_order_decode_wrappers(tree: ast.AST, constants: Dict[str, str]) -> Dict[str, Dict[str, object]]:
+    wrappers: Dict[str, Dict[str, object]] = {}
+    for func in [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]:
+        if _function_required_arg_count(func) != 0:
             continue
-        decode_arg_pairs: Set[Tuple[str, str]] = set()
-        for node in ast.walk(func):
-            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
-                continue
-            decoder_param = node.func.id
-            if decoder_param not in params:
-                continue
-            codec_param = _codec_arg_param_name(_codecs_decode_encoding_node(node), params)
-            if codec_param:
-                decode_arg_pairs.add((decoder_param, codec_param))
-        if decode_arg_pairs:
-            wrappers[func.name] = {
-                "decode_arg_pairs": decode_arg_pairs,
-                "positions": signature["positions"],
-                "defaults": signature["defaults"],
-            }
+        value = _single_own_return_value(func)
+        if not isinstance(value, ast.Name):
+            continue
+        direct_child = _direct_child_functions(func).get(value.id)
+        if direct_child is None:
+            continue
+        info = _higher_order_decode_wrapper_info(direct_child, constants)
+        if info:
+            wrappers[func.name] = info
     return wrappers
 
 
@@ -2526,6 +2550,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
     )
     _add_simple_wrapper_assignment_aliases(tree, wrappers)
     higher_order_wrappers = _higher_order_decode_wrappers(tree, constants)
+    higher_order_wrappers.update(_returned_higher_order_decode_wrappers(tree, constants))
     _add_simple_wrapper_assignment_aliases(tree, higher_order_wrappers)
     decoder_results, lookup_results = _decoder_factory_result_aliases(
         tree,
@@ -2928,7 +2953,11 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
                     if _is_dangerous_unicode_codec(encoding):
                         hits.append(f"{name}({encoding})")
             continue
-        higher_order_wrapper = higher_order_wrappers.get(name)
+        higher_order_wrapper_name = name
+        higher_order_wrapper = higher_order_wrappers.get(higher_order_wrapper_name)
+        if higher_order_wrapper is None:
+            higher_order_wrapper_name = _zero_arg_function_call_name(node.func)
+            higher_order_wrapper = higher_order_wrappers.get(higher_order_wrapper_name)
         if higher_order_wrapper:
             decode_arg_pairs = higher_order_wrapper.get("decode_arg_pairs") or set()
             if isinstance(decode_arg_pairs, set):
@@ -2946,7 +2975,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
                     ):
                         continue
                     encoding = _wrapper_call_encoding(node, higher_order_wrapper, codec_param, constants)
-                    hits.append(f"{name}({_codec_label(encoding)})")
+                    hits.append(f"{higher_order_wrapper_name}({_codec_label(encoding)})")
     return sorted(set(hits))
 
 
