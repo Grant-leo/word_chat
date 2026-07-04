@@ -854,6 +854,44 @@ def _class_aliases(tree: ast.AST) -> Dict[str, str]:
     return aliases
 
 
+def _function_decorator_names(node: ast.FunctionDef) -> Set[str]:
+    names: Set[str] = set()
+    for decorator in node.decorator_list:
+        item = decorator.func if isinstance(decorator, ast.Call) else decorator
+        name = _call_name(item)
+        if name:
+            names.add(name)
+    return names
+
+
+def _zero_explicit_arg_method_names(
+    class_node: ast.ClassDef,
+    method: ast.FunctionDef,
+    class_aliases: Dict[str, str],
+    class_instances: Dict[str, str],
+) -> List[str]:
+    if method.name == "__init__":
+        return []
+    required = _function_required_arg_count(method)
+    decorator_names = _function_decorator_names(method)
+    class_name = class_aliases.get(class_node.name, class_node.name)
+    class_names = [alias for alias, target in class_aliases.items() if target == class_name]
+    instance_names = [alias for alias, target in class_instances.items() if target == class_name]
+    if "staticmethod" in decorator_names:
+        if required != 0:
+            return []
+        owners = class_names + instance_names
+    elif "classmethod" in decorator_names:
+        if required > 1:
+            return []
+        owners = class_names + instance_names
+    else:
+        if required > 1:
+            return []
+        owners = instance_names
+    return [f"{owner}.{method.name}" for owner in owners]
+
+
 def _class_factory_aliases(tree: ast.AST, class_aliases: Dict[str, str]) -> Dict[str, str]:
     factories: Dict[str, str] = {}
 
@@ -862,22 +900,13 @@ def _class_factory_aliases(tree: ast.AST, class_aliases: Dict[str, str]) -> Dict
             return ""
         return class_aliases.get(_call_name(value.func), "")
 
-    def decorator_names(node: ast.FunctionDef) -> Set[str]:
-        names: Set[str] = set()
-        for decorator in node.decorator_list:
-            item = decorator.func if isinstance(decorator, ast.Call) else decorator
-            name = _call_name(item)
-            if name:
-                names.add(name)
-        return names
-
     def register_method_factories(class_node: ast.ClassDef) -> None:
         class_name = class_aliases.get(class_node.name, class_node.name)
         alias_names = [alias for alias, target in class_aliases.items() if target == class_name]
         for child in class_node.body:
             if not isinstance(child, ast.FunctionDef):
                 continue
-            names = decorator_names(child)
+            names = _function_decorator_names(child)
             method_class = ""
             if "staticmethod" in names and _function_required_arg_count(child) == 0:
                 method_class = returned_class(_single_return_value(child))
@@ -1524,6 +1553,7 @@ def _codec_literal_container_aliases(
         if not changed:
             break
     object_aliases: Dict[str, str] = {}
+    class_aliases = _class_aliases(tree)
     class_instances = _class_instance_aliases(tree)
 
     def module_items_for(value: ast.AST) -> Dict[ContainerAliasKey, str]:
@@ -1586,6 +1616,17 @@ def _codec_literal_container_aliases(
                 for attr, value in _class_attribute_assignment_items(node):
                     changed = set_container(module_containers, f"{node.name}.{attr}", module_items_for(value)) or changed
                     changed = set_container(decode_containers, f"{node.name}.{attr}", decode_items_for(value)) or changed
+                for child in node.body:
+                    if not isinstance(child, ast.FunctionDef):
+                        continue
+                    value = _single_own_return_value(child)
+                    if value is None:
+                        continue
+                    module_items = module_items_for(value)
+                    decode_items = decode_items_for(value)
+                    for method_name in _zero_explicit_arg_method_names(node, child, class_aliases, class_instances):
+                        changed = set_container(module_containers, method_name, module_items) or changed
+                        changed = set_container(decode_containers, method_name, decode_items) or changed
                 continue
             if isinstance(node, ast.FunctionDef) and _function_required_arg_count(node) == 0:
                 value = _single_own_return_value(node)
@@ -2187,10 +2228,12 @@ def _codecs_module_function_results(
     importlib_module_aliases: Set[str],
     import_module_aliases: Set[str],
     module_dict_aliases: Dict[str, Set[str]],
-    module_containers: Dict[str, Dict[Tuple[str, str], str]],
+    module_containers: Dict[str, Dict[ContainerAliasKey, str]],
 ) -> Set[str]:
     functions: Set[str] = set()
     function_nodes: Set[int] = set()
+    class_aliases = _class_aliases(tree)
+    class_instances = _class_instance_aliases(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
             continue
@@ -2207,6 +2250,30 @@ def _codecs_module_function_results(
         ) or _container_subscript_lookup(value, module_containers, constants) is not None:
             functions.add(node.name)
             function_nodes.add(id(node))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for child in node.body:
+            if not isinstance(child, ast.FunctionDef):
+                continue
+            value = _single_own_return_value(child)
+            if value is None:
+                continue
+            if not (
+                _static_codecs_module_ref(
+                    value,
+                    module_aliases,
+                    constants,
+                    importlib_module_aliases,
+                    import_module_aliases,
+                    module_dict_aliases,
+                )
+                or _container_subscript_lookup(value, module_containers, constants) is not None
+            ):
+                continue
+            for method_name in _zero_explicit_arg_method_names(node, child, class_aliases, class_instances):
+                functions.add(method_name)
+                function_nodes.add(id(child))
     for _ in range(4):
         changed = False
         for node in ast.walk(tree):
