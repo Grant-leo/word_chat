@@ -771,6 +771,72 @@ def _simple_namespace_keyword_items(value: ast.AST) -> List[Tuple[str, ast.AST]]
     return [(keyword.arg, keyword.value) for keyword in value.keywords or [] if keyword.arg]
 
 
+def _assignment_value_targets(node: ast.AST) -> Tuple[Optional[ast.AST], List[ast.AST]]:
+    if isinstance(node, ast.Assign):
+        return node.value, list(node.targets)
+    if isinstance(node, ast.AnnAssign):
+        return node.value, [node.target]
+    return None, []
+
+
+def _class_attribute_assignment_items(node: ast.ClassDef) -> List[Tuple[str, ast.AST]]:
+    items: List[Tuple[str, ast.AST]] = []
+    for child in node.body:
+        if isinstance(child, ast.FunctionDef) and child.name == "__init__":
+            self_names: Set[str] = set()
+            if child.args.args:
+                self_names.add(child.args.args[0].arg)
+            if not self_names:
+                continue
+            for stmt in ast.walk(child):
+                value, targets = _assignment_value_targets(stmt)
+                if value is None:
+                    continue
+                for target in targets:
+                    if (
+                        isinstance(target, ast.Attribute)
+                        and isinstance(target.value, ast.Name)
+                        and target.value.id in self_names
+                    ):
+                        items.append((target.attr, value))
+            continue
+
+        value, targets = _assignment_value_targets(child)
+        if value is None:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                items.append((target.id, value))
+    return items
+
+
+def _class_instance_aliases(tree: ast.AST) -> Dict[str, str]:
+    class_names = {node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)}
+    aliases: Dict[str, str] = {}
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            value, targets = _assignment_value_targets(node)
+            if value is None:
+                continue
+            class_name = ""
+            if isinstance(value, ast.Call) and not value.args and not value.keywords:
+                called = _call_name(value.func)
+                if called in class_names:
+                    class_name = called
+            elif isinstance(value, ast.Name) and value.id in aliases:
+                class_name = aliases[value.id]
+            if not class_name:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and aliases.get(target.id) != class_name:
+                    aliases[target.id] = class_name
+                    changed = True
+        if not changed:
+            break
+    return aliases
+
+
 def _decoder_factory_attribute_aliases(
     tree: ast.AST,
     module_aliases: Set[str],
@@ -784,19 +850,45 @@ def _decoder_factory_attribute_aliases(
 ) -> Tuple[Dict[str, str], Dict[str, str]]:
     decoder_attributes: Dict[str, str] = {}
     lookup_attributes: Dict[str, str] = {}
+    object_aliases: Dict[str, str] = {}
+    class_instances = _class_instance_aliases(tree)
     for _ in range(4):
         changed = False
         for node in ast.walk(tree):
-            if isinstance(node, ast.Assign):
-                value = node.value
-                targets = node.targets
-            elif isinstance(node, ast.AnnAssign):
-                value = node.value
-                targets = [node.target]
-            else:
+            if isinstance(node, ast.ClassDef):
+                for attr, item in _class_attribute_assignment_items(node):
+                    kind, encoding = _decoder_factory_value_alias(
+                        item,
+                        module_aliases,
+                        getdecoder_aliases,
+                        lookup_aliases,
+                        constants,
+                        decoder_results,
+                        lookup_results,
+                        decoder_containers,
+                        lookup_containers,
+                        decoder_attributes,
+                        lookup_attributes,
+                    )
+                    attr_name = f"{node.name}.{attr}"
+                    if kind == "getdecoder" and decoder_attributes.get(attr_name) != encoding:
+                        decoder_attributes[attr_name] = encoding
+                        changed = True
+                    elif kind == "lookup" and lookup_attributes.get(attr_name) != encoding:
+                        lookup_attributes[attr_name] = encoding
+                        changed = True
                 continue
+
+            value, targets = _assignment_value_targets(node)
             if value is None:
                 continue
+
+            if isinstance(value, ast.Name):
+                source = object_aliases.get(value.id, value.id)
+                for target in targets:
+                    if isinstance(target, ast.Name) and object_aliases.get(target.id) != source:
+                        object_aliases[target.id] = source
+                        changed = True
 
             for target in targets:
                 if isinstance(target, ast.Attribute):
@@ -844,6 +936,34 @@ def _decoder_factory_attribute_aliases(
                         changed = True
                     elif kind == "lookup" and lookup_attributes.get(attr_name) != encoding:
                         lookup_attributes[attr_name] = encoding
+                        changed = True
+        for alias, source in list(object_aliases.items()):
+            prefix = f"{source}."
+            for attr_name, encoding in list(decoder_attributes.items()):
+                if attr_name.startswith(prefix):
+                    alias_name = f"{alias}.{attr_name[len(prefix):]}"
+                    if decoder_attributes.get(alias_name) != encoding:
+                        decoder_attributes[alias_name] = encoding
+                        changed = True
+            for attr_name, encoding in list(lookup_attributes.items()):
+                if attr_name.startswith(prefix):
+                    alias_name = f"{alias}.{attr_name[len(prefix):]}"
+                    if lookup_attributes.get(alias_name) != encoding:
+                        lookup_attributes[alias_name] = encoding
+                        changed = True
+        for instance, class_name in class_instances.items():
+            prefix = f"{class_name}."
+            for attr_name, encoding in list(decoder_attributes.items()):
+                if attr_name.startswith(prefix):
+                    instance_name = f"{instance}.{attr_name[len(prefix):]}"
+                    if decoder_attributes.get(instance_name) != encoding:
+                        decoder_attributes[instance_name] = encoding
+                        changed = True
+            for attr_name, encoding in list(lookup_attributes.items()):
+                if attr_name.startswith(prefix):
+                    instance_name = f"{instance}.{attr_name[len(prefix):]}"
+                    if lookup_attributes.get(instance_name) != encoding:
+                        lookup_attributes[instance_name] = encoding
                         changed = True
         if not changed:
             break
@@ -1262,6 +1382,7 @@ def _codecs_decode_attribute_aliases(
 ) -> Set[str]:
     attributes: Set[str] = set()
     object_aliases: Dict[str, str] = {}
+    class_instances = _class_instance_aliases(tree)
 
     def value_is_decode(value: ast.AST) -> bool:
         return (
@@ -1289,30 +1410,13 @@ def _codecs_decode_attribute_aliases(
         changed = False
         for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef):
-                for item in node.body:
-                    if isinstance(item, ast.Assign):
-                        value = item.value
-                        targets = item.targets
-                    elif isinstance(item, ast.AnnAssign):
-                        value = item.value
-                        targets = [item.target]
-                    else:
+                for attr, value in _class_attribute_assignment_items(node):
+                    if not value_is_decode(value):
                         continue
-                    if value is None or not value_is_decode(value):
-                        continue
-                    for target in targets:
-                        if isinstance(target, ast.Name):
-                            changed = add_attribute(f"{node.name}.{target.id}") or changed
+                    changed = add_attribute(f"{node.name}.{attr}") or changed
                 continue
 
-            if isinstance(node, ast.Assign):
-                value = node.value
-                targets = node.targets
-            elif isinstance(node, ast.AnnAssign):
-                value = node.value
-                targets = [node.target]
-            else:
-                continue
+            value, targets = _assignment_value_targets(node)
             if value is None:
                 continue
 
@@ -1339,6 +1443,11 @@ def _codecs_decode_attribute_aliases(
             for attr_name in list(attributes):
                 if attr_name.startswith(prefix):
                     changed = add_attribute(f"{alias}.{attr_name[len(prefix):]}") or changed
+        for instance, class_name in class_instances.items():
+            prefix = f"{class_name}."
+            for attr_name in list(attributes):
+                if attr_name.startswith(prefix):
+                    changed = add_attribute(f"{instance}.{attr_name[len(prefix):]}") or changed
         if not changed:
             break
     return attributes
