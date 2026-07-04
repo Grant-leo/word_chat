@@ -810,8 +810,59 @@ def _class_attribute_assignment_items(node: ast.ClassDef) -> List[Tuple[str, ast
     return items
 
 
-def _class_instance_aliases(tree: ast.AST) -> Dict[str, str]:
+def _class_aliases(tree: ast.AST) -> Dict[str, str]:
     class_names = {node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)}
+    aliases: Dict[str, str] = {name: name for name in class_names}
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            value, targets = _assignment_value_targets(node)
+            if value is None or not isinstance(value, ast.Name) or value.id not in aliases:
+                continue
+            class_name = aliases[value.id]
+            for target in targets:
+                if isinstance(target, ast.Name) and aliases.get(target.id) != class_name:
+                    aliases[target.id] = class_name
+                    changed = True
+        if not changed:
+            break
+    return aliases
+
+
+def _class_factory_aliases(tree: ast.AST, class_aliases: Dict[str, str]) -> Dict[str, str]:
+    factories: Dict[str, str] = {}
+
+    def returned_class(value: Optional[ast.AST]) -> str:
+        if not isinstance(value, ast.Call) or value.args or value.keywords:
+            return ""
+        return class_aliases.get(_call_name(value.func), "")
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+            continue
+        class_name = returned_class(_single_return_value(node))
+        if class_name:
+            factories[node.name] = class_name
+
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            value, targets = _assignment_value_targets(node)
+            if value is None or not isinstance(value, ast.Name) or value.id not in factories:
+                continue
+            class_name = factories[value.id]
+            for target in targets:
+                if isinstance(target, ast.Name) and factories.get(target.id) != class_name:
+                    factories[target.id] = class_name
+                    changed = True
+        if not changed:
+            break
+    return factories
+
+
+def _class_instance_aliases(tree: ast.AST) -> Dict[str, str]:
+    class_aliases = _class_aliases(tree)
+    factory_aliases = _class_factory_aliases(tree, class_aliases)
     aliases: Dict[str, str] = {}
     for _ in range(4):
         changed = False
@@ -822,8 +873,7 @@ def _class_instance_aliases(tree: ast.AST) -> Dict[str, str]:
             class_name = ""
             if isinstance(value, ast.Call) and not value.args and not value.keywords:
                 called = _call_name(value.func)
-                if called in class_names:
-                    class_name = called
+                class_name = class_aliases.get(called, "") or factory_aliases.get(called, "")
             elif isinstance(value, ast.Name) and value.id in aliases:
                 class_name = aliases[value.id]
             if not class_name:

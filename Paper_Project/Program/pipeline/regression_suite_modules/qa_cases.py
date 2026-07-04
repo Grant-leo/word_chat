@@ -560,6 +560,27 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "    return holder.decode\n"
             "mojibake = get_decoder()(text.encode('utf-8'), 'gbk', errors='ignore')\n"
         ),
+        "qa_generated_class_alias_instance_attribute_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "class Holder:\n"
+            "    def __init__(self):\n"
+            "        self.decode = codecs.decode\n"
+            "Alias = Holder\n"
+            "holder = Alias()\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = holder.decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_factory_instance_attribute_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "class Holder:\n"
+            "    def __init__(self):\n"
+            "        self.decode = codecs.decode\n"
+            "def make_holder():\n"
+            "    return Holder()\n"
+            "holder = make_holder()\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = holder.decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
     }
 
     for name, script in scripts.items():
@@ -1118,6 +1139,27 @@ def qa_flags_generated_script_general_codecs_decoder_factories_text_reencoding()
             "alias = holder\n"
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = alias.codec.decode(text.encode('utf-8'), errors='ignore')[0]\n"
+        ),
+        "qa_generated_codecs_lookup_class_alias_instance_attribute_wrong_charset": (
+            "import codecs\n"
+            "class Holder:\n"
+            "    def __init__(self):\n"
+            "        self.codec = codecs.lookup('gbk')\n"
+            "Alias = Holder\n"
+            "holder = Alias()\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = holder.codec.decode(text.encode('utf-8'), errors='ignore')[0]\n"
+        ),
+        "qa_generated_codecs_getdecoder_factory_instance_attribute_wrong_charset": (
+            "import codecs\n"
+            "class Holder:\n"
+            "    def __init__(self):\n"
+            "        self.decoder = codecs.getdecoder('gbk')\n"
+            "def make_holder():\n"
+            "    return Holder()\n"
+            "holder = make_holder()\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = holder.decoder(text.encode('utf-8'), errors='ignore')[0]\n"
         ),
     }
 
