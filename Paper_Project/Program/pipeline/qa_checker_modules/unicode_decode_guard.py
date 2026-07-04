@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import ast
 import codecs
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 DANGEROUS_UNICODE_CODECS = {"unicode-escape", "raw-unicode-escape"}
 
@@ -1397,6 +1397,30 @@ def _literal_container_items(
     return []
 
 
+ContainerAliasKey = Union[Tuple[str, str], Tuple[Tuple[str, str], ...]]
+
+
+def _literal_container_path_items(
+    node: ast.AST,
+    constants: Dict[str, str],
+    *,
+    max_depth: int = 4,
+) -> List[Tuple[ContainerAliasKey, ast.AST]]:
+    items: List[Tuple[ContainerAliasKey, ast.AST]] = []
+
+    def walk(value: ast.AST, prefix: Tuple[Tuple[str, str], ...]) -> None:
+        if len(prefix) >= max_depth:
+            return
+        for key, child in _literal_container_items(value, constants):
+            path = prefix + (key,)
+            alias_key: ContainerAliasKey = path[0] if len(path) == 1 else path
+            items.append((alias_key, child))
+            walk(child, path)
+
+    walk(node, tuple())
+    return items
+
+
 def _codec_literal_container_aliases(
     tree: ast.AST,
     module_aliases: Set[str],
@@ -1406,9 +1430,9 @@ def _codec_literal_container_aliases(
     import_module_aliases: Set[str],
     module_dict_aliases: Dict[str, Set[str]],
     decode_dict_aliases: Dict[str, Set[str]],
-) -> Tuple[Dict[str, Dict[Tuple[str, str], str]], Dict[str, Dict[Tuple[str, str], str]]]:
-    module_containers: Dict[str, Dict[Tuple[str, str], str]] = {}
-    decode_containers: Dict[str, Dict[Tuple[str, str], str]] = {}
+) -> Tuple[Dict[str, Dict[ContainerAliasKey, str]], Dict[str, Dict[ContainerAliasKey, str]]]:
+    module_containers: Dict[str, Dict[ContainerAliasKey, str]] = {}
+    decode_containers: Dict[str, Dict[ContainerAliasKey, str]] = {}
     for _ in range(4):
         changed = False
         for node in ast.walk(tree):
@@ -1425,13 +1449,13 @@ def _codec_literal_container_aliases(
             if isinstance(value, ast.Name) and value.id in module_containers:
                 module_items = dict(module_containers[value.id])
             else:
-                module_items: Dict[Tuple[str, str], str] = {}
+                module_items: Dict[ContainerAliasKey, str] = {}
             if isinstance(value, ast.Name) and value.id in decode_containers:
                 decode_items = dict(decode_containers[value.id])
             else:
-                decode_items: Dict[Tuple[str, str], str] = {}
+                decode_items: Dict[ContainerAliasKey, str] = {}
             if not module_items and not decode_items:
-                for key, item in _literal_container_items(value, constants):
+                for key, item in _literal_container_path_items(value, constants):
                     if _static_codecs_module_ref(
                         item,
                         module_aliases,
@@ -1482,7 +1506,7 @@ def _codec_literal_container_aliases(
                 else:
                     module_items = {}
             if not module_items:
-                for key, item in _literal_container_items(value, constants):
+                for key, item in _literal_container_path_items(value, constants):
                     if _static_codecs_module_ref(
                         item,
                         module_aliases,
@@ -1502,7 +1526,7 @@ def _codec_literal_container_aliases(
     object_aliases: Dict[str, str] = {}
     class_instances = _class_instance_aliases(tree)
 
-    def module_items_for(value: ast.AST) -> Dict[Tuple[str, str], str]:
+    def module_items_for(value: ast.AST) -> Dict[ContainerAliasKey, str]:
         if isinstance(value, ast.Name) and value.id in module_containers:
             return dict(module_containers[value.id])
         attr_name = _call_name(value) if isinstance(value, ast.Attribute) else ""
@@ -1511,8 +1535,8 @@ def _codec_literal_container_aliases(
         call_name = _zero_arg_function_call_name(value)
         if call_name and call_name in module_containers:
             return dict(module_containers[call_name])
-        items: Dict[Tuple[str, str], str] = {}
-        for key, item in _literal_container_items(value, constants):
+        items: Dict[ContainerAliasKey, str] = {}
+        for key, item in _literal_container_path_items(value, constants):
             if _static_codecs_module_ref(
                 item,
                 module_aliases,
@@ -1524,14 +1548,14 @@ def _codec_literal_container_aliases(
                 items[key] = "codecs"
         return items
 
-    def decode_items_for(value: ast.AST) -> Dict[Tuple[str, str], str]:
+    def decode_items_for(value: ast.AST) -> Dict[ContainerAliasKey, str]:
         if isinstance(value, ast.Name) and value.id in decode_containers:
             return dict(decode_containers[value.id])
         attr_name = _call_name(value) if isinstance(value, ast.Attribute) else ""
         if attr_name and attr_name in decode_containers:
             return dict(decode_containers[attr_name])
-        items: Dict[Tuple[str, str], str] = {}
-        for key, item in _literal_container_items(value, constants):
+        items: Dict[ContainerAliasKey, str] = {}
+        for key, item in _literal_container_path_items(value, constants):
             if _static_codecs_decode_ref(
                 item,
                 module_aliases,
@@ -1546,9 +1570,9 @@ def _codec_literal_container_aliases(
         return items
 
     def set_container(
-        containers: Dict[str, Dict[Tuple[str, str], str]],
+        containers: Dict[str, Dict[ContainerAliasKey, str]],
         name: str,
-        items: Dict[Tuple[str, str], str],
+        items: Dict[ContainerAliasKey, str],
     ) -> bool:
         if not name or not items or containers.get(name) == items:
             return False
@@ -1616,25 +1640,47 @@ def _codec_literal_container_aliases(
     return module_containers, decode_containers
 
 
-def _container_subscript_lookup(
+def _container_subscript_path(
     node: ast.AST,
-    aliases: Dict[str, Dict[Tuple[str, str], str]],
     constants: Dict[str, str],
-) -> Optional[str]:
+) -> Optional[Tuple[str, Tuple[Tuple[str, str], ...]]]:
     if not isinstance(node, ast.Subscript):
         return None
-    if isinstance(node.value, ast.Name):
-        container_name = node.value.id
-    elif isinstance(node.value, ast.Attribute):
-        container_name = _call_name(node.value)
+    keys: List[Tuple[str, str]] = []
+    current = node
+    while isinstance(current, ast.Subscript):
+        key = _container_key_from_literal(current.slice, constants)
+        if key is None:
+            return None
+        keys.append(key)
+        current = current.value
+    keys.reverse()
+    if isinstance(current, ast.Name):
+        container_name = current.id
+    elif isinstance(current, ast.Attribute):
+        container_name = _call_name(current)
     else:
-        container_name = _zero_arg_function_call_name(node.value)
+        container_name = _zero_arg_function_call_name(current)
     if not container_name:
         return None
-    key = _container_key_from_literal(node.slice, constants)
-    if key is None:
+    return container_name, tuple(keys)
+
+
+def _container_subscript_lookup(
+    node: ast.AST,
+    aliases: Dict[str, Dict[ContainerAliasKey, str]],
+    constants: Dict[str, str],
+) -> Optional[str]:
+    container_path = _container_subscript_path(node, constants)
+    if container_path is None:
         return None
-    return aliases.get(container_name, {}).get(key)
+    container_name, path = container_path
+    items = aliases.get(container_name, {})
+    if len(path) == 1:
+        direct = items.get(path[0])
+        if direct is not None:
+            return direct
+    return items.get(path)
 
 
 def _attribute_alias_lookup(node: ast.AST, aliases: Dict[str, str]) -> Optional[str]:

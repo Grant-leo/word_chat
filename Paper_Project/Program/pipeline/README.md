@@ -110,8 +110,10 @@ Current baseline as of 2026-07-04:
   helper that calls `module.decode(...)`, `module.getdecoder(...)`, or
   `module.lookup(...).decode(...)`. Covered examples include
   `def get_modules(): return [codecs]` followed by
-  `apply_module(get_modules()[0], payload, "gbk")`. It also follows simple
-  object, `SimpleNamespace(...)`, and class attribute containers such as
+  `apply_module(get_modules()[0], payload, "gbk")`, plus nested literal
+  container paths such as `config["modules"][0]` and
+  `Holder.config["modules"]["module"]`. It also follows simple object,
+  `SimpleNamespace(...)`, and class attribute containers such as
   `box.modules[0]`, `namespace.modules[0]`, and
   `Holder.modules["module"]`, plus no-required helper returns of those
   attribute containers such as `def get_modules(): return box.modules`;
@@ -245,7 +247,9 @@ Current baseline as of 2026-07-04:
 - Generated-script module-container handoff guard: structural QA also follows
   simple literal containers that carry the real `codecs` module before a
   container item is passed into a module helper, including variables,
-  no-required-argument helper returns, object attributes,
+  nested literal container paths such as `config["modules"][0]` and
+  `Holder.config["modules"]["module"]`, no-required-argument helper returns,
+  object attributes,
   `SimpleNamespace(...)` attributes, class attributes, and no-required helper
   returns of those attribute containers. Covered examples include
   `get_modules()[0]` where `get_modules()` returns `[codecs]` or
