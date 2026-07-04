@@ -1563,6 +1563,12 @@ def _codec_literal_container_aliases(
                     changed = set_container(module_containers, f"{node.name}.{attr}", module_items_for(value)) or changed
                     changed = set_container(decode_containers, f"{node.name}.{attr}", decode_items_for(value)) or changed
                 continue
+            if isinstance(node, ast.FunctionDef) and _function_required_arg_count(node) == 0:
+                value = _single_own_return_value(node)
+                if value is not None:
+                    changed = set_container(module_containers, node.name, module_items_for(value)) or changed
+                    changed = set_container(decode_containers, node.name, decode_items_for(value)) or changed
+                continue
 
             value, targets = _assignment_value_targets(node)
             if value is None:

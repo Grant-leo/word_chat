@@ -113,8 +113,9 @@ Current baseline as of 2026-07-04:
   `apply_module(get_modules()[0], payload, "gbk")`. It also follows simple
   object, `SimpleNamespace(...)`, and class attribute containers such as
   `box.modules[0]`, `namespace.modules[0]`, and
-  `Holder.modules["module"]` when the container item is passed to those module
-  helpers; same-shaped safe custom module containers stay unblocked.
+  `Holder.modules["module"]`, plus no-required helper returns of those
+  attribute containers such as `def get_modules(): return box.modules`;
+  same-shaped safe custom module containers stay unblocked.
   Regression:
   `qa_flags_generated_script_general_codecs_decode_text_reencoding` /
   `qa_flags_generated_script_general_codecs_decoder_factories_text_reencoding`
@@ -245,11 +246,13 @@ Current baseline as of 2026-07-04:
   simple literal containers that carry the real `codecs` module before a
   container item is passed into a module helper, including variables,
   no-required-argument helper returns, object attributes,
-  `SimpleNamespace(...)` attributes, and class attributes such as
-  `get_modules()[0]`, `box.modules[0]`, or `Holder.modules["module"]`. This covers
-  `module.decode(...)`, `module.getdecoder(...)`, and
-  `module.lookup(...).decode(...)` helper bodies, while same-shaped safe custom
-  module containers remain unblocked.
+  `SimpleNamespace(...)` attributes, class attributes, and no-required helper
+  returns of those attribute containers. Covered examples include
+  `get_modules()[0]` where `get_modules()` returns `[codecs]` or
+  `box.modules`, plus direct `box.modules[0]`, `namespace.modules[0]`, and
+  `Holder.modules["module"]`. This covers `module.decode(...)`,
+  `module.getdecoder(...)`, and `module.lookup(...).decode(...)` helper bodies,
+  while same-shaped safe custom module containers remain unblocked.
 - Generated-script decoder-factory handoff guard: structural QA now follows decoder objects returned by `codecs.getdecoder(...)` and codec-info objects returned by `codecs.lookup(...)` after they are stored in literal `list` / `tuple` containers, object attributes, object-alias attributes, `SimpleNamespace(...)` attributes, class attributes, simple `__init__` instance attributes, class-alias named or temporary instances, no-required-argument instance factories, `@staticmethod` / `@classmethod` instance factories, direct-child local functions returned by an outer no-required-argument function, or returned by no-required-argument functions, before calls such as `routes[0](payload)`, `box.decoder(payload)`, `alias.codec.decode(payload)`, `Holder.decoder(payload)`, `holder.decoder(payload)`, `holder.codec.decode(payload)` after `holder = Alias()`, `holder = make_holder()`, or `holder = Holder.make()`, `Alias().codec.decode(payload)`, `Holder.make().codec.decode(payload)`, `build_decoder()(payload)`, or `build_codec().decode(payload)`. It also follows higher-order helpers that receive `codecs.getdecoder` / `codecs.lookup` factory functions, no-required-argument helpers returning those factory functions, or `codecs` module objects/attributes before creating the decoder inside the helper, including returned wrapper forms such as `build_apply()(codecs.getdecoder, payload, "gbk")`, `build_apply()(get_factory(), payload, "gbk")`, `build_apply()(codecs.lookup, payload, "gbk")`, and `apply_module(codecs, payload, "gbk")` / `apply_module(box.module, payload, "gbk")` where the helper calls `module.getdecoder(...)`, `module.lookup(...).decode(...)`, `getattr(module, "getdecoder")(...)`, `getattr(module, "lookup")(...).decode(...)`, or local aliases such as `factory = getattr(module, "getdecoder")` / `lookup = getattr(module, "lookup")`. Required-argument helpers that return dynamic module-parameter factory attributes, such as `def pick(module): return getattr(module, "getdecoder")` followed by `pick(codecs)("gbk")(payload)` or `getattr(module, "lookup")` followed by `pick(codecs)("gbk").decode(payload)`, and required-argument outer helpers whose direct child or nested direct-child closure chain captures `module` before returning those dynamic factory attributes are also blocked only when the module argument resolves to real `codecs`. Regression: `qa_flags_generated_script_general_codecs_decoder_factories_text_reencoding`.
 - Generated-script dynamic bytes `.decode` guard: structural QA now follows bytes decode methods obtained via `getattr(payload, "decode")`, `payload.decode` bound-method aliases, `payload.__getattribute__("decode")`, `operator.methodcaller("decode", ...)`, and `operator.attrgetter("decode")(payload)` when `payload` is text-derived bytes. It also follows those decode callables through simple literal `list` / `tuple` / `dict` containers such as `routes = [payload.decode]` or `routes = {"decode": operator.methodcaller("decode", "gbk")}` and no-required-argument functions such as `def get_decoder(): return payload.decode` or `return operator.methodcaller("decode", "gbk")` before a fixed-index/key/immediate call. Same-codec routes such as UTF-8 bytes decoded as UTF-8 remain allowed; mismatched or dynamic re-decodes remain `GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE`.
 - QA recursive content counts: structural QA and strict `template_requirements` now recurse through `rich_text.items`, `runs[].items`, `runs[].table_cell_items`, and table-cell item trees for images, formulas, body tables, footnote/endnote anchors, and deep nested text. Code-block `table_rows` remain excluded from body-table counts even when `_meta.tables_count` is nonzero.
