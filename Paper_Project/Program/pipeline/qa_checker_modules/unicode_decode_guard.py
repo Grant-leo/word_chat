@@ -2449,6 +2449,15 @@ def _getattr_param_name(
     attr: str,
     constants: Dict[str, str],
 ) -> str:
+    return _getattr_name_arg(node, params, attr, constants)
+
+
+def _getattr_name_arg(
+    node: ast.AST,
+    names: Set[str],
+    attr: str,
+    constants: Dict[str, str],
+) -> str:
     return (
         node.args[0].id
         if (
@@ -2456,16 +2465,16 @@ def _getattr_param_name(
             and _call_name(node.func) == "getattr"
             and len(node.args) >= 2
             and isinstance(node.args[0], ast.Name)
-            and node.args[0].id in params
+            and node.args[0].id in names
             and _string_constant(node.args[1], constants) == attr
         )
         else ""
     )
 
 
-def _local_getattr_param_aliases(
+def _local_getattr_name_aliases(
     func: ast.FunctionDef,
-    params: Set[str],
+    names: Set[str],
     attr: str,
     constants: Dict[str, str],
 ) -> Dict[str, str]:
@@ -2476,18 +2485,49 @@ def _local_getattr_param_aliases(
             value, targets = _assignment_value_targets(node)
             if value is None:
                 continue
-            module_param = _getattr_param_name(value, params, attr, constants)
-            if not module_param and isinstance(value, ast.Name):
-                module_param = aliases.get(value.id, "")
-            if not module_param:
+            module_name = _getattr_name_arg(value, names, attr, constants)
+            if not module_name and isinstance(value, ast.Name):
+                module_name = aliases.get(value.id, "")
+            if not module_name:
                 continue
             for target in targets:
-                if isinstance(target, ast.Name) and aliases.get(target.id) != module_param:
-                    aliases[target.id] = module_param
+                if isinstance(target, ast.Name) and aliases.get(target.id) != module_name:
+                    aliases[target.id] = module_name
                     changed = True
         if not changed:
             break
     return aliases
+
+
+def _local_getattr_param_aliases(
+    func: ast.FunctionDef,
+    params: Set[str],
+    attr: str,
+    constants: Dict[str, str],
+) -> Dict[str, str]:
+    return _local_getattr_name_aliases(func, params, attr, constants)
+
+
+def _direct_child_getattr_param_result(
+    func: ast.FunctionDef,
+    value: ast.AST,
+    params: Set[str],
+    attr: str,
+    constants: Dict[str, str],
+) -> str:
+    call_name = _zero_arg_function_call_name(value)
+    if not call_name:
+        return ""
+    direct_child = _direct_child_functions(func).get(call_name)
+    if direct_child is None:
+        return ""
+    child_value = _single_own_return_value(direct_child)
+    if child_value is None:
+        return ""
+    module_param = _getattr_name_arg(child_value, params, attr, constants)
+    if not module_param and isinstance(child_value, ast.Name):
+        module_param = _local_getattr_name_aliases(direct_child, params, attr, constants).get(child_value.id, "")
+    return module_param
 
 
 def _param_getattr_return_functions(
@@ -2507,6 +2547,8 @@ def _param_getattr_return_functions(
         module_param = _getattr_param_name(value, params, attr, constants)
         if not module_param and isinstance(value, ast.Name):
             module_param = _local_getattr_param_aliases(func, params, attr, constants).get(value.id, "")
+        if not module_param:
+            module_param = _direct_child_getattr_param_result(func, value, params, attr, constants)
         if not module_param:
             continue
         functions[func.name] = {

@@ -560,6 +560,17 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = pick_decode(codecs)(text.encode('utf-8'), 'gbk', errors='ignore')\n"
         ),
+        "qa_generated_required_arg_closure_returns_getattr_module_decode_wrong_charset": (
+            "import codecs\n"
+            "\n"
+            "def build_decoder(module):\n"
+            "    def pick_decode():\n"
+            "        return getattr(module, 'decode')\n"
+            "    return pick_decode()\n"
+            "\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = build_decoder(codecs)(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
         "qa_generated_module_attribute_param_codecs_decode_wrong_charset": (
             "import codecs\n"
             "class Box:\n"
@@ -1433,6 +1444,15 @@ def qa_flags_generated_script_general_codecs_decoder_factories_text_reencoding()
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = pick_getdecoder(codecs)('gbk')(text.encode('utf-8'), errors='ignore')[0]\n"
         ),
+        "qa_generated_required_arg_closure_returns_getattr_module_getdecoder_wrong_charset": (
+            "import codecs\n"
+            "def build_getdecoder(module):\n"
+            "    def pick_getdecoder():\n"
+            "        return getattr(module, 'getdecoder')\n"
+            "    return pick_getdecoder()\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = build_getdecoder(codecs)('gbk')(text.encode('utf-8'), errors='ignore')[0]\n"
+        ),
         "qa_generated_module_attribute_param_getdecoder_wrong_charset": (
             "import codecs\n"
             "class Box:\n"
@@ -1472,6 +1492,15 @@ def qa_flags_generated_script_general_codecs_decoder_factories_text_reencoding()
             "    return getattr(module, 'lookup')\n"
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = pick_lookup(codecs)('gbk').decode(text.encode('utf-8'), errors='ignore')[0]\n"
+        ),
+        "qa_generated_required_arg_closure_returns_getattr_module_lookup_wrong_charset": (
+            "import codecs\n"
+            "def build_lookup(module):\n"
+            "    def pick_lookup():\n"
+            "        return getattr(module, 'lookup')\n"
+            "    return pick_lookup()\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = build_lookup(codecs)('gbk').decode(text.encode('utf-8'), errors='ignore')[0]\n"
         ),
         "qa_generated_module_attribute_param_lookup_wrong_charset": (
             "import codecs\n"
@@ -1777,6 +1806,36 @@ def qa_does_not_flag_shadowed_method_factory_name_for_safe_decoder() -> None:
     assert_true(
         "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" not in codes,
         f"QA falsely treated a required-arg safe module getattr return as codecs: {report}",
+    )
+
+    work = new_workdir("qa_safe_required_arg_closure_returns_getattr_module_decode")
+    doc = Document()
+    doc.add_paragraph("Synthetic Thesis")
+    doc.add_paragraph("1 Introduction")
+    doc.add_paragraph(text)
+    doc.save(work / "out.docx")
+    write_json(work / "content.json", base_content([text]))
+    write_json(work / "format.json", base_format())
+    write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {}})
+    write_json(work / "workflow_mode.json", {"mode": "user"})
+    (work / "build_generated.py").write_text(
+        "class SafeModule:\n"
+        "    def decode(self, value, encoding, errors='strict'):\n"
+        "        return value.decode('utf-8')\n"
+        "def build_decoder(module):\n"
+        "    def pick_decode():\n"
+        "        return getattr(module, 'decode')\n"
+        "    return pick_decode()\n"
+        "text = '中文字符保持原样：编码测试。'\n"
+        "roundtrip = build_decoder(SafeModule())(text.encode('utf-8'), 'gbk', errors='ignore')\n",
+        encoding="utf-8",
+    )
+
+    report = check_output(str(work), mode="user", output_docx_name="out.docx")
+    codes = [item["code"] for item in report["issues"]]
+    assert_true(
+        "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" not in codes,
+        f"QA falsely treated a required-arg closure safe module getattr return as codecs: {report}",
     )
 
 
