@@ -581,6 +581,38 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = holder.decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
         ),
+        "qa_generated_class_alias_temp_instance_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "class Holder:\n"
+            "    def __init__(self):\n"
+            "        self.decode = codecs.decode\n"
+            "Alias = Holder\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = Alias().decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_staticmethod_factory_instance_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "class Holder:\n"
+            "    def __init__(self):\n"
+            "        self.decode = codecs.decode\n"
+            "    @staticmethod\n"
+            "    def make():\n"
+            "        return Holder()\n"
+            "holder = Holder.make()\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = holder.decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_classmethod_temp_instance_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "class Holder:\n"
+            "    def __init__(self):\n"
+            "        self.decode = codecs.decode\n"
+            "    @classmethod\n"
+            "    def make(cls):\n"
+            "        return cls()\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = Holder.make().decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
     }
 
     for name, script in scripts.items():
@@ -1161,6 +1193,38 @@ def qa_flags_generated_script_general_codecs_decoder_factories_text_reencoding()
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = holder.decoder(text.encode('utf-8'), errors='ignore')[0]\n"
         ),
+        "qa_generated_codecs_lookup_class_alias_temp_instance_attribute_wrong_charset": (
+            "import codecs\n"
+            "class Holder:\n"
+            "    def __init__(self):\n"
+            "        self.codec = codecs.lookup('gbk')\n"
+            "Alias = Holder\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = Alias().codec.decode(text.encode('utf-8'), errors='ignore')[0]\n"
+        ),
+        "qa_generated_codecs_getdecoder_staticmethod_factory_instance_attribute_wrong_charset": (
+            "import codecs\n"
+            "class Holder:\n"
+            "    def __init__(self):\n"
+            "        self.decoder = codecs.getdecoder('gbk')\n"
+            "    @staticmethod\n"
+            "    def make():\n"
+            "        return Holder()\n"
+            "holder = Holder.make()\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = holder.decoder(text.encode('utf-8'), errors='ignore')[0]\n"
+        ),
+        "qa_generated_codecs_lookup_classmethod_temp_instance_attribute_wrong_charset": (
+            "import codecs\n"
+            "class Holder:\n"
+            "    def __init__(self):\n"
+            "        self.codec = codecs.lookup('gbk')\n"
+            "    @classmethod\n"
+            "    def make(cls):\n"
+            "        return cls()\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = Holder.make().codec.decode(text.encode('utf-8'), errors='ignore')[0]\n"
+        ),
     }
 
     for name, script in scripts.items():
@@ -1187,6 +1251,45 @@ def qa_flags_generated_script_general_codecs_decoder_factories_text_reencoding()
             ("getdecoder" in action or "lookup" in action) and "读取文件字节" in action,
             f"general decoder-factory guidance did not explain byte-boundary decoding: {action}",
         )
+
+
+@case
+def qa_does_not_flag_shadowed_method_factory_name_for_safe_decoder() -> None:
+    text = "中文字符保持原样：编码测试。"
+    work = new_workdir("qa_shadowed_method_factory_name_safe_decoder")
+    doc = Document()
+    doc.add_paragraph("Synthetic Thesis")
+    doc.add_paragraph("1 Introduction")
+    doc.add_paragraph(text)
+    doc.save(work / "out.docx")
+    write_json(work / "content.json", base_content([text]))
+    write_json(work / "format.json", base_format())
+    write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {}})
+    write_json(work / "workflow_mode.json", {"mode": "user"})
+    (work / "build_generated.py").write_text(
+        "import codecs\n"
+        "class Safe:\n"
+        "    def __init__(self):\n"
+        "        self.decode = lambda value, encoding, errors=None: value.decode('utf-8')\n"
+        "def make():\n"
+        "    return Safe()\n"
+        "class Holder:\n"
+        "    def __init__(self):\n"
+        "        self.decode = codecs.decode\n"
+        "    @staticmethod\n"
+        "    def make():\n"
+        "        return Holder()\n"
+        "text = '中文字符保持原样：编码测试。'\n"
+        "roundtrip = make().decode(text.encode('utf-8'), 'gbk', errors='ignore')\n",
+        encoding="utf-8",
+    )
+
+    report = check_output(str(work), mode="user", output_docx_name="out.docx")
+    codes = [item["code"] for item in report["issues"]]
+    assert_true(
+        "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" not in codes,
+        f"QA falsely treated a class staticmethod as the same-scope global factory: {report}",
+    )
 
 
 @case

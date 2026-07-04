@@ -837,20 +837,67 @@ def _class_factory_aliases(tree: ast.AST, class_aliases: Dict[str, str]) -> Dict
             return ""
         return class_aliases.get(_call_name(value.func), "")
 
-    for node in ast.walk(tree):
+    def decorator_names(node: ast.FunctionDef) -> Set[str]:
+        names: Set[str] = set()
+        for decorator in node.decorator_list:
+            item = decorator.func if isinstance(decorator, ast.Call) else decorator
+            name = _call_name(item)
+            if name:
+                names.add(name)
+        return names
+
+    def register_method_factories(class_node: ast.ClassDef) -> None:
+        class_name = class_aliases.get(class_node.name, class_node.name)
+        alias_names = [alias for alias, target in class_aliases.items() if target == class_name]
+        for child in class_node.body:
+            if not isinstance(child, ast.FunctionDef):
+                continue
+            names = decorator_names(child)
+            method_class = ""
+            if "staticmethod" in names and _function_required_arg_count(child) == 0:
+                method_class = returned_class(_single_return_value(child))
+            elif "classmethod" in names and _function_required_arg_count(child) <= 1:
+                value = _single_return_value(child)
+                first_arg = child.args.args[0].arg if child.args.args else ""
+                if (
+                    isinstance(value, ast.Call)
+                    and not value.args
+                    and not value.keywords
+                    and _call_name(value.func) == first_arg
+                ):
+                    method_class = class_name
+                else:
+                    method_class = returned_class(value)
+            if not method_class:
+                continue
+            for alias in alias_names:
+                factories[f"{alias}.{child.name}"] = method_class
+
+    for node in getattr(tree, "body", []):
         if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
             continue
         class_name = returned_class(_single_return_value(node))
         if class_name:
             factories[node.name] = class_name
 
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            register_method_factories(node)
+
     for _ in range(4):
         changed = False
         for node in ast.walk(tree):
             value, targets = _assignment_value_targets(node)
-            if value is None or not isinstance(value, ast.Name) or value.id not in factories:
+            if value is None:
                 continue
-            class_name = factories[value.id]
+            factory_name = ""
+            if isinstance(value, ast.Name):
+                factory_name = value.id
+            elif isinstance(value, ast.Attribute):
+                factory_name = _call_name(value)
+            if factory_name not in factories:
+                continue
+            class_name = factories[factory_name]
             for target in targets:
                 if isinstance(target, ast.Name) and factories.get(target.id) != class_name:
                     factories[target.id] = class_name
@@ -1417,6 +1464,45 @@ def _attribute_alias_lookup(node: ast.AST, aliases: Dict[str, str]) -> Optional[
 
 def _attribute_name_alias_lookup(node: ast.AST, aliases: Set[str]) -> bool:
     return isinstance(node, ast.Attribute) and _call_name(node) in aliases
+
+
+def _temporary_instance_attribute_name(
+    node: ast.AST,
+    class_aliases: Dict[str, str],
+    factory_aliases: Dict[str, str],
+) -> str:
+    if not isinstance(node, ast.Attribute):
+        return ""
+    value = node.value
+    if not isinstance(value, ast.Call) or value.args or value.keywords:
+        return ""
+    called = _call_name(value.func)
+    class_name = class_aliases.get(called, "") or factory_aliases.get(called, "")
+    if not class_name:
+        return ""
+    return f"{class_name}.{node.attr}"
+
+
+def _temporary_instance_attribute_alias_lookup(
+    node: ast.AST,
+    aliases: Dict[str, str],
+    class_aliases: Dict[str, str],
+    factory_aliases: Dict[str, str],
+) -> Optional[str]:
+    attr_name = _temporary_instance_attribute_name(node, class_aliases, factory_aliases)
+    if not attr_name:
+        return None
+    return aliases.get(attr_name)
+
+
+def _temporary_instance_attribute_name_alias_lookup(
+    node: ast.AST,
+    aliases: Set[str],
+    class_aliases: Dict[str, str],
+    factory_aliases: Dict[str, str],
+) -> bool:
+    attr_name = _temporary_instance_attribute_name(node, class_aliases, factory_aliases)
+    return bool(attr_name and attr_name in aliases)
 
 
 def _codecs_decode_attribute_aliases(
@@ -2281,6 +2367,8 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
     functools_module_aliases, partial_aliases = _functools_import_aliases(tree)
     importlib_module_aliases, import_module_aliases = _importlib_import_aliases(tree)
     operator_module_aliases, methodcaller_aliases, attrgetter_aliases = _operator_import_aliases(tree)
+    class_aliases = _class_aliases(tree)
+    factory_aliases = _class_factory_aliases(tree, class_aliases)
     module_dict_aliases: Dict[str, Set[str]] = {}
     decode_dict_aliases: Dict[str, Set[str]] = {}
     _add_simple_module_assignment_aliases(
@@ -2606,7 +2694,15 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             label = _subscript_call_label(node.func)
             hits.append(f"{label}({_codec_label(encoding)})")
             continue
-        if _attribute_name_alias_lookup(node.func, codec_decode_attributes):
+        if _attribute_name_alias_lookup(
+            node.func,
+            codec_decode_attributes,
+        ) or _temporary_instance_attribute_name_alias_lookup(
+            node.func,
+            codec_decode_attributes,
+            class_aliases,
+            factory_aliases,
+        ):
             encoding = _codecs_decode_encoding(node, constants)
             hits.append(f"{_attribute_call_label(node.func)}({_codec_label(encoding)})")
             continue
@@ -2627,6 +2723,13 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             hits.append(f"{_subscript_call_label(node.func)}({_codec_label(container_decoder_encoding)})")
             continue
         attribute_decoder_encoding = _attribute_alias_lookup(node.func, decoder_attributes)
+        if attribute_decoder_encoding is None:
+            attribute_decoder_encoding = _temporary_instance_attribute_alias_lookup(
+                node.func,
+                decoder_attributes,
+                class_aliases,
+                factory_aliases,
+            )
         if attribute_decoder_encoding is not None:
             hits.append(f"{_attribute_call_label(node.func)}({_codec_label(attribute_decoder_encoding)})")
             continue
@@ -2656,6 +2759,13 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
                 hits.append(f"{_subscript_call_label(node.func.value)}.decode({_codec_label(container_lookup_encoding)})")
                 continue
             attribute_lookup_encoding = _attribute_alias_lookup(node.func.value, lookup_attributes)
+            if attribute_lookup_encoding is None:
+                attribute_lookup_encoding = _temporary_instance_attribute_alias_lookup(
+                    node.func.value,
+                    lookup_attributes,
+                    class_aliases,
+                    factory_aliases,
+                )
             if attribute_lookup_encoding is not None:
                 hits.append(f"{_attribute_call_label(node.func.value)}.decode({_codec_label(attribute_lookup_encoding)})")
                 continue
