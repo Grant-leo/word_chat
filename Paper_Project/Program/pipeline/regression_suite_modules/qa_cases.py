@@ -541,6 +541,16 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = apply_module(codecs, text.encode('utf-8'), 'gbk')\n"
         ),
+        "qa_generated_local_getattr_module_decode_alias_wrong_charset": (
+            "import codecs\n"
+            "\n"
+            "def apply_module(module, value, encoding):\n"
+            "    decode = getattr(module, 'decode')\n"
+            "    return decode(value, encoding, errors='ignore')\n"
+            "\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = apply_module(codecs, text.encode('utf-8'), 'gbk')\n"
+        ),
         "qa_generated_module_attribute_param_codecs_decode_wrong_charset": (
             "import codecs\n"
             "class Box:\n"
@@ -1399,6 +1409,14 @@ def qa_flags_generated_script_general_codecs_decoder_factories_text_reencoding()
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = apply_module(codecs, text.encode('utf-8'), 'gbk')\n"
         ),
+        "qa_generated_local_getattr_codecs_module_getdecoder_alias_wrong_charset": (
+            "import codecs\n"
+            "def apply_module(module, value, encoding):\n"
+            "    factory = getattr(module, 'getdecoder')\n"
+            "    return factory(encoding)(value, errors='ignore')[0]\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = apply_module(codecs, text.encode('utf-8'), 'gbk')\n"
+        ),
         "qa_generated_module_attribute_param_getdecoder_wrong_charset": (
             "import codecs\n"
             "class Box:\n"
@@ -1421,6 +1439,14 @@ def qa_flags_generated_script_general_codecs_decoder_factories_text_reencoding()
             "import codecs\n"
             "def apply_module(module, value, encoding):\n"
             "    return getattr(module, 'lookup')(encoding).decode(value, errors='ignore')[0]\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = apply_module(codecs, text.encode('utf-8'), 'gbk')\n"
+        ),
+        "qa_generated_local_getattr_codecs_module_lookup_alias_wrong_charset": (
+            "import codecs\n"
+            "def apply_module(module, value, encoding):\n"
+            "    lookup = getattr(module, 'lookup')\n"
+            "    return lookup(encoding).decode(value, errors='ignore')[0]\n"
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = apply_module(codecs, text.encode('utf-8'), 'gbk')\n"
         ),
@@ -1671,6 +1697,35 @@ def qa_does_not_flag_shadowed_method_factory_name_for_safe_decoder() -> None:
     assert_true(
         "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" not in codes,
         f"QA falsely treated a safe object attribute as the codecs module: {report}",
+    )
+
+    work = new_workdir("qa_safe_local_getattr_module_decode_alias")
+    doc = Document()
+    doc.add_paragraph("Synthetic Thesis")
+    doc.add_paragraph("1 Introduction")
+    doc.add_paragraph(text)
+    doc.save(work / "out.docx")
+    write_json(work / "content.json", base_content([text]))
+    write_json(work / "format.json", base_format())
+    write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {}})
+    write_json(work / "workflow_mode.json", {"mode": "user"})
+    (work / "build_generated.py").write_text(
+        "class SafeModule:\n"
+        "    def decode(self, value, encoding, errors='strict'):\n"
+        "        return value.decode('utf-8')\n"
+        "def apply_module(module, value, encoding):\n"
+        "    decode = getattr(module, 'decode')\n"
+        "    return decode(value, encoding, errors='ignore')\n"
+        "text = '中文字符保持原样：编码测试。'\n"
+        "roundtrip = apply_module(SafeModule(), text.encode('utf-8'), 'gbk')\n",
+        encoding="utf-8",
+    )
+
+    report = check_output(str(work), mode="user", output_docx_name="out.docx")
+    codes = [item["code"] for item in report["issues"]]
+    assert_true(
+        "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" not in codes,
+        f"QA falsely treated a local getattr alias on a safe module as codecs: {report}",
     )
 
 

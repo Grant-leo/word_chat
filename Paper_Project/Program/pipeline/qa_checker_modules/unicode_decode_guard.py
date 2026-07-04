@@ -2430,6 +2430,33 @@ def _getattr_param_name(
     )
 
 
+def _local_getattr_param_aliases(
+    func: ast.FunctionDef,
+    params: Set[str],
+    attr: str,
+    constants: Dict[str, str],
+) -> Dict[str, str]:
+    aliases: Dict[str, str] = {}
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(func):
+            value, targets = _assignment_value_targets(node)
+            if value is None:
+                continue
+            module_param = _getattr_param_name(value, params, attr, constants)
+            if not module_param and isinstance(value, ast.Name):
+                module_param = aliases.get(value.id, "")
+            if not module_param:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and aliases.get(target.id) != module_param:
+                    aliases[target.id] = module_param
+                    changed = True
+        if not changed:
+            break
+    return aliases
+
+
 def _codec_wrapper_functions(
     tree: ast.AST,
     module_aliases: Set[str],
@@ -2528,11 +2555,20 @@ def _higher_order_decode_wrapper_info(func: ast.FunctionDef, constants: Dict[str
     module_decode_arg_pairs: Set[Tuple[str, str]] = set()
     module_getdecoder_arg_pairs: Set[Tuple[str, str]] = set()
     module_lookup_arg_pairs: Set[Tuple[str, str]] = set()
+    local_module_decode_aliases = _local_getattr_param_aliases(func, params, "decode", constants)
+    local_module_getdecoder_aliases = _local_getattr_param_aliases(func, params, "getdecoder", constants)
+    local_module_lookup_aliases = _local_getattr_param_aliases(func, params, "lookup", constants)
     for node in ast.walk(func):
         if not isinstance(node, ast.Call):
             continue
         if isinstance(node.func, ast.Name):
             decoder_param = node.func.id
+            module_param = local_module_decode_aliases.get(decoder_param, "")
+            if module_param:
+                codec_param = _codec_arg_param_name(_codecs_decode_encoding_node(node), params)
+                if codec_param:
+                    module_decode_arg_pairs.add((module_param, codec_param))
+                continue
             if decoder_param not in params:
                 continue
             codec_param = _codec_arg_param_name(_codecs_decode_encoding_node(node), params)
@@ -2548,6 +2584,12 @@ def _higher_order_decode_wrapper_info(func: ast.FunctionDef, constants: Dict[str
                 continue
         if isinstance(node.func, ast.Call) and isinstance(node.func.func, ast.Name):
             factory_param = node.func.func.id
+            module_param = local_module_getdecoder_aliases.get(factory_param, "")
+            if module_param:
+                codec_param = _codec_arg_param_name(_codec_factory_encoding_node(node.func), params)
+                if codec_param:
+                    module_getdecoder_arg_pairs.add((module_param, codec_param))
+                continue
             if factory_param not in params:
                 continue
             codec_param = _codec_arg_param_name(_codec_factory_encoding_node(node.func), params)
@@ -2593,6 +2635,12 @@ def _higher_order_decode_wrapper_info(func: ast.FunctionDef, constants: Dict[str
             and isinstance(node.func.value.func, ast.Name)
         ):
             factory_param = node.func.value.func.id
+            module_param = local_module_lookup_aliases.get(factory_param, "")
+            if module_param:
+                codec_param = _codec_arg_param_name(_codec_factory_encoding_node(node.func.value), params)
+                if codec_param:
+                    module_lookup_arg_pairs.add((module_param, codec_param))
+                continue
             if factory_param not in params:
                 continue
             codec_param = _codec_arg_param_name(_codec_factory_encoding_node(node.func.value), params)
