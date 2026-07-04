@@ -1668,6 +1668,28 @@ def _single_return_value(node: ast.FunctionDef) -> Optional[ast.AST]:
     return returns[0]
 
 
+def _single_own_return_value(node: ast.FunctionDef) -> Optional[ast.AST]:
+    returns: List[ast.AST] = []
+
+    def visit(item: ast.AST) -> None:
+        if item is not node and isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            return
+        if isinstance(item, ast.Return) and item.value is not None:
+            returns.append(item.value)
+            return
+        for child in ast.iter_child_nodes(item):
+            visit(child)
+
+    visit(node)
+    if len(returns) != 1:
+        return None
+    return returns[0]
+
+
+def _direct_child_functions(node: ast.FunctionDef) -> Dict[str, ast.FunctionDef]:
+    return {item.name: item for item in node.body if isinstance(item, ast.FunctionDef)}
+
+
 def _decode_method_function_results(
     tree: ast.AST,
     encoded_text_aliases: Dict[str, str],
@@ -1865,10 +1887,11 @@ def _codecs_decode_function_results(
     decode_attributes: Set[str],
 ) -> Set[str]:
     functions: Set[str] = set()
+    function_nodes: Set[int] = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
             continue
-        value = _single_return_value(node)
+        value = _single_own_return_value(node)
         if value is None:
             continue
         if _static_codecs_decode_ref(
@@ -1886,6 +1909,23 @@ def _codecs_decode_function_results(
             constants,
         ) is not None or _attribute_name_alias_lookup(value, decode_attributes):
             functions.add(node.name)
+            function_nodes.add(id(node))
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+                continue
+            value = _single_own_return_value(node)
+            call_name = _zero_arg_function_call_name(value) if value is not None else ""
+            direct_child = _direct_child_functions(node).get(call_name)
+            if direct_child is None or id(direct_child) not in function_nodes:
+                continue
+            if node.name not in functions:
+                functions.add(node.name)
+                function_nodes.add(id(node))
+                changed = True
+        if not changed:
+            break
     for _ in range(4):
         changed = False
         for node in ast.walk(tree):
@@ -1923,39 +1963,74 @@ def _decoder_factory_function_results(
 ) -> Tuple[Dict[str, str], Dict[str, str]]:
     decoder_functions: Dict[str, str] = {}
     lookup_functions: Dict[str, str] = {}
+    decoder_function_nodes: Dict[int, str] = {}
+    lookup_function_nodes: Dict[int, str] = {}
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
             continue
-        value = _single_return_value(node)
+        value = _single_own_return_value(node)
         if value is None:
             continue
         if isinstance(value, ast.Name) and value.id in decoder_results:
             decoder_functions[node.name] = decoder_results[value.id]
+            decoder_function_nodes[id(node)] = decoder_results[value.id]
             continue
         if isinstance(value, ast.Name) and value.id in lookup_results:
             lookup_functions[node.name] = lookup_results[value.id]
+            lookup_function_nodes[id(node)] = lookup_results[value.id]
             continue
         container_decoder = _container_subscript_lookup(value, decoder_containers, constants)
         if container_decoder is not None:
             decoder_functions[node.name] = container_decoder
+            decoder_function_nodes[id(node)] = container_decoder
             continue
         container_lookup = _container_subscript_lookup(value, lookup_containers, constants)
         if container_lookup is not None:
             lookup_functions[node.name] = container_lookup
+            lookup_function_nodes[id(node)] = container_lookup
             continue
         attribute_decoder = _attribute_alias_lookup(value, decoder_attributes)
         if attribute_decoder is not None:
             decoder_functions[node.name] = attribute_decoder
+            decoder_function_nodes[id(node)] = attribute_decoder
             continue
         attribute_lookup = _attribute_alias_lookup(value, lookup_attributes)
         if attribute_lookup is not None:
             lookup_functions[node.name] = attribute_lookup
+            lookup_function_nodes[id(node)] = attribute_lookup
             continue
         kind, encoding = _factory_call_encoding(value, module_aliases, getdecoder_aliases, lookup_aliases, constants)
         if kind == "getdecoder":
             decoder_functions[node.name] = encoding
+            decoder_function_nodes[id(node)] = encoding
         elif kind == "lookup":
             lookup_functions[node.name] = encoding
+            lookup_function_nodes[id(node)] = encoding
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+                continue
+            value = _single_own_return_value(node)
+            call_name = _zero_arg_function_call_name(value) if value is not None else ""
+            direct_child = _direct_child_functions(node).get(call_name)
+            if direct_child is None:
+                continue
+            child_id = id(direct_child)
+            if child_id in decoder_function_nodes:
+                encoding = decoder_function_nodes[child_id]
+                if decoder_functions.get(node.name) != encoding:
+                    decoder_functions[node.name] = encoding
+                    decoder_function_nodes[id(node)] = encoding
+                    changed = True
+            if child_id in lookup_function_nodes:
+                encoding = lookup_function_nodes[child_id]
+                if lookup_functions.get(node.name) != encoding:
+                    lookup_functions[node.name] = encoding
+                    lookup_function_nodes[id(node)] = encoding
+                    changed = True
+        if not changed:
+            break
     for _ in range(4):
         changed = False
         for node in ast.walk(tree):
