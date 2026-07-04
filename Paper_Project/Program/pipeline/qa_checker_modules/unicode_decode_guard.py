@@ -1899,6 +1899,97 @@ def _zero_arg_function_call_name(node: ast.AST) -> str:
     return _call_name(node.func)
 
 
+def _codecs_module_function_results(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    module_containers: Dict[str, Dict[Tuple[str, str], str]],
+) -> Set[str]:
+    functions: Set[str] = set()
+    function_nodes: Set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+            continue
+        value = _single_own_return_value(node)
+        if value is None:
+            continue
+        if _static_codecs_module_ref(
+            value,
+            module_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+        ) or _container_subscript_lookup(value, module_containers, constants) is not None:
+            functions.add(node.name)
+            function_nodes.add(id(node))
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+                continue
+            value = _single_own_return_value(node)
+            call_name = _zero_arg_function_call_name(value) if value is not None else ""
+            direct_child = _direct_child_functions(node).get(call_name)
+            if direct_child is None or id(direct_child) not in function_nodes:
+                continue
+            if node.name not in functions:
+                functions.add(node.name)
+                function_nodes.add(id(node))
+                changed = True
+        if not changed:
+            break
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if not isinstance(value, ast.Name) or value.id not in functions:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id not in functions:
+                    functions.add(target.id)
+                    changed = True
+        if not changed:
+            break
+    return functions
+
+
+def _is_codecs_module_ref_or_result(
+    node: Optional[ast.AST],
+    module_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    module_containers: Dict[str, Dict[Tuple[str, str], str]],
+    module_functions: Set[str],
+) -> bool:
+    if node is None:
+        return False
+    if _static_codecs_module_ref(
+        node,
+        module_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+    ):
+        return True
+    if _container_subscript_lookup(node, module_containers, constants) is not None:
+        return True
+    return _zero_arg_function_call_name(node) in module_functions
+
+
 def _codecs_decode_function_results(
     tree: ast.AST,
     module_aliases: Set[str],
@@ -1971,6 +2062,79 @@ def _codecs_decode_function_results(
         if not changed:
             break
     return functions
+
+
+def _decoder_factory_function_ref_results(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    getdecoder_aliases: Set[str],
+    lookup_aliases: Set[str],
+    constants: Dict[str, str],
+) -> Tuple[Set[str], Set[str]]:
+    getdecoder_functions: Set[str] = set()
+    lookup_functions: Set[str] = set()
+    getdecoder_function_nodes: Set[int] = set()
+    lookup_function_nodes: Set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+            continue
+        value = _single_own_return_value(node)
+        if value is None:
+            continue
+        kind = _factory_function_ref_kind(value, module_aliases, getdecoder_aliases, lookup_aliases, constants)
+        if kind == "getdecoder":
+            getdecoder_functions.add(node.name)
+            getdecoder_function_nodes.add(id(node))
+        elif kind == "lookup":
+            lookup_functions.add(node.name)
+            lookup_function_nodes.add(id(node))
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+                continue
+            value = _single_own_return_value(node)
+            call_name = _zero_arg_function_call_name(value) if value is not None else ""
+            direct_child = _direct_child_functions(node).get(call_name)
+            if direct_child is None:
+                continue
+            child_id = id(direct_child)
+            if child_id in getdecoder_function_nodes and node.name not in getdecoder_functions:
+                getdecoder_functions.add(node.name)
+                getdecoder_function_nodes.add(id(node))
+                changed = True
+            if child_id in lookup_function_nodes and node.name not in lookup_functions:
+                lookup_functions.add(node.name)
+                lookup_function_nodes.add(id(node))
+                changed = True
+        if not changed:
+            break
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if not isinstance(value, ast.Name):
+                continue
+            if value.id in getdecoder_functions:
+                for target in targets:
+                    if isinstance(target, ast.Name) and target.id not in getdecoder_functions:
+                        getdecoder_functions.add(target.id)
+                        changed = True
+            if value.id in lookup_functions:
+                for target in targets:
+                    if isinstance(target, ast.Name) and target.id not in lookup_functions:
+                        lookup_functions.add(target.id)
+                        changed = True
+        if not changed:
+            break
+    return getdecoder_functions, lookup_functions
 
 
 def _decoder_factory_function_results(
@@ -2255,6 +2419,9 @@ def _higher_order_decode_wrapper_info(func: ast.FunctionDef, constants: Dict[str
     decode_arg_pairs: Set[Tuple[str, str]] = set()
     decoder_factory_arg_pairs: Set[Tuple[str, str]] = set()
     lookup_factory_arg_pairs: Set[Tuple[str, str]] = set()
+    module_decode_arg_pairs: Set[Tuple[str, str]] = set()
+    module_getdecoder_arg_pairs: Set[Tuple[str, str]] = set()
+    module_lookup_arg_pairs: Set[Tuple[str, str]] = set()
     for node in ast.walk(func):
         if not isinstance(node, ast.Call):
             continue
@@ -2275,6 +2442,31 @@ def _higher_order_decode_wrapper_info(func: ast.FunctionDef, constants: Dict[str
                 decoder_factory_arg_pairs.add((factory_param, codec_param))
             continue
         if (
+            isinstance(node.func, ast.Call)
+            and isinstance(node.func.func, ast.Attribute)
+            and node.func.func.attr == "getdecoder"
+            and isinstance(node.func.func.value, ast.Name)
+        ):
+            module_param = node.func.func.value.id
+            if module_param not in params:
+                continue
+            codec_param = _codec_arg_param_name(_codec_factory_encoding_node(node.func), params)
+            if codec_param:
+                module_getdecoder_arg_pairs.add((module_param, codec_param))
+            continue
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "decode"
+            and isinstance(node.func.value, ast.Name)
+        ):
+            module_param = node.func.value.id
+            if module_param not in params:
+                continue
+            codec_param = _codec_arg_param_name(_codecs_decode_encoding_node(node), params)
+            if codec_param:
+                module_decode_arg_pairs.add((module_param, codec_param))
+            continue
+        if (
             isinstance(node.func, ast.Attribute)
             and node.func.attr == "decode"
             and isinstance(node.func.value, ast.Call)
@@ -2286,12 +2478,31 @@ def _higher_order_decode_wrapper_info(func: ast.FunctionDef, constants: Dict[str
             codec_param = _codec_arg_param_name(_codec_factory_encoding_node(node.func.value), params)
             if codec_param:
                 lookup_factory_arg_pairs.add((factory_param, codec_param))
+            continue
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "decode"
+            and isinstance(node.func.value, ast.Call)
+            and isinstance(node.func.value.func, ast.Attribute)
+            and node.func.value.func.attr == "lookup"
+            and isinstance(node.func.value.func.value, ast.Name)
+        ):
+            module_param = node.func.value.func.value.id
+            if module_param not in params:
+                continue
+            codec_param = _codec_arg_param_name(_codec_factory_encoding_node(node.func.value), params)
+            if codec_param:
+                module_lookup_arg_pairs.add((module_param, codec_param))
     if not decode_arg_pairs and not decoder_factory_arg_pairs and not lookup_factory_arg_pairs:
-        return None
+        if not module_decode_arg_pairs and not module_getdecoder_arg_pairs and not module_lookup_arg_pairs:
+            return None
     return {
         "decode_arg_pairs": decode_arg_pairs,
         "decoder_factory_arg_pairs": decoder_factory_arg_pairs,
         "lookup_factory_arg_pairs": lookup_factory_arg_pairs,
+        "module_decode_arg_pairs": module_decode_arg_pairs,
+        "module_getdecoder_arg_pairs": module_getdecoder_arg_pairs,
+        "module_lookup_arg_pairs": module_lookup_arg_pairs,
         "positions": signature["positions"],
         "defaults": signature["defaults"],
     }
@@ -2575,6 +2786,15 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         module_dict_aliases,
         decode_dict_aliases,
     )
+    codec_module_functions = _codecs_module_function_results(
+        tree,
+        module_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        codec_module_containers,
+    )
     codec_decode_attributes = _codecs_decode_attribute_aliases(
         tree,
         module_aliases,
@@ -2587,6 +2807,13 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         codec_decode_containers,
     )
     _add_simple_factory_assignment_aliases(tree, module_aliases, getdecoder_aliases, lookup_aliases)
+    getdecoder_factory_functions, lookup_factory_functions = _decoder_factory_function_ref_results(
+        tree,
+        module_aliases,
+        getdecoder_aliases,
+        lookup_aliases,
+        constants,
+    )
     wrappers = _codec_wrapper_functions(
         tree,
         module_aliases,
@@ -3034,13 +3261,15 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             if isinstance(decoder_factory_arg_pairs, set):
                 for factory_param, codec_param in decoder_factory_arg_pairs:
                     factory_node = _wrapper_call_arg_node(node, higher_order_wrapper, factory_param)
-                    if _factory_function_ref_kind(
+                    factory_function_name = _zero_arg_function_call_name(factory_node) if factory_node is not None else ""
+                    factory_kind = _factory_function_ref_kind(
                         factory_node,
                         module_aliases,
                         getdecoder_aliases,
                         lookup_aliases,
                         constants,
-                    ) != "getdecoder":
+                    )
+                    if factory_kind != "getdecoder" and factory_function_name not in getdecoder_factory_functions:
                         continue
                     encoding = _wrapper_call_encoding(node, higher_order_wrapper, codec_param, constants)
                     hits.append(f"{higher_order_wrapper_name}({_codec_label(encoding)})")
@@ -3048,13 +3277,66 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             if isinstance(lookup_factory_arg_pairs, set):
                 for factory_param, codec_param in lookup_factory_arg_pairs:
                     factory_node = _wrapper_call_arg_node(node, higher_order_wrapper, factory_param)
-                    if _factory_function_ref_kind(
+                    factory_function_name = _zero_arg_function_call_name(factory_node) if factory_node is not None else ""
+                    factory_kind = _factory_function_ref_kind(
                         factory_node,
                         module_aliases,
                         getdecoder_aliases,
                         lookup_aliases,
                         constants,
-                    ) != "lookup":
+                    )
+                    if factory_kind != "lookup" and factory_function_name not in lookup_factory_functions:
+                        continue
+                    encoding = _wrapper_call_encoding(node, higher_order_wrapper, codec_param, constants)
+                    hits.append(f"{higher_order_wrapper_name}({_codec_label(encoding)})")
+            module_decode_arg_pairs = higher_order_wrapper.get("module_decode_arg_pairs") or set()
+            if isinstance(module_decode_arg_pairs, set):
+                for module_param, codec_param in module_decode_arg_pairs:
+                    module_node = _wrapper_call_arg_node(node, higher_order_wrapper, module_param)
+                    if not _is_codecs_module_ref_or_result(
+                        module_node,
+                        module_aliases,
+                        constants,
+                        importlib_module_aliases,
+                        import_module_aliases,
+                        module_dict_aliases,
+                        codec_module_containers,
+                        codec_module_functions,
+                    ):
+                        continue
+                    encoding = _wrapper_call_encoding(node, higher_order_wrapper, codec_param, constants)
+                    hits.append(f"{higher_order_wrapper_name}({_codec_label(encoding)})")
+            module_getdecoder_arg_pairs = higher_order_wrapper.get("module_getdecoder_arg_pairs") or set()
+            if isinstance(module_getdecoder_arg_pairs, set):
+                for module_param, codec_param in module_getdecoder_arg_pairs:
+                    module_node = _wrapper_call_arg_node(node, higher_order_wrapper, module_param)
+                    if not _is_codecs_module_ref_or_result(
+                        module_node,
+                        module_aliases,
+                        constants,
+                        importlib_module_aliases,
+                        import_module_aliases,
+                        module_dict_aliases,
+                        codec_module_containers,
+                        codec_module_functions,
+                    ):
+                        continue
+                    encoding = _wrapper_call_encoding(node, higher_order_wrapper, codec_param, constants)
+                    hits.append(f"{higher_order_wrapper_name}({_codec_label(encoding)})")
+            module_lookup_arg_pairs = higher_order_wrapper.get("module_lookup_arg_pairs") or set()
+            if isinstance(module_lookup_arg_pairs, set):
+                for module_param, codec_param in module_lookup_arg_pairs:
+                    module_node = _wrapper_call_arg_node(node, higher_order_wrapper, module_param)
+                    if not _is_codecs_module_ref_or_result(
+                        module_node,
+                        module_aliases,
+                        constants,
+                        importlib_module_aliases,
+                        import_module_aliases,
+                        module_dict_aliases,
+                        codec_module_containers,
+                        codec_module_functions,
+                    ):
                         continue
                     encoding = _wrapper_call_encoding(node, higher_order_wrapper, codec_param, constants)
                     hits.append(f"{higher_order_wrapper_name}({_codec_label(encoding)})")

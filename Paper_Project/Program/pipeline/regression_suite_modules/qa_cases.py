@@ -523,6 +523,38 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = build_apply()(get_decoder(), text.encode('utf-8'), 'gbk')\n"
         ),
+        "qa_generated_module_param_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "\n"
+            "def apply_module(module, value, encoding):\n"
+            "    return module.decode(value, encoding, errors='ignore')\n"
+            "\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = apply_module(codecs, text.encode('utf-8'), 'gbk')\n"
+        ),
+        "qa_generated_module_return_passed_to_higher_order_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "\n"
+            "def get_module():\n"
+            "    return codecs\n"
+            "\n"
+            "def apply_module(module, value, encoding):\n"
+            "    return module.decode(value, encoding, errors='ignore')\n"
+            "\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = apply_module(get_module(), text.encode('utf-8'), 'gbk')\n"
+        ),
+        "qa_generated_returned_module_param_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "\n"
+            "def build_apply():\n"
+            "    def apply_module(module, value, encoding):\n"
+            "        return module.decode(value, encoding, errors='ignore')\n"
+            "    return apply_module\n"
+            "\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = build_apply()(codecs, text.encode('utf-8'), 'gbk')\n"
+        ),
         "qa_generated_object_attribute_codecs_decode_wrong_charset": (
             "import codecs\n"
             "class Box:\n"
@@ -1331,6 +1363,40 @@ def qa_flags_generated_script_general_codecs_decoder_factories_text_reencoding()
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = build_apply()(codecs.lookup, text.encode('utf-8'), 'gbk')\n"
         ),
+        "qa_generated_codecs_module_param_getdecoder_wrong_charset": (
+            "import codecs\n"
+            "def apply_module(module, value, encoding):\n"
+            "    return module.getdecoder(encoding)(value, errors='ignore')[0]\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = apply_module(codecs, text.encode('utf-8'), 'gbk')\n"
+        ),
+        "qa_generated_codecs_module_param_lookup_wrong_charset": (
+            "import codecs\n"
+            "def apply_module(module, value, encoding):\n"
+            "    return module.lookup(encoding).decode(value, errors='ignore')[0]\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = apply_module(codecs, text.encode('utf-8'), 'gbk')\n"
+        ),
+        "qa_generated_codecs_getdecoder_factory_return_passed_to_higher_order_wrong_charset": (
+            "import codecs\n"
+            "def get_factory():\n"
+            "    return codecs.getdecoder\n"
+            "def apply_factory(factory, value, encoding):\n"
+            "    return factory(encoding)(value, errors='ignore')[0]\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = apply_factory(get_factory(), text.encode('utf-8'), 'gbk')\n"
+        ),
+        "qa_generated_codecs_lookup_factory_return_passed_to_returned_higher_order_wrong_charset": (
+            "import codecs\n"
+            "def get_factory():\n"
+            "    return codecs.lookup\n"
+            "def build_apply():\n"
+            "    def apply_factory(factory, value, encoding):\n"
+            "        return factory(encoding).decode(value, errors='ignore')[0]\n"
+            "    return apply_factory\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = build_apply()(get_factory(), text.encode('utf-8'), 'gbk')\n"
+        ),
     }
 
     for name, script in scripts.items():
@@ -1485,6 +1551,36 @@ def qa_does_not_flag_shadowed_method_factory_name_for_safe_decoder() -> None:
     assert_true(
         "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" not in codes,
         f"QA falsely treated a global decoder factory wrapper as the returned safe local wrapper: {report}",
+    )
+
+    work = new_workdir("qa_shadowed_returned_module_wrapper_safe_decoder")
+    doc = Document()
+    doc.add_paragraph("Synthetic Thesis")
+    doc.add_paragraph("1 Introduction")
+    doc.add_paragraph(text)
+    doc.save(work / "out.docx")
+    write_json(work / "content.json", base_content([text]))
+    write_json(work / "format.json", base_format())
+    write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {}})
+    write_json(work / "workflow_mode.json", {"mode": "user"})
+    (work / "build_generated.py").write_text(
+        "import codecs\n"
+        "def apply_module(module, value, encoding):\n"
+        "    return module.decode(value, encoding, errors='ignore')\n"
+        "def build_apply():\n"
+        "    def apply_module(module, value, encoding):\n"
+        "        return value.decode('utf-8')\n"
+        "    return apply_module\n"
+        "text = '中文字符保持原样：编码测试。'\n"
+        "roundtrip = build_apply()(codecs, text.encode('utf-8'), 'gbk')\n",
+        encoding="utf-8",
+    )
+
+    report = check_output(str(work), mode="user", output_docx_name="out.docx")
+    codes = [item["code"] for item in report["issues"]]
+    assert_true(
+        "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" not in codes,
+        f"QA falsely treated a global module wrapper as the returned safe local wrapper: {report}",
     )
 
 
