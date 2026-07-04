@@ -2076,6 +2076,39 @@ def _is_codecs_module_ref_or_result(
     return _zero_arg_function_call_name(node) in module_functions
 
 
+def _param_getattr_call_has_codecs_module(
+    node: ast.Call,
+    function_info: Dict[str, object],
+    module_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    module_containers: Dict[str, Dict[Tuple[str, str], str]],
+    module_attributes: Set[str],
+    module_functions: Set[str],
+    class_aliases: Dict[str, str],
+    factory_aliases: Dict[str, str],
+) -> bool:
+    module_param = function_info.get("module_param")
+    if not isinstance(module_param, str):
+        return False
+    module_node = _wrapper_call_arg_node(node, function_info, module_param)
+    return _is_codecs_module_ref_or_result(
+        module_node,
+        module_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        module_containers,
+        module_attributes,
+        module_functions,
+        class_aliases,
+        factory_aliases,
+    )
+
+
 def _codecs_decode_function_results(
     tree: ast.AST,
     module_aliases: Set[str],
@@ -2455,6 +2488,34 @@ def _local_getattr_param_aliases(
         if not changed:
             break
     return aliases
+
+
+def _param_getattr_return_functions(
+    tree: ast.AST,
+    attr: str,
+    constants: Dict[str, str],
+) -> Dict[str, Dict[str, object]]:
+    functions: Dict[str, Dict[str, object]] = {}
+    for func in [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]:
+        signature = _function_signature(func, constants)
+        params = signature["params"]
+        if not isinstance(params, set):
+            continue
+        value = _single_own_return_value(func)
+        if value is None:
+            continue
+        module_param = _getattr_param_name(value, params, attr, constants)
+        if not module_param and isinstance(value, ast.Name):
+            module_param = _local_getattr_param_aliases(func, params, attr, constants).get(value.id, "")
+        if not module_param:
+            continue
+        functions[func.name] = {
+            "module_param": module_param,
+            "positions": signature["positions"],
+            "defaults": signature["defaults"],
+        }
+    _add_simple_wrapper_assignment_aliases(tree, functions)
+    return functions
 
 
 def _codec_wrapper_functions(
@@ -2983,6 +3044,9 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         module_dict_aliases,
         codec_module_containers,
     )
+    param_getattr_decode_functions = _param_getattr_return_functions(tree, "decode", constants)
+    param_getattr_getdecoder_functions = _param_getattr_return_functions(tree, "getdecoder", constants)
+    param_getattr_lookup_functions = _param_getattr_return_functions(tree, "lookup", constants)
     codec_decode_attributes = _codecs_decode_attribute_aliases(
         tree,
         module_aliases,
@@ -3277,6 +3341,26 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             encoding = _codecs_decode_encoding(node, constants)
             hits.append(f"{function_codec_decode_name}()({_codec_label(encoding)})")
             continue
+        if isinstance(node.func, ast.Call):
+            param_getattr_decode_name = _call_name(node.func.func)
+            param_getattr_decode_info = param_getattr_decode_functions.get(param_getattr_decode_name)
+            if param_getattr_decode_info and _param_getattr_call_has_codecs_module(
+                node.func,
+                param_getattr_decode_info,
+                module_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+                codec_module_containers,
+                codec_module_attributes,
+                codec_module_functions,
+                class_aliases,
+                factory_aliases,
+            ):
+                encoding = _codecs_decode_encoding(node, constants)
+                hits.append(f"{param_getattr_decode_name}()({_codec_label(encoding)})")
+                continue
         if function_codec_decode_name in partial_functions:
             hits.append(f"{function_codec_decode_name}()({_codec_label(partial_functions[function_codec_decode_name])})")
             continue
@@ -3284,6 +3368,26 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         if kind == "getdecoder":
             hits.append(f"{name or kind}({_codec_label(encoding)})")
             continue
+        if isinstance(node.func, ast.Call) and isinstance(node.func.func, ast.Call):
+            param_getattr_getdecoder_name = _call_name(node.func.func.func)
+            param_getattr_getdecoder_info = param_getattr_getdecoder_functions.get(param_getattr_getdecoder_name)
+            if param_getattr_getdecoder_info and _param_getattr_call_has_codecs_module(
+                node.func.func,
+                param_getattr_getdecoder_info,
+                module_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+                codec_module_containers,
+                codec_module_attributes,
+                codec_module_functions,
+                class_aliases,
+                factory_aliases,
+            ):
+                encoding = _codec_factory_encoding(node.func, constants)
+                hits.append(f"{param_getattr_getdecoder_name}()({_codec_label(encoding)})")
+                continue
         container_decoder_encoding = _container_subscript_lookup(node.func, decoder_containers, constants)
         if container_decoder_encoding is not None:
             hits.append(f"{_subscript_call_label(node.func)}({_codec_label(container_decoder_encoding)})")
@@ -3349,6 +3453,26 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             if kind == "lookup":
                 hits.append(f"{name}({_codec_label(encoding)})")
                 continue
+            if isinstance(node.func.value, ast.Call) and isinstance(node.func.value.func, ast.Call):
+                param_getattr_lookup_name = _call_name(node.func.value.func.func)
+                param_getattr_lookup_info = param_getattr_lookup_functions.get(param_getattr_lookup_name)
+                if param_getattr_lookup_info and _param_getattr_call_has_codecs_module(
+                    node.func.value.func,
+                    param_getattr_lookup_info,
+                    module_aliases,
+                    constants,
+                    importlib_module_aliases,
+                    import_module_aliases,
+                    module_dict_aliases,
+                    codec_module_containers,
+                    codec_module_attributes,
+                    codec_module_functions,
+                    class_aliases,
+                    factory_aliases,
+                ):
+                    encoding = _codec_factory_encoding(node.func.value, constants)
+                    hits.append(f"{param_getattr_lookup_name}().decode({_codec_label(encoding)})")
+                    continue
             if _is_codecs_module_ref_or_result(
                 node.func.value,
                 module_aliases,
