@@ -638,6 +638,31 @@ def _factory_call_encoding(
     return "", ""
 
 
+def _factory_function_ref_kind(
+    node: Optional[ast.AST],
+    module_aliases: Set[str],
+    getdecoder_aliases: Set[str],
+    lookup_aliases: Set[str],
+    constants: Dict[str, str],
+) -> str:
+    if node is None:
+        return ""
+    name = _call_name(node)
+    if (
+        name in getdecoder_aliases
+        or _attribute_on_module_alias(node, module_aliases, "getdecoder")
+        or _getattr_on_module_alias(node, module_aliases, "getdecoder", constants)
+    ):
+        return "getdecoder"
+    if (
+        name in lookup_aliases
+        or _attribute_on_module_alias(node, module_aliases, "lookup")
+        or _getattr_on_module_alias(node, module_aliases, "lookup", constants)
+    ):
+        return "lookup"
+    return ""
+
+
 def _decoder_factory_result_aliases(
     tree: ast.AST,
     module_aliases: Set[str],
@@ -2228,19 +2253,45 @@ def _higher_order_decode_wrapper_info(func: ast.FunctionDef, constants: Dict[str
     if not isinstance(params, set):
         return None
     decode_arg_pairs: Set[Tuple[str, str]] = set()
+    decoder_factory_arg_pairs: Set[Tuple[str, str]] = set()
+    lookup_factory_arg_pairs: Set[Tuple[str, str]] = set()
     for node in ast.walk(func):
-        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+        if not isinstance(node, ast.Call):
             continue
-        decoder_param = node.func.id
-        if decoder_param not in params:
+        if isinstance(node.func, ast.Name):
+            decoder_param = node.func.id
+            if decoder_param not in params:
+                continue
+            codec_param = _codec_arg_param_name(_codecs_decode_encoding_node(node), params)
+            if codec_param:
+                decode_arg_pairs.add((decoder_param, codec_param))
             continue
-        codec_param = _codec_arg_param_name(_codecs_decode_encoding_node(node), params)
-        if codec_param:
-            decode_arg_pairs.add((decoder_param, codec_param))
-    if not decode_arg_pairs:
+        if isinstance(node.func, ast.Call) and isinstance(node.func.func, ast.Name):
+            factory_param = node.func.func.id
+            if factory_param not in params:
+                continue
+            codec_param = _codec_arg_param_name(_codec_factory_encoding_node(node.func), params)
+            if codec_param:
+                decoder_factory_arg_pairs.add((factory_param, codec_param))
+            continue
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "decode"
+            and isinstance(node.func.value, ast.Call)
+            and isinstance(node.func.value.func, ast.Name)
+        ):
+            factory_param = node.func.value.func.id
+            if factory_param not in params:
+                continue
+            codec_param = _codec_arg_param_name(_codec_factory_encoding_node(node.func.value), params)
+            if codec_param:
+                lookup_factory_arg_pairs.add((factory_param, codec_param))
+    if not decode_arg_pairs and not decoder_factory_arg_pairs and not lookup_factory_arg_pairs:
         return None
     return {
         "decode_arg_pairs": decode_arg_pairs,
+        "decoder_factory_arg_pairs": decoder_factory_arg_pairs,
+        "lookup_factory_arg_pairs": lookup_factory_arg_pairs,
         "positions": signature["positions"],
         "defaults": signature["defaults"],
     }
@@ -2952,7 +3003,8 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
                     encoding = _wrapper_call_encoding(node, wrapper, param_name, constants)
                     if _is_dangerous_unicode_codec(encoding):
                         hits.append(f"{name}({encoding})")
-            continue
+            if name not in higher_order_wrappers and _zero_arg_function_call_name(node.func) not in higher_order_wrappers:
+                continue
         higher_order_wrapper_name = name
         higher_order_wrapper = higher_order_wrappers.get(higher_order_wrapper_name)
         if higher_order_wrapper is None:
@@ -2963,7 +3015,8 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             if isinstance(decode_arg_pairs, set):
                 for decoder_param, codec_param in decode_arg_pairs:
                     decoder_node = _wrapper_call_arg_node(node, higher_order_wrapper, decoder_param)
-                    if not _is_decode_function_ref(
+                    decoder_function_name = _zero_arg_function_call_name(decoder_node) if decoder_node is not None else ""
+                    is_decode_arg = _is_decode_function_ref(
                         decoder_node,
                         module_aliases,
                         decode_aliases,
@@ -2972,7 +3025,36 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
                         import_module_aliases,
                         module_dict_aliases,
                         decode_dict_aliases,
-                    ):
+                    )
+                    if not (is_decode_arg or decoder_function_name in codec_decode_functions):
+                        continue
+                    encoding = _wrapper_call_encoding(node, higher_order_wrapper, codec_param, constants)
+                    hits.append(f"{higher_order_wrapper_name}({_codec_label(encoding)})")
+            decoder_factory_arg_pairs = higher_order_wrapper.get("decoder_factory_arg_pairs") or set()
+            if isinstance(decoder_factory_arg_pairs, set):
+                for factory_param, codec_param in decoder_factory_arg_pairs:
+                    factory_node = _wrapper_call_arg_node(node, higher_order_wrapper, factory_param)
+                    if _factory_function_ref_kind(
+                        factory_node,
+                        module_aliases,
+                        getdecoder_aliases,
+                        lookup_aliases,
+                        constants,
+                    ) != "getdecoder":
+                        continue
+                    encoding = _wrapper_call_encoding(node, higher_order_wrapper, codec_param, constants)
+                    hits.append(f"{higher_order_wrapper_name}({_codec_label(encoding)})")
+            lookup_factory_arg_pairs = higher_order_wrapper.get("lookup_factory_arg_pairs") or set()
+            if isinstance(lookup_factory_arg_pairs, set):
+                for factory_param, codec_param in lookup_factory_arg_pairs:
+                    factory_node = _wrapper_call_arg_node(node, higher_order_wrapper, factory_param)
+                    if _factory_function_ref_kind(
+                        factory_node,
+                        module_aliases,
+                        getdecoder_aliases,
+                        lookup_aliases,
+                        constants,
+                    ) != "lookup":
                         continue
                     encoding = _wrapper_call_encoding(node, higher_order_wrapper, codec_param, constants)
                     hits.append(f"{higher_order_wrapper_name}({_codec_label(encoding)})")
