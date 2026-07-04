@@ -2514,7 +2514,10 @@ def _direct_child_getattr_param_result(
     params: Set[str],
     attr: str,
     constants: Dict[str, str],
+    depth: int = 0,
 ) -> str:
+    if depth >= 4:
+        return ""
     call_name = _zero_arg_function_call_name(value)
     if not call_name:
         return ""
@@ -2527,7 +2530,9 @@ def _direct_child_getattr_param_result(
     module_param = _getattr_name_arg(child_value, params, attr, constants)
     if not module_param and isinstance(child_value, ast.Name):
         module_param = _local_getattr_name_aliases(direct_child, params, attr, constants).get(child_value.id, "")
-    return module_param
+    if module_param:
+        return module_param
+    return _direct_child_getattr_param_result(direct_child, child_value, params, attr, constants, depth + 1)
 
 
 def _param_getattr_return_functions(
