@@ -486,6 +486,50 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "    return getattr(codecs, 'decode')\n"
             "mojibake = get_decoder()(text.encode('utf-8'), 'gbk', errors='ignore')\n"
         ),
+        "qa_generated_object_attribute_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "class Box:\n"
+            "    pass\n"
+            "box = Box()\n"
+            "box.decode = codecs.decode\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = box.decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_object_alias_attribute_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "class Box:\n"
+            "    pass\n"
+            "box = Box()\n"
+            "box.decode = codecs.decode\n"
+            "alias = box\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = alias.decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_namespace_attribute_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "from types import SimpleNamespace\n"
+            "ns = SimpleNamespace(decode=codecs.decode)\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = ns.decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_class_attribute_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "class Holder:\n"
+            "    decode = codecs.decode\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = Holder.decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_attribute_function_return_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "class Box:\n"
+            "    pass\n"
+            "box = Box()\n"
+            "box.decode = codecs.decode\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "def get_decoder():\n"
+            "    return box.decode\n"
+            "mojibake = get_decoder()(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
     }
 
     for name, script in scripts.items():

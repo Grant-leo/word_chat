@@ -1245,6 +1245,105 @@ def _attribute_alias_lookup(node: ast.AST, aliases: Dict[str, str]) -> Optional[
     return aliases.get(_call_name(node))
 
 
+def _attribute_name_alias_lookup(node: ast.AST, aliases: Set[str]) -> bool:
+    return isinstance(node, ast.Attribute) and _call_name(node) in aliases
+
+
+def _codecs_decode_attribute_aliases(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    decode_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    decode_dict_aliases: Dict[str, Set[str]],
+    decode_containers: Dict[str, Dict[Tuple[str, str], str]],
+) -> Set[str]:
+    attributes: Set[str] = set()
+    object_aliases: Dict[str, str] = {}
+
+    def value_is_decode(value: ast.AST) -> bool:
+        return (
+            _static_codecs_decode_ref(
+                value,
+                module_aliases,
+                decode_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+                decode_dict_aliases,
+            )
+            or _container_subscript_lookup(value, decode_containers, constants) is not None
+            or _attribute_name_alias_lookup(value, attributes)
+        )
+
+    def add_attribute(name: str) -> bool:
+        if not name or name in attributes:
+            return False
+        attributes.add(name)
+        return True
+
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                for item in node.body:
+                    if isinstance(item, ast.Assign):
+                        value = item.value
+                        targets = item.targets
+                    elif isinstance(item, ast.AnnAssign):
+                        value = item.value
+                        targets = [item.target]
+                    else:
+                        continue
+                    if value is None or not value_is_decode(value):
+                        continue
+                    for target in targets:
+                        if isinstance(target, ast.Name):
+                            changed = add_attribute(f"{node.name}.{target.id}") or changed
+                continue
+
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if value is None:
+                continue
+
+            if isinstance(value, ast.Name):
+                source = object_aliases.get(value.id, value.id)
+                for target in targets:
+                    if isinstance(target, ast.Name) and object_aliases.get(target.id) != source:
+                        object_aliases[target.id] = source
+                        changed = True
+
+            for target in targets:
+                if isinstance(target, ast.Attribute):
+                    if value_is_decode(value):
+                        changed = add_attribute(_call_name(target)) or changed
+                    continue
+                if not isinstance(target, ast.Name):
+                    continue
+                for attr, item in _simple_namespace_keyword_items(value):
+                    if value_is_decode(item):
+                        changed = add_attribute(f"{target.id}.{attr}") or changed
+
+        for alias, source in list(object_aliases.items()):
+            prefix = f"{source}."
+            for attr_name in list(attributes):
+                if attr_name.startswith(prefix):
+                    changed = add_attribute(f"{alias}.{attr_name[len(prefix):]}") or changed
+        if not changed:
+            break
+    return attributes
+
+
 def _subscript_call_label(node: ast.AST) -> str:
     if not isinstance(node, ast.Subscript) or not isinstance(node.value, ast.Name):
         return "container"
@@ -1518,6 +1617,7 @@ def _codecs_decode_function_results(
     module_dict_aliases: Dict[str, Set[str]],
     decode_dict_aliases: Dict[str, Set[str]],
     decode_containers: Dict[str, Dict[Tuple[str, str], str]],
+    decode_attributes: Set[str],
 ) -> Set[str]:
     functions: Set[str] = set()
     for node in ast.walk(tree):
@@ -1535,7 +1635,11 @@ def _codecs_decode_function_results(
             import_module_aliases,
             module_dict_aliases,
             decode_dict_aliases,
-        ) or _container_subscript_lookup(value, decode_containers, constants) is not None:
+        ) or _container_subscript_lookup(
+            value,
+            decode_containers,
+            constants,
+        ) is not None or _attribute_name_alias_lookup(value, decode_attributes):
             functions.add(node.name)
     for _ in range(4):
         changed = False
@@ -2074,6 +2178,17 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         module_dict_aliases,
         decode_dict_aliases,
     )
+    codec_decode_attributes = _codecs_decode_attribute_aliases(
+        tree,
+        module_aliases,
+        decode_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        decode_dict_aliases,
+        codec_decode_containers,
+    )
     _add_simple_factory_assignment_aliases(tree, module_aliases, getdecoder_aliases, lookup_aliases)
     wrappers = _codec_wrapper_functions(
         tree,
@@ -2159,6 +2274,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         module_dict_aliases,
         decode_dict_aliases,
         codec_decode_containers,
+        codec_decode_attributes,
     )
     decoder_functions, lookup_functions = _decoder_factory_function_results(
         tree,
@@ -2330,6 +2446,10 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             encoding = _codecs_decode_encoding(node, constants)
             label = _subscript_call_label(node.func)
             hits.append(f"{label}({_codec_label(encoding)})")
+            continue
+        if _attribute_name_alias_lookup(node.func, codec_decode_attributes):
+            encoding = _codecs_decode_encoding(node, constants)
+            hits.append(f"{_attribute_call_label(node.func)}({_codec_label(encoding)})")
             continue
         function_codec_decode_name = _zero_arg_function_call_name(node.func)
         if function_codec_decode_name in codec_decode_functions:
