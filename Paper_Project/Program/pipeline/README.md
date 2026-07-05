@@ -103,11 +103,14 @@ CLI, output, verification, and QA details in a focused package:
 
 Current baseline as of 2026-07-06:
 
-- Current full synthetic regression: `431 passed, 0 failed`. Latest additions:
-  generated-script decode guards now block higher-order helpers that forward
-  `**kwargs` into a decoder parameter, such as `apply_decoder(codecs.decode,
-  payload, encoding="gbk")`, before text-derived UTF-8 Chinese bytes are
-  re-decoded as GBK or another wrong charset. The same guard still follows
+- Current full synthetic regression: `432 passed, 0 failed`. Latest additions:
+  table-cell `rich_text` rendering now preserves image runs inside generated
+  Word tables, including `gridAfter` omitted-zone payloads that also contain
+  text, inline formulas, and native footnote/endnote references. Generated-
+  script decode guards still block higher-order helpers that forward `**kwargs`
+  into a decoder parameter, such as `apply_decoder(codecs.decode, payload,
+  encoding="gbk")`, before text-derived UTF-8 Chinese bytes are re-decoded as
+  GBK or another wrong charset. The same guard still follows
   `builtins.__import__("codecs")`,
   aliases assigned from `builtins.__import__` / `importlib.import_module`, and
   direct or assigned `getattr(importlib, "import_module")` /
@@ -385,6 +388,7 @@ Current baseline as of 2026-07-06:
 - DOCX table-cell inline LaTeX formulas: plain cell text such as `Energy $E=mc^2$ model` is split into text/math/text rich runs and rendered as native inline Word math without leaking `$...$` delimiters into the final DOCX.
 - DOCX mixed table-cell media/formulas: when a cell contains preceding paragraphs, an image paragraph, and a later paragraph mixing `$...$` LaTeX with inline OMML, the image remains before the formula paragraph and both formula sources render as native Word math.
 - DOCX inline table-cell media/formula/notes: when the same source cell paragraph contains text, an inline image, later LaTeX/OMML formulas, and a footnote reference, extraction splits the cell at the image boundary so the generated table keeps text, image, formulas, and note in source order.
+- DOCX table-cell rich-text image runs: compatible/future `table_cell_items` that carry `role="rich_text"` with `runs[].type="image"` now render those images inside the generated cell with table-cell sizing, alongside text, formulas, and native note anchors; row-omission guards still preserve the full row when such rich payloads sit in an omitted grid zone.
 - DOCX nested table-cell inline media/formula/notes: supported six-level nested tables preserve the same source order when a nested cell paragraph mixes text, an inline image, LaTeX, OMML, and a footnote reference.
 - DOCX table-cell content controls: block-level, inline, and nested inline `w:sdtContent` inside a source table cell are consumed in cell order, rendered back in the same generated table cell, and skipped by the body-level content-control fallback so they are not duplicated after the table. Simple-field containers (`w:fldSimple`) and transparent containers (`w:customXml` / `w:smartTag`) inside those controls keep their visible result text in source order. Hyperlink containers inside those controls keep mixed images, LaTeX/OMML formulas, and note anchors in source order. Body-level content controls that partially overlap or exactly match table-cell text are still recovered as body content.
 - DOCX body content controls: body-level `w:sdtContent` wrappers around paragraphs and tables are recursively dispatched in source order. Wrapped paragraphs count toward `_meta.recovered_content_control_paragraphs`, while wrapped tables remain table items and table-cell text is not leaked as loose body paragraphs. Inline `w:sdt`, `w:fldSimple`, hyperlink, `w:customXml`, and `w:smartTag` containers inside body paragraphs are recursively consumed so images, OMML/LaTeX formulas, and footnote/endnote anchors keep paragraph order.

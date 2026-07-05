@@ -936,24 +936,65 @@ def media_should_replace_paragraph(media):
     return False
 
 
-def render_table_cell_rich_text(cell, item, prof, force_new_paragraph=False):
+def append_table_cell_inline_image_run(p, run, ncols=1, rendered_image_keys=None):
+    wrote = False
+    try:
+        image_items = _rich_text_image_items(run)
+    except Exception:
+        image_items = []
+    for image_item in image_items:
+        if not isinstance(image_item, dict):
+            continue
+        filename = image_item.get('image') or image_item.get('filename') or image_item.get('asset') or ''
+        if not filename:
+            continue
+        if rendered_image_keys is not None and filename in rendered_image_keys:
+            continue
+        path = content_image_path(filename)
+        if not path:
+            continue
+        try:
+            r = p.add_run()
+            width, height = fit_table_cell_picture_dimensions(path, ncols=ncols)
+            r.add_picture(path, width=width, height=height)
+            BUILD_STATS['content_images_rendered'] = BUILD_STATS.get('content_images_rendered', 0) + 1
+            if rendered_image_keys is not None:
+                rendered_image_keys.add(filename)
+            wrote = True
+        except Exception:
+            continue
+    return wrote
+
+
+def render_table_cell_rich_text(cell, item, prof, force_new_paragraph=False, ncols=1):
     if not isinstance(item, dict):
         return False
     runs = item.get('runs') or []
+    try:
+        has_item_images = bool(_rich_text_image_items(item))
+    except Exception:
+        has_item_images = False
+    try:
+        item_math_entries = _rich_text_item_math_entries(item)
+    except Exception:
+        item_math_entries = []
     if not runs and item.get('text'):
         runs = [{'type': 'text', 'text': item.get('text') or ''}]
-    if not runs:
+    if not runs and not has_item_images and not item_math_entries:
         return False
     p = cell.add_paragraph() if force_new_paragraph else (
         cell.paragraphs[0] if cell.paragraphs and not cell.paragraphs[0].text.strip() else cell.add_paragraph()
     )
     apply_paragraph_profile(p, prof, first_indent_override=0)
     wrote = False
+    rendered_image_keys = set()
     for run in runs:
         kind = run.get('type') or ('math' if run.get('math') else 'text')
         if kind == 'math':
             for m in run.get('math') or []:
                 wrote = append_inline_formula(p, m) or wrote
+        elif _rich_text_direct_image_item(run) or _rich_text_image_items(run):
+            wrote = append_table_cell_inline_image_run(p, run, ncols=ncols, rendered_image_keys=rendered_image_keys) or wrote
         elif kind == 'note_ref':
             wrote = append_note_reference(p, run) or wrote
         else:
@@ -961,6 +1002,10 @@ def render_table_cell_rich_text(cell, item, prof, force_new_paragraph=False):
             if text:
                 add_text_runs(p, text, prof, False)
                 wrote = True
+    if has_item_images:
+        wrote = append_table_cell_inline_image_run(p, item, ncols=ncols, rendered_image_keys=rendered_image_keys) or wrote
+    for m in item_math_entries:
+        wrote = append_inline_formula(p, m) or wrote
     return wrote
 
 
@@ -983,7 +1028,7 @@ def render_table_cell_media_item(cell, media, ncols, prof, force_new_paragraph=F
             wrote = append_inline_formula(p, m) or wrote
         return wrote
     if media.get('role') == 'rich_text' or media.get('math'):
-        return render_table_cell_rich_text(cell, media, prof, force_new_paragraph=force_new_paragraph)
+        return render_table_cell_rich_text(cell, media, prof, force_new_paragraph=force_new_paragraph, ncols=ncols)
     if media.get('role') == 'note_ref' or media.get('type') == 'note_ref':
         p = cell.add_paragraph() if force_new_paragraph else (
             cell.paragraphs[0] if cell.paragraphs and not cell.paragraphs[0].text.strip() else cell.add_paragraph()
