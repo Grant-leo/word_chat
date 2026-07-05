@@ -221,9 +221,12 @@ def should_default_repeat_first_row(rows, ncols=0, nested=False, max_width_twips
         return False
     if ncols <= 1:
         return False
+    first_row_lines = estimate_table_row_lines(rows[0])
+    if first_row_lines > 3:
+        return False
     if safe_positive_int(max_width_twips):
         return True
-    return estimate_table_row_lines(rows[0]) <= 3
+    return True
 
 
 def keep_table_together(table):

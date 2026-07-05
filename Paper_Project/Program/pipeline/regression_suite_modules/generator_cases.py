@@ -972,6 +972,44 @@ def script_generator_repeats_first_row_for_auto_landscape_long_wide_tables() -> 
 
 
 @case
+def script_generator_does_not_repeat_tall_first_row_for_auto_landscape_tables() -> None:
+    tall_intro_cell = (
+        "This first row is an explanatory data cell rather than a table header. "
+        "It contains long narrative text that would occupy many wrapped lines in Word, "
+        "so repeating it as a header on every page would make the generated paper hard "
+        "to read and would look like duplicated body content. "
+    ) * 4
+    rows = [[tall_intro_cell] + [f"Intro value {idx}" for idx in range(2, 10)]]
+    rows.extend([[f"Measurement row {row}-{col}" for col in range(1, 10)] for row in range(1, 34)])
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Long auto landscape table with tall first row"},
+            {
+                "role": "table",
+                "table_rows": rows,
+                "table_col_widths_twips": [1200] * 9,
+            },
+            "Portrait body after tall-first-row landscape table.",
+        ],
+        meta_tables=1,
+    )
+    result = run_generated_case("auto_landscape_tall_first_row_no_header", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 1,
+        "tall-first-row overwide table should still be auto-landscaped",
+    )
+    assert_true(
+        "<w:tblHeader" not in result["xml"],
+        "tall first rows should not be repeated as default table headers",
+    )
+    counts = result["manifest"]["counts"]
+    assert_true(
+        counts.get("content_table_repeat_header_rows_rendered", 0) == 0,
+        f"tall first rows should not increment default repeat-header count: {counts}",
+    )
+
+
+@case
 def script_generator_does_not_default_repeat_header_for_short_tables() -> None:
     content = base_content(
         [

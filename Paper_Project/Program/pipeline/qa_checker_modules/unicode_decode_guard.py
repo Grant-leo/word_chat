@@ -110,6 +110,10 @@ def _keyword_node(node: ast.Call, *names: str) -> Optional[ast.AST]:
     return None
 
 
+def _has_keyword_unpack(node: ast.Call) -> bool:
+    return any(keyword.arg is None for keyword in node.keywords or [])
+
+
 def _codec_import_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str], Set[str], Set[str], Set[str]]:
     module_aliases = {"codecs"}
     decode_aliases: Set[str] = set()
@@ -315,6 +319,32 @@ def _getattr_on_static_codecs_module(
     )
 
 
+def _dunder_getattribute_on_static_codecs_module(
+    node: ast.AST,
+    module_aliases: Set[str],
+    attr: str,
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "__getattribute__"
+        and len(node.args) >= 1
+        and _static_codecs_module_ref(
+            node.func.value,
+            module_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+        )
+        and _string_constant(node.args[0], constants) == attr
+    )
+
+
 def _module_dict_decode_subscript(
     node: ast.AST,
     module_aliases: Set[str],
@@ -372,6 +402,16 @@ def _static_codecs_decode_ref(
             module_dict_aliases,
         )
     if _getattr_on_static_codecs_module(
+        node,
+        module_aliases,
+        "decode",
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+    ):
+        return True
+    if _dunder_getattribute_on_static_codecs_module(
         node,
         module_aliases,
         "decode",
@@ -1183,6 +1223,8 @@ def _method_decode_encoding_or_default(node: ast.Call, constants: Dict[str, str]
     keyword = _keyword_node(node, "encoding")
     if keyword is not None:
         return _string_constant(keyword, constants)
+    if _has_keyword_unpack(node):
+        return ""
     return "utf-8"
 
 
@@ -1192,6 +1234,8 @@ def _method_encode_encoding_or_default(node: ast.Call, constants: Dict[str, str]
     keyword = _keyword_node(node, "encoding")
     if keyword is not None:
         return _string_constant(keyword, constants)
+    if _has_keyword_unpack(node):
+        return ""
     return "utf-8"
 
 
@@ -1244,6 +1288,8 @@ def _text_encode_call_encoding(
         keyword = _keyword_node(node, "encoding")
         if keyword is not None:
             return _string_constant(keyword, constants)
+        if _has_keyword_unpack(node):
+            return ""
         return None
     if not _is_byte_constructor_ref(node.func, byte_constructor_aliases, constants):
         return None
@@ -1252,6 +1298,8 @@ def _text_encode_call_encoding(
     keyword = _keyword_node(node, "encoding")
     if keyword is not None:
         return _string_constant(keyword, constants)
+    if _has_keyword_unpack(node):
+        return ""
     return None
 
 
@@ -1326,6 +1374,8 @@ def _operator_methodcaller_decode_encoding(
     keyword = _keyword_node(node, "encoding")
     if keyword is not None:
         return _string_constant(keyword, constants)
+    if _has_keyword_unpack(node):
+        return ""
     return "utf-8"
 
 
@@ -1359,7 +1409,12 @@ def _operator_methodcaller_codecs_decode_info(
         encoding = _string_constant(node.args[2], constants)
     else:
         keyword = _keyword_node(node, "encoding")
-        encoding = _string_constant(keyword, constants) if keyword is not None else "utf-8"
+        if keyword is not None:
+            encoding = _string_constant(keyword, constants)
+        elif _has_keyword_unpack(node):
+            encoding = ""
+        else:
+            encoding = "utf-8"
     return encoded_as, encoding
 
 
