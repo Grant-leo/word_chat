@@ -103,13 +103,17 @@ CLI, output, verification, and QA details in a focused package:
 
 Current baseline as of 2026-07-06:
 
-- Current full synthetic regression: `429 passed, 0 failed`. Latest additions:
+- Current full synthetic regression: `431 passed, 0 failed`. Latest additions:
   generated-script decode guards now follow `from codecs import *` star-import
   routes before bare `decode`, `getdecoder`, or `lookup` calls can re-decode
   UTF-8 Chinese bytes as GBK or another wrong charset, while same-level safe
   local definitions or assignments that shadow those names are not treated as
-  real codecs routes. They also follow default parameters that hide real
-  `codecs` routes (`decoder=codecs.decode`, `module=codecs`,
+  real codecs routes. `import codecs` module names also respect same-level
+  safe shadowing, so a later safe custom module object named `codecs` or
+  `text_codecs` is not treated as the standard-library module; real
+  `codecs.decode`, `codecs.getdecoder`, or `codecs.lookup` calls that happen
+  before that shadowing still fail closed. They also follow default parameters
+  that hide real `codecs` routes (`decoder=codecs.decode`, `module=codecs`,
   `factory=codecs.getdecoder`, `lookup=codecs.lookup`), and auto-landscaped
   long wide tables no longer default-repeat a first row that carries rich
   table-cell payloads such as images, formulas, notes, rich text, or nested
@@ -159,6 +163,16 @@ Current baseline as of 2026-07-06:
   so beginner users are not blocked by a false `codecs` route. Regression:
   `qa_flags_generated_script_star_import_codecs_decode_routes` /
   `qa_does_not_flag_star_import_codecs_routes_after_safe_shadowing`.
+- Generated-script codecs module safe-shadow guard: structural QA no longer
+  treats a same-level safe custom object as the standard-library `codecs`
+  module after `import codecs` / `import codecs as text_codecs`, and it no
+  longer assumes a `codecs` name is real when no `codecs` import exists. Calls
+  that happen while the imported module name is still active, including
+  `codecs.decode(...)`, `codecs.getdecoder(...)(...)`, and
+  `codecs.lookup(...).decode(...)`, continue to fail closed before a later safe
+  shadow can hide the earlier damage. Regression:
+  `qa_does_not_flag_codecs_module_routes_after_safe_shadowing` /
+  `qa_flags_codecs_module_routes_before_safe_shadowing`.
 - Generated-script codecs module-container handoff guard: structural QA now
   follows no-required-argument helpers that return simple literal containers
   carrying the real `codecs` module before a container item is passed to a

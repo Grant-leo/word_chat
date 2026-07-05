@@ -176,8 +176,65 @@ def _top_level_shadowed_codec_import_aliases(tree: ast.AST) -> Set[str]:
     return {name for name, state in states.items() if state == "shadowed"}
 
 
+def _codec_module_import_bound_names(stmt: ast.stmt) -> Set[str]:
+    if not isinstance(stmt, ast.Import):
+        return set()
+    return {alias.asname or alias.name for alias in stmt.names if alias.name == "codecs"}
+
+
+def _literal_codecs_module_import_call(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and _call_name(node.func) == "__import__"
+        and len(node.args) >= 1
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "codecs"
+    )
+
+
+def _top_level_codec_module_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str]]:
+    if not isinstance(tree, ast.Module):
+        return set(), set()
+    states: Dict[str, str] = {}
+    for stmt in tree.body:
+        module_imports = _codec_module_import_bound_names(stmt)
+        if module_imports:
+            for name in module_imports:
+                states[name] = "imported"
+            continue
+        if isinstance(stmt, (ast.Assign, ast.AnnAssign)):
+            value = stmt.value
+            targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+            target_names: Set[str] = set()
+            for target in targets:
+                target_names.update(_target_names(target))
+            value_name = _call_name(value) if value is not None else ""
+            if value_name and states.get(value_name) == "imported":
+                for name in target_names:
+                    states[name] = "imported"
+                continue
+            if value is not None and _literal_codecs_module_import_call(value):
+                for name in target_names:
+                    states[name] = "imported"
+                continue
+            self_assignment = isinstance(value, ast.Name)
+            for name in target_names:
+                if states.get(name) != "imported":
+                    continue
+                if self_assignment and value.id == name:
+                    continue
+                states[name] = "shadowed"
+            continue
+        for name in _statement_bound_names(stmt):
+            if states.get(name) == "imported":
+                states[name] = "shadowed"
+    active = {name for name, state in states.items() if state == "imported"}
+    shadowed = {name for name, state in states.items() if state == "shadowed"}
+    return active, shadowed
+
+
 def _codec_import_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str], Set[str], Set[str], Set[str]]:
-    module_aliases = {"codecs"}
+    module_aliases, shadowed_module_aliases = _top_level_codec_module_aliases(tree)
     decode_aliases: Set[str] = set()
     escape_decode_aliases: Set[str] = set()
     getdecoder_aliases: Set[str] = set()
@@ -204,6 +261,7 @@ def _codec_import_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str], Set[str], 
                     getdecoder_aliases.add(imported_name)
                 elif alias.name == "lookup":
                     lookup_aliases.add(imported_name)
+    module_aliases.difference_update(shadowed_module_aliases)
     for shadowed_name in _top_level_shadowed_codec_import_aliases(tree):
         decode_aliases.discard(shadowed_name)
         escape_decode_aliases.discard(shadowed_name)
@@ -3281,6 +3339,88 @@ def _codec_factory_encoding_node(node: ast.Call) -> Optional[ast.AST]:
     return _keyword_node(node, "encoding")
 
 
+def _current_scope_calls(stmt: ast.stmt) -> List[ast.Call]:
+    calls: List[ast.Call] = []
+
+    class Visitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            return
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            return
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return
+
+        def visit_Call(self, node: ast.Call) -> None:
+            calls.append(node)
+            self.generic_visit(node)
+
+    Visitor().visit(stmt)
+    return calls
+
+
+def _update_top_level_module_aliases_after_stmt(stmt: ast.stmt, active: Set[str]) -> None:
+    module_imports = _codec_module_import_bound_names(stmt)
+    if module_imports:
+        active.update(module_imports)
+        return
+    if isinstance(stmt, (ast.Assign, ast.AnnAssign)):
+        value = stmt.value
+        targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+        target_names: Set[str] = set()
+        for target in targets:
+            target_names.update(_target_names(target))
+        value_name = _call_name(value) if value is not None else ""
+        if value_name and value_name in active:
+            active.update(target_names)
+            return
+        if value is not None and _literal_codecs_module_import_call(value):
+            active.update(target_names)
+            return
+        self_assignment = isinstance(value, ast.Name)
+        for name in target_names:
+            if name in active and not (self_assignment and value.id == name):
+                active.discard(name)
+        return
+    for name in _statement_bound_names(stmt):
+        active.discard(name)
+
+
+def _top_level_direct_codecs_module_hits(tree: ast.AST, constants: Dict[str, str]) -> List[str]:
+    if not isinstance(tree, ast.Module):
+        return []
+    active: Set[str] = set()
+    hits: List[str] = []
+    for stmt in tree.body:
+        for node in _current_scope_calls(stmt):
+            name = _call_name(node.func)
+            if isinstance(node.func, ast.Attribute) and _call_name(node.func.value) in active:
+                if node.func.attr == "decode":
+                    encoding = _codecs_decode_encoding(node, constants)
+                    hits.append(f"{name}({_codec_label(encoding)})")
+                    continue
+                if node.func.attr in {"getdecoder", "lookup"}:
+                    encoding = _codec_factory_encoding(node, constants)
+                    if _is_dangerous_unicode_codec(encoding):
+                        hits.append(f"{name}({encoding})")
+                    continue
+            kind, encoding = _factory_call_encoding(node.func, active, set(), set(), constants)
+            if kind:
+                hits.append(f"{name or kind}({_codec_label(encoding)})")
+                continue
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "decode":
+                kind, encoding = _factory_call_encoding(node.func.value, active, set(), set(), constants)
+                if kind == "lookup":
+                    hits.append(f"{name}({_codec_label(encoding)})")
+                    continue
+        _update_top_level_module_aliases_after_stmt(stmt, active)
+    return hits
+
+
 def _function_signature(node: ast.FunctionDef, constants: Dict[str, str]) -> Dict[str, object]:
     positional = [arg.arg for arg in [*node.args.posonlyargs, *node.args.args]]
     kwonly = [arg.arg for arg in node.args.kwonlyargs]
@@ -4202,7 +4342,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         decode_dict_aliases,
         partial_results,
     )
-    hits: List[str] = []
+    hits: List[str] = _top_level_direct_codecs_module_hits(tree, constants)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue

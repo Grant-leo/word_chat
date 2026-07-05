@@ -1143,6 +1143,116 @@ def qa_does_not_flag_star_import_codecs_routes_after_safe_shadowing() -> None:
 
 
 @case
+def qa_does_not_flag_codecs_module_routes_after_safe_shadowing() -> None:
+    text = "中文字符保持原样：编码测试。"
+    scripts = {
+        "qa_codecs_module_shadow_safe_decoder": (
+            "import codecs\n"
+            "class SafeCodecs:\n"
+            "    def decode(self, value, encoding, errors=None):\n"
+            "        return value.decode('utf-8') if isinstance(value, bytes) else value\n"
+            "codecs = SafeCodecs()\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "roundtrip = codecs.decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_codecs_module_alias_shadow_safe_decoder": (
+            "import codecs as text_codecs\n"
+            "class SafeCodecs:\n"
+            "    def decode(self, value, encoding, errors=None):\n"
+            "        return value.decode('utf-8') if isinstance(value, bytes) else value\n"
+            "text_codecs = SafeCodecs()\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "roundtrip = text_codecs.decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_no_import_codecs_name_safe_decoder": (
+            "class SafeCodecs:\n"
+            "    def decode(self, value, encoding, errors=None):\n"
+            "        return value.decode('utf-8') if isinstance(value, bytes) else value\n"
+            "codecs = SafeCodecs()\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "roundtrip = codecs.decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+    }
+
+    for name, script in scripts.items():
+        work = new_workdir(name)
+        doc = Document()
+        doc.add_paragraph("Synthetic Thesis")
+        doc.add_paragraph("1 Introduction")
+        doc.add_paragraph(text)
+        doc.save(work / "out.docx")
+        write_json(work / "content.json", base_content([text]))
+        write_json(work / "format.json", base_format())
+        write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {}})
+        write_json(work / "workflow_mode.json", {"mode": "user"})
+        (work / "build_generated.py").write_text(script, encoding="utf-8")
+
+        report = check_output(str(work), mode="user", output_docx_name="out.docx")
+        codes = [item["code"] for item in report["issues"]]
+        assert_true(
+            "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" not in codes,
+            f"QA falsely treated a shadowed safe codecs module as the real module {name}: {report}",
+        )
+
+
+@case
+def qa_flags_codecs_module_routes_before_safe_shadowing() -> None:
+    text = "中文字符保持原样：编码测试。"
+    scripts = {
+        "qa_codecs_module_decode_before_safe_shadow": (
+            "import codecs\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = codecs.decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+            "class SafeCodecs:\n"
+            "    def decode(self, value, encoding, errors=None):\n"
+            "        return value.decode('utf-8') if isinstance(value, bytes) else value\n"
+            "codecs = SafeCodecs()\n"
+        ),
+        "qa_codecs_module_getdecoder_before_safe_shadow": (
+            "import codecs\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = codecs.getdecoder('gbk')(text.encode('utf-8'), errors='ignore')[0]\n"
+            "class SafeCodecs:\n"
+            "    def getdecoder(self, encoding):\n"
+            "        return lambda value, errors=None: (value.decode('utf-8'), len(value))\n"
+            "codecs = SafeCodecs()\n"
+        ),
+        "qa_codecs_module_lookup_before_safe_shadow": (
+            "import codecs\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = codecs.lookup('gbk').decode(text.encode('utf-8'), errors='ignore')[0]\n"
+            "class SafeCodec:\n"
+            "    def decode(self, value, errors=None):\n"
+            "        return (value.decode('utf-8'), len(value))\n"
+            "class SafeCodecs:\n"
+            "    def lookup(self, encoding):\n"
+            "        return SafeCodec()\n"
+            "codecs = SafeCodecs()\n"
+        ),
+    }
+
+    for name, script in scripts.items():
+        work = new_workdir(name)
+        doc = Document()
+        doc.add_paragraph("Synthetic Thesis")
+        doc.add_paragraph("1 Introduction")
+        doc.add_paragraph(text)
+        doc.save(work / "out.docx")
+        write_json(work / "content.json", base_content([text]))
+        write_json(work / "format.json", base_format())
+        write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {}})
+        write_json(work / "workflow_mode.json", {"mode": "user"})
+        (work / "build_generated.py").write_text(script, encoding="utf-8")
+
+        report = check_output(str(work), mode="user", output_docx_name="out.docx")
+        codes = [item["code"] for item in report["issues"]]
+        assert_true(
+            "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" in codes,
+            f"QA did not flag real codecs module use before later safe shadowing {name}: {report}",
+        )
+
+
+@case
 def qa_flags_generated_script_getattr_codecs_decode_text_reencoding() -> None:
     text = "中文字符保持原样：编码测试。"
     scripts = {
