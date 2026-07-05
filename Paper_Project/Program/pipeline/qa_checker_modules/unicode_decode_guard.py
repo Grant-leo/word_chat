@@ -2031,6 +2031,33 @@ def _function_required_arg_count(node: ast.FunctionDef) -> int:
     return required_positional + required_kwonly
 
 
+def _lambda_required_arg_count(node: ast.Lambda) -> int:
+    positional = [*node.args.posonlyargs, *node.args.args]
+    positional_defaults = len(node.args.defaults or [])
+    required_positional = max(0, len(positional) - positional_defaults)
+    required_kwonly = sum(1 for default in node.args.kw_defaults if default is None)
+    return required_positional + required_kwonly
+
+
+def _zero_arg_lambda_assignments(tree: ast.AST) -> Dict[str, ast.AST]:
+    lambdas: Dict[str, ast.AST] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            value = node.value
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            value = node.value
+            targets = [node.target]
+        else:
+            continue
+        if not isinstance(value, ast.Lambda) or _lambda_required_arg_count(value) != 0:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                lambdas[target.id] = value.body
+    return lambdas
+
+
 def _single_return_value(node: ast.FunctionDef) -> Optional[ast.AST]:
     returns = [item.value for item in ast.walk(node) if isinstance(item, ast.Return) and item.value is not None]
     if len(returns) != 1:
@@ -2341,6 +2368,7 @@ def _codecs_module_function_results(
     function_nodes: Set[int] = set()
     class_aliases = _class_aliases(tree)
     class_instances = _class_instance_aliases(tree)
+    lambda_returns = _zero_arg_lambda_assignments(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
             continue
@@ -2381,6 +2409,16 @@ def _codecs_module_function_results(
             for method_name in _zero_explicit_arg_method_names(node, child, class_aliases, class_instances):
                 functions.add(method_name)
                 function_nodes.add(id(child))
+    for name, value in lambda_returns.items():
+        if _static_codecs_module_ref(
+            value,
+            module_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+        ) or _container_subscript_lookup(value, module_containers, constants) is not None:
+            functions.add(name)
     for _ in range(4):
         changed = False
         for node in ast.walk(tree):
@@ -2687,6 +2725,7 @@ def _codecs_decode_function_results(
 ) -> Set[str]:
     functions: Set[str] = set()
     function_nodes: Set[int] = set()
+    lambda_returns = _zero_arg_lambda_assignments(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
             continue
@@ -2709,6 +2748,22 @@ def _codecs_decode_function_results(
         ) is not None or _attribute_name_alias_lookup(value, decode_attributes):
             functions.add(node.name)
             function_nodes.add(id(node))
+    for name, value in lambda_returns.items():
+        if _static_codecs_decode_ref(
+            value,
+            module_aliases,
+            decode_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            decode_dict_aliases,
+        ) or _container_subscript_lookup(
+            value,
+            decode_containers,
+            constants,
+        ) is not None or _attribute_name_alias_lookup(value, decode_attributes):
+            functions.add(name)
     for _ in range(4):
         changed = False
         for node in ast.walk(tree):

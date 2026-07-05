@@ -715,6 +715,18 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = get_decode()(text.encode('utf-8'), 'gbk', errors='ignore')\n"
         ),
+        "qa_generated_lambda_returns_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "get_decode = lambda: codecs.decode\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = get_decode()(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_lambda_returns_codecs_module_wrong_charset": (
+            "import codecs\n"
+            "get_module = lambda: codecs\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = get_module().decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
         "qa_generated_returned_module_param_codecs_decode_wrong_charset": (
             "import codecs\n"
             "\n"

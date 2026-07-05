@@ -264,6 +264,13 @@ Current baseline as of 2026-07-05:
   returns are blocked; same-shaped safe custom objects remain unblocked.
   Regression: `qa_flags_generated_script_general_codecs_decode_text_reencoding`
   / `qa_does_not_flag_shadowed_method_factory_name_for_safe_decoder`.
+- Generated-script `lambda` decode handoff guard: structural QA also follows
+  no-required-argument lambdas that return the real `codecs.decode` function or
+  the real `codecs` module before Chinese text-derived UTF-8 bytes are decoded
+  again as GBK. Covered examples include `get_decode = lambda: codecs.decode`
+  followed by `get_decode()(payload, "gbk")`, and `get_module = lambda:
+  codecs` followed by `get_module().decode(payload, "gbk")`. Regression:
+  `qa_flags_generated_script_general_codecs_decode_text_reencoding`.
 - Generated-script module-container handoff guard: structural QA also follows
   simple literal containers that carry the real `codecs` module before a
   container item is passed into a module helper, including variables,
