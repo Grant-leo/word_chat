@@ -121,6 +121,51 @@ def write_build_failure_report(
     return report
 
 
+def write_unsafe_generated_script_report(
+    out_dir,
+    *,
+    mode,
+    unsafe_decode_calls,
+    output_docx_name="最终论文.docx",
+    project_root=None,
+):
+    """Write a QA-shaped report when build_generated.py is unsafe to execute."""
+    try:
+        from qa_checker_modules.report_phase import build_report
+        from qa_checker_modules.reports import write_reports
+    except ImportError:  # pragma: no cover - package-style imports
+        from ..qa_checker_modules.report_phase import build_report
+        from ..qa_checker_modules.reports import write_reports
+
+    active_owner = (
+        "Outputs/<run>/build_generated.py"
+        if mode == "user"
+        else "script_generator.py / script_generator_modules/runtime_build.py"
+    )
+    detail = _sanitize_report_value(_truncate_detail(", ".join(str(item) for item in unsafe_decode_calls)), project_root)
+    issue = {
+        "code": "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE",
+        "severity": "error",
+        "message": "生成脚本包含可能破坏中文字符的二次/错误解码调用，已在执行前阻断。",
+        "detail": detail,
+        "active_owner": active_owner,
+        "owner_user": "Outputs/<run>/build_generated.py",
+        "owner_developer": "script_generator.py / script_generator_modules/runtime_build.py",
+    }
+    report = build_report(out_dir, mode, {"unsafe_unicode_decode_calls": len(unsafe_decode_calls or [])}, [issue])
+    report["repair_plan"]["open_first"] = [
+        "qa_repair_plan.md",
+        "qa_report.md",
+        "build_generated.py",
+        "workflow_mode.json",
+        "格式提取.md",
+        "内容提取.md",
+    ]
+    report["repair_plan"].setdefault("commands", {})["output_docx_name"] = output_docx_name
+    write_reports(report, out_dir)
+    return report
+
+
 def write_format_blocker_report_if_needed(fmt_json_path, out_dir, *, mode):
     """Fail closed on template-format blockers before content extraction/build."""
     try:

@@ -1243,7 +1243,7 @@ def extract_table_from_ooxml(
                     image_run_items_func=image_run_items_func,
                     notes=notes,
                 )
-                if vmerge_probe_nested_items:
+                if vmerge_probe_text or vmerge_probe_nested_items:
                     is_vmerge_continue = False
             is_hmerge_continue = (
                 hmerge_kind == "continue"

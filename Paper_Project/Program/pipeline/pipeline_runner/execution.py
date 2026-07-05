@@ -13,7 +13,25 @@ class ScriptExecutionResult:
     stderr: str
 
 
+def _unsafe_unicode_decode_calls(gen_py_path):
+    try:
+        from qa_checker_modules.unicode_decode_guard import unsafe_unicode_decode_calls
+    except Exception:
+        return []
+    try:
+        return unsafe_unicode_decode_calls(gen_py_path)
+    except Exception:
+        return []
+
+
 def run_generated_script(gen_py_path, out_dir, python_executable):
+    unsafe_decode_calls = _unsafe_unicode_decode_calls(gen_py_path)
+    if unsafe_decode_calls:
+        return ScriptExecutionResult(
+            returncode=2,
+            stdout="",
+            stderr="GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE: " + ", ".join(str(item) for item in unsafe_decode_calls),
+        )
     result = subprocess.run(
         [python_executable, gen_py_path],
         capture_output=True,

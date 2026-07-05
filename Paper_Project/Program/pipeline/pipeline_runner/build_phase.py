@@ -3,6 +3,19 @@ from __future__ import annotations
 
 import os
 
+from .artifacts import write_unsafe_generated_script_report
+
+
+def _unsafe_unicode_decode_calls(gen_py_path):
+    try:
+        from qa_checker_modules.unicode_decode_guard import unsafe_unicode_decode_calls
+    except Exception:
+        return []
+    try:
+        return unsafe_unicode_decode_calls(gen_py_path)
+    except Exception:
+        return []
+
 
 def generate_and_build_docx_phase(
     fmt_json_path,
@@ -26,6 +39,19 @@ def generate_and_build_docx_phase(
     print(f"  生成脚本: build_generated.py ({gen_size} chars)")
 
     step("Phase 5/6: 构建最终 docx（生成静态目录；可用 Word COM 时写入页码）")
+
+    unsafe_decode_calls = _unsafe_unicode_decode_calls(gen_py_path)
+    if unsafe_decode_calls:
+        write_unsafe_generated_script_report(
+            out_dir,
+            mode=mode,
+            unsafe_decode_calls=unsafe_decode_calls,
+            output_docx_name=output_docx_name,
+            project_root=project_root,
+        )
+        print("  [ERROR] build_generated.py 包含可能破坏中文字符的二次/错误解码，已在执行前停止。")
+        print("  [NEXT] 已写出 qa_report.md / qa_repair_plan.md；先按报告修复 build_generated.py 或核心生成器，再重建当前 DOCX。")
+        return False
 
     build_result = run_generated_script(gen_py_path, out_dir, python_executable=python_executable)
     if build_result.returncode != 0:

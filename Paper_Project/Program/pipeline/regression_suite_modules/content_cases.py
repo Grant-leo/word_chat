@@ -1616,6 +1616,68 @@ def content_parser_preserves_rich_vmerge_continuation_as_visible_cell() -> None:
 
 
 @case
+def content_parser_preserves_plain_vmerge_continuation_text_as_visible_cell() -> None:
+    work = new_workdir("parser_plain_vmerge_continuation")
+    docx = work / "plain_vmerge_continuation.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Vertical start"
+    table.cell(0, 1).text = "Top right"
+    table.cell(1, 0).text = "Plain continuation should stay visible"
+    table.cell(1, 1).text = "Bottom right"
+    doc.save(docx)
+
+    def inject_visible_vmerge_continue(xml: str) -> str:
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + w_ns + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(w_ns + "tr")
+        assert_true(len(rows) == 2, "test rows missing")
+        first_row_cells = rows[0].findall(w_ns + "tc")
+        second_row_cells = rows[1].findall(w_ns + "tc")
+        assert_true(len(first_row_cells) == 2 and len(second_row_cells) == 2, "test row cells missing")
+
+        def ensure_tc_pr(cell):
+            tc_pr = cell.find(w_ns + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(w_ns + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        restart = ET.SubElement(ensure_tc_pr(first_row_cells[0]), w_ns + "vMerge")
+        restart.set(w_ns + "val", "restart")
+        ET.SubElement(ensure_tc_pr(second_row_cells[0]), w_ns + "vMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_visible_vmerge_continue)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"plain vMerge-continuation table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [
+            ["Vertical start", "Top right"],
+            ["Plain continuation should stay visible", "Bottom right"],
+        ],
+        f"plain vMerge continuation text should fail open as a visible cell: {table_item}",
+    )
+    assert_true(
+        not any(int(merge.get("rowspan") or 1) > 1 for merge in table_item.get("table_merges") or []),
+        f"plain vMerge continuation text should not be hidden behind a vertical merge: {table_item}",
+    )
+
+    result = run_generated_case("parser_plain_vmerge_continuation_generated", content, base_format())
+    assert_true(
+        "Plain continuation should stay visible" in result["xml"],
+        "generated DOCX lost plain vMerge continuation text",
+    )
+    assert_true(result["report"]["passed"] is True, f"plain vMerge continuation render should pass QA: {result['report']}")
+
+
+@case
 def content_parser_preserves_grid_before_vmerge_cells() -> None:
     work = new_workdir("parser_grid_before_vmerge")
     docx = work / "grid_before_vmerge.docx"
@@ -1662,12 +1724,12 @@ def content_parser_preserves_grid_before_vmerge_cells() -> None:
     assert_true(len(table_items) == 1, f"gridBefore table was not preserved as a table: {items}")
     table_item = table_items[0]
     assert_true(
-        table_item.get("table_rows") == [["Left", "Vertical start"], ["", ""]],
-        f"gridBefore row offset was not preserved: {table_item}",
+        table_item.get("table_rows") == [["Left", "Vertical start"], ["", "Vertical continue"]],
+        f"gridBefore row offset or visible continuation text was not preserved: {table_item}",
     )
     assert_true(
-        {"row": 0, "col": 1, "rowspan": 2, "colspan": 1} in (table_item.get("table_merges") or []),
-        f"gridBefore vertical merge was not captured: {table_item}",
+        not any(int(merge.get("rowspan") or 1) > 1 for merge in table_item.get("table_merges") or []),
+        f"gridBefore vMerge continuation text should fail open instead of being hidden behind a vertical merge: {table_item}",
     )
     assert_true(
         table_item.get("table_row_grid_before") == [0, 1],
@@ -1688,6 +1750,7 @@ def content_parser_preserves_grid_before_vmerge_cells() -> None:
         len(second_row_cells) == 1,
         "generated gridBefore row should omit the leading cell instead of rendering a visible empty cell",
     )
+    assert_true("Vertical continue" in result["xml"], "generated gridBefore table lost visible vMerge continuation text")
     assert_true(result["report"]["passed"] is True, f"gridBefore vMerge render should pass QA: {result['report']}")
 
 

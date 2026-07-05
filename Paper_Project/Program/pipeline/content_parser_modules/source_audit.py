@@ -461,7 +461,7 @@ def _table_geometry_stats(xml_text: str) -> Dict[str, int]:
                     expected = active_vmerges.get(col_idx)
                     cell_irregular = False
                     visible_vmerge_counted = False
-                    if _cell_has_rich_visible_content(cell):
+                    if _cell_has_visible_content(cell):
                         stats["visible_vmerge_continuation_count"] += 1
                         table_irregular = True
                         visible_vmerge_counted = True
