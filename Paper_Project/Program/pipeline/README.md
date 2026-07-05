@@ -103,7 +103,12 @@ CLI, output, verification, and QA details in a focused package:
 
 Current baseline as of 2026-07-06:
 
-- Current full synthetic regression: `434 passed, 0 failed`. Latest additions:
+- Current full synthetic regression: `435 passed, 0 failed`. Latest additions:
+  generated-script decode guards now also block custom batch wrappers with
+  fixed-index encoding parameters such as `decoder(values[0], encodings[0])`
+  when the call site passes real `codecs.decode` plus an unsafe encoding
+  container such as `encodings = ["gbk"]`; same-shaped custom safe decoders
+  remain unblocked. Existing
   generated-script decode guards now block batch callbacks such as
   `map(codecs.decode, payloads, encodings)` and
   `itertools.starmap(codecs.decode, rows)` before text-derived UTF-8 Chinese

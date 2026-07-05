@@ -183,7 +183,7 @@ build_generated.py ─────────→ 最终论文.docx
 
 截至 2026-07-06：
 
-- 合成回归：`434 passed, 0 failed`
+- 合成回归：`435 passed, 0 failed`
 - DOCX 富文本 run 内嵌块级内容：`rich_text.runs[].items` 里的代码、图片、题注和小表会按源顺序插入在前后文字 run 之间；不会被提前塞进当前段落，也不会被整体推迟到整段文字之后。
 - DOCX 富文本 run 单元格来源块级内容：`rich_text.runs[].table_cell_items` 里的代码、图片、题注和小表也会按源顺序插入在前后文字 run 之间；不会因为被挂在 table-cell 兼容结构下而静默丢失。
 - DOCX 表格富文本图片 run：`table_cell_items` 里的 `role="rich_text"` 如果直接携带 `runs[].type="image"`，图片会在生成的 Word 表格单元格内按表格图片尺寸渲染，并与文字、行内公式、脚注/尾注锚点保持同一单元格源顺序；`gridAfter` 省略区遇到这种富内容时会保留完整行，不会静默删掉图片。
@@ -196,6 +196,7 @@ build_generated.py ─────────→ 最终论文.docx
 - 中文编码防护：生成脚本 QA 还会阻断 `builtins.__import__("codecs")`、`importlib.import_module` / `builtins.__import__` 的赋值别名、`getattr(importlib, "import_module")` / `getattr(builtins, "__import__")`、`codecs.__dict__.get("decode")` / `vars(codecs).get("decode")` / 普通容器 `.get(...)` 取出的真实 `codecs.decode`、`operator.attrgetter("decode")(codecs)`、函数默认参数里的 `decoder=codecs.decode` / `module=codecs` / `factory=codecs.getdecoder` / `lookup=codecs.lookup`，以及 `from codecs import *` 后裸调用真实 `decode` / `getdecoder` / `lookup` 等路径，避免 UTF-8 中文 bytes 被 GBK 等错误编码二次解码；没有真实 `import builtins` 的本地安全 `builtins` 对象、星号导入后的同层安全覆盖、或 `import codecs` 后同层覆盖为安全自定义模块对象，不会误报；覆盖之前已经发生的真实 `codecs.decode` / `getdecoder` / `lookup` 调用仍会阻断。
 - 中文编码防护补充：生成脚本 QA 现在也会识别 helper 中 `decoder(value, **kwargs)` / `module.decode(value, **kwargs)` 这类高阶转发；当外层把真实 `codecs.decode` / `codecs` 模块和 `encoding="gbk"` 等错误编码一起传入时，会以 `GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE` 在执行前阻断，避免用户拿到看似通过但中文已经乱码的 DOCX。
 - 中文编码防护补充 2：生成脚本 QA 现在也会识别批量回调形式的 `map(codecs.decode, payloads, encodings)` 和 `itertools.starmap(codecs.decode, rows)`；这些写法没有直接的 `codecs.decode(...)` 调用节点，但仍会在执行前按 `GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE` 阻断，避免批量中文文本被错误编码静默二次解码。若用户脚本在调用前自定义了安全 `map`，QA 不会把它误判成内置 `map`。
+- 中文编码防护补充 3：生成脚本 QA 现在也会识别自定义批处理包装器中的固定索引编码参数，例如 `decoder(values[0], encodings[0])`。当外层传入真实 `codecs.decode` 和 `encodings = ["gbk"]` 这类错误编码容器时，会在执行前阻断；同形状的自定义安全 decoder 不会误报。
 - DOCX 行省略宽表审计：源审计现在会把 `w:gridAfter` 省略的行尾网格列计入 `max_table_columns` / `wide_table_count`，因此“1 个可见单元格 + 多个尾部省略列”的宽表会触发 `COMPLEX_TABLE_UNSUPPORTED` 复核提示，不会因为只数可见单元格而漏警告；生成端遇到省略区残留可见文本时会保留完整行并记录 text-guard manifest 计数，方便审计解释为什么没有恢复行省略。
 - DOCX 修订包装表格审计：源审计现在按 Word 最终视图穿透 `w:ins` / `w:moveTo`、内容控件和透明容器中的表格行/单元格，宽表和异常表格风险不会因为行被包装而漏掉 `COMPLEX_TABLE_UNSUPPORTED`。
 - DOCX 包装横向分节审计：源审计现在按 Word 最终视图穿透正文级 `w:sdt`、`w:customXml` / `w:smartTag` 和接受修订容器中的 `sectPr`，横向 section 内宽表会继续计入 `landscape_wide_table_risk_count`，不会因为 section break 被包装而漏掉人工复核提示。

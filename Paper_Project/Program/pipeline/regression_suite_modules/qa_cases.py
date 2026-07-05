@@ -442,6 +442,17 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "items = [(text.encode('utf-8'), 'gbk', 'ignore')]\n"
             "mojibake = list(itertools.starmap(codecs.decode, items))[0]\n"
         ),
+        "qa_generated_codecs_decode_custom_batch_index_wrong_charset": (
+            "import codecs\n"
+            "\n"
+            "def decode_first(decoder, values, encodings):\n"
+            "    return decoder(values[0], encodings[0], errors='ignore')\n"
+            "\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "payloads = [text.encode('utf-8')]\n"
+            "encodings = ['gbk']\n"
+            "mojibake = decode_first(codecs.decode, payloads, encodings)\n"
+        ),
         "qa_generated_returned_higher_order_wrapper_codecs_decode_wrong_charset": (
             "import codecs\n"
             "\n"
@@ -1096,6 +1107,43 @@ def qa_does_not_flag_shadowed_builtin_map_for_safe_decoder() -> None:
     assert_true(
         "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" not in codes,
         f"QA falsely treated a shadowed safe map() as the built-in map route: {report}",
+    )
+
+
+@case
+def qa_does_not_flag_custom_batch_index_safe_decoder() -> None:
+    text = "中文字符保持原样：编码测试。"
+    work = new_workdir("qa_custom_batch_index_safe_decoder")
+    doc = Document()
+    doc.add_paragraph("Synthetic Thesis")
+    doc.add_paragraph("1 Introduction")
+    doc.add_paragraph(text)
+    doc.save(work / "out.docx")
+    write_json(work / "content.json", base_content([text]))
+    write_json(work / "format.json", base_format())
+    write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {}})
+    write_json(work / "workflow_mode.json", {"mode": "user"})
+    (work / "build_generated.py").write_text(
+        "import codecs\n"
+        "\n"
+        "def decode_first(decoder, values, encodings):\n"
+        "    return decoder(values[0], encodings[0], errors='strict')\n"
+        "\n"
+        "def safe_decode(value, encoding, errors='strict'):\n"
+        "    return value.decode('utf-8')\n"
+        "\n"
+        "text = '中文字符保持原样：编码测试。'\n"
+        "payloads = [text.encode('utf-8')]\n"
+        "encodings = ['gbk']\n"
+        "roundtrip = decode_first(safe_decode, payloads, encodings)\n",
+        encoding="utf-8",
+    )
+
+    report = check_output(str(work), mode="user", output_docx_name="out.docx")
+    codes = [item["code"] for item in report["issues"]]
+    assert_true(
+        "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" not in codes,
+        f"QA falsely flagged a custom safe batch decoder as unsafe: {report}",
     )
 
 
