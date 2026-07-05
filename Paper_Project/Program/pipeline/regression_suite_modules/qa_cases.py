@@ -430,6 +430,39 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = importlib.import_module('codecs').decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
         ),
+        "qa_generated_builtins_dunder_import_codecs_decode_wrong_charset": (
+            "import builtins\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = builtins.__import__('codecs').decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_builtins_dunder_import_alias_codecs_decode_wrong_charset": (
+            "import builtins as bi\n"
+            "load_module = bi.__import__\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = load_module('codecs').decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_importlib_import_module_alias_codecs_decode_wrong_charset": (
+            "import importlib\n"
+            "load_module = importlib.import_module\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = load_module('codecs').decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_importlib_getattr_import_module_codecs_decode_wrong_charset": (
+            "import importlib\n"
+            "load_module = getattr(importlib, 'import_module')\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = load_module('codecs').decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_importlib_direct_getattr_import_module_codecs_decode_wrong_charset": (
+            "import importlib\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = getattr(importlib, 'import_module')('codecs').decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_builtins_direct_getattr_dunder_import_codecs_decode_wrong_charset": (
+            "import builtins\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = getattr(builtins, '__import__')('codecs').decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
         "qa_generated_codecs_dict_decode_wrong_charset": (
             "import codecs\n"
             "text = '中文字符保持原样：编码测试。'\n"
@@ -1205,6 +1238,17 @@ def qa_does_not_flag_codecs_module_routes_after_safe_shadowing() -> None:
             "codecs = SafeCodecs()\n"
             "text = '中文字符保持原样：编码测试。'\n"
             "roundtrip = codecs.decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_no_import_builtins_name_safe_importer": (
+            "class SafeModule:\n"
+            "    def decode(self, value, encoding, errors=None):\n"
+            "        return value.decode('utf-8') if isinstance(value, bytes) else value\n"
+            "class SafeBuiltins:\n"
+            "    def __import__(self, name):\n"
+            "        return SafeModule()\n"
+            "builtins = SafeBuiltins()\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "roundtrip = builtins.__import__('codecs').decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
         ),
     }
 

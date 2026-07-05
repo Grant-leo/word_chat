@@ -285,18 +285,51 @@ def _functools_import_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str]]:
     return module_aliases, partial_aliases
 
 
-def _importlib_import_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str]]:
+def _importlib_import_aliases(tree: ast.AST, constants: Dict[str, str]) -> Tuple[Set[str], Set[str]]:
     module_aliases = {"importlib"}
-    import_module_aliases: Set[str] = set()
+    builtins_module_aliases = {"__builtins__"}
+    import_module_aliases: Set[str] = {"__import__", "__builtins__.__import__", "importlib.import_module"}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name == "importlib":
-                    module_aliases.add(alias.asname or alias.name)
+                    imported_name = alias.asname or alias.name
+                    module_aliases.add(imported_name)
+                    import_module_aliases.add(f"{imported_name}.import_module")
+                elif alias.name == "builtins":
+                    imported_name = alias.asname or alias.name
+                    builtins_module_aliases.add(imported_name)
+                    import_module_aliases.add(f"{imported_name}.__import__")
         elif isinstance(node, ast.ImportFrom) and node.module == "importlib":
             for alias in node.names:
                 if alias.name == "import_module":
                     import_module_aliases.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "builtins":
+            for alias in node.names:
+                if alias.name == "__import__":
+                    import_module_aliases.add(alias.asname or alias.name)
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            value, targets = _assignment_value_targets(node)
+            if value is None:
+                continue
+            value_name = _call_name(value)
+            value_is_importer = (
+                value_name in import_module_aliases
+                or _attribute_on_module_alias(value, module_aliases, "import_module")
+                or _getattr_on_module_alias(value, module_aliases, "import_module", constants)
+                or _attribute_on_module_alias(value, builtins_module_aliases, "__import__")
+                or _getattr_on_module_alias(value, builtins_module_aliases, "__import__", constants)
+            )
+            if not value_is_importer:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id not in import_module_aliases:
+                    import_module_aliases.add(target.id)
+                    changed = True
+        if not changed:
+            break
     return module_aliases, import_module_aliases
 
 
@@ -357,6 +390,18 @@ def _getattr_on_module_alias(
     )
 
 
+def _getattr_full_attribute_name(node: ast.AST, constants: Dict[str, str]) -> str:
+    if not (
+        isinstance(node, ast.Call)
+        and _call_name(node.func) == "getattr"
+        and len(node.args) >= 2
+    ):
+        return ""
+    base = _call_name(node.args[0])
+    attr = _string_constant(node.args[1], constants)
+    return f"{base}.{attr}" if base and attr else ""
+
+
 def _importlib_codecs_module_call(
     node: ast.AST,
     importlib_module_aliases: Set[str],
@@ -369,6 +414,7 @@ def _importlib_codecs_module_call(
         and _string_constant(node.args[0], constants) == "codecs"
         and (
             _call_name(node.func) in import_module_aliases
+            or _getattr_full_attribute_name(node.func, constants) in import_module_aliases
             or _attribute_on_module_alias(node.func, importlib_module_aliases, "import_module")
         )
     )
@@ -4075,7 +4121,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
     constants = _constant_string_aliases(tree)
     module_aliases, decode_aliases, escape_decode_aliases, getdecoder_aliases, lookup_aliases = _codec_import_aliases(tree)
     functools_module_aliases, partial_aliases = _functools_import_aliases(tree)
-    importlib_module_aliases, import_module_aliases = _importlib_import_aliases(tree)
+    importlib_module_aliases, import_module_aliases = _importlib_import_aliases(tree, constants)
     operator_module_aliases, methodcaller_aliases, attrgetter_aliases = _operator_import_aliases(tree)
     class_aliases = _class_aliases(tree)
     factory_aliases = _class_factory_aliases(tree, class_aliases)
