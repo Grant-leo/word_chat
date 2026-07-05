@@ -127,6 +127,12 @@ def _codec_import_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str], Set[str], 
                     module_aliases.add(alias.asname or alias.name)
         elif isinstance(node, ast.ImportFrom) and node.module == "codecs":
             for alias in node.names:
+                if alias.name == "*":
+                    decode_aliases.add("decode")
+                    escape_decode_aliases.add("escape_decode")
+                    getdecoder_aliases.add("getdecoder")
+                    lookup_aliases.add("lookup")
+                    continue
                 imported_name = alias.asname or alias.name
                 if alias.name == "decode":
                     decode_aliases.add(imported_name)
