@@ -402,6 +402,15 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = decode_text(text.encode('utf-8'), 'gbk', errors='ignore')\n"
         ),
+        "qa_generated_codecs_decode_wrapper_kwargs_wrong_charset": (
+            "import codecs\n"
+            "\n"
+            "def decode_text(value, **kwargs):\n"
+            "    return codecs.decode(value, **kwargs)\n"
+            "\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = decode_text(text.encode('utf-8'), encoding='gbk', errors='ignore')\n"
+        ),
         "qa_generated_codecs_decode_higher_order_wrong_charset": (
             "import codecs\n"
             "\n"
@@ -409,6 +418,15 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "    return decoder(value, encoding, errors='ignore')\n"
             "\n"
             "text = apply_decoder(codecs.decode, '中文字符保持原样：编码测试。'.encode('utf-8'), 'gbk')\n"
+        ),
+        "qa_generated_codecs_decode_higher_order_kwargs_wrong_charset": (
+            "import codecs\n"
+            "\n"
+            "def apply_decoder(decoder, value, **kwargs):\n"
+            "    return decoder(value, **kwargs)\n"
+            "\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = apply_decoder(codecs.decode, text.encode('utf-8'), encoding='gbk', errors='ignore')\n"
         ),
         "qa_generated_returned_higher_order_wrapper_codecs_decode_wrong_charset": (
             "import codecs\n"

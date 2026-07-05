@@ -3523,12 +3523,38 @@ def _function_signature(node: ast.FunctionDef, constants: Dict[str, str]) -> Dic
         "params": set(positional + kwonly),
         "defaults": defaults,
         "default_nodes": default_nodes,
+        "var_kwarg": node.args.kwarg.arg if node.args.kwarg is not None else "",
     }
 
 
 def _codec_arg_param_name(codec_node: Optional[ast.AST], params: Set[str]) -> Optional[str]:
     if isinstance(codec_node, ast.Name) and codec_node.id in params:
         return codec_node.id
+    return None
+
+
+def _call_forwards_var_kwargs(node: ast.Call, var_kwarg: object) -> bool:
+    if not isinstance(var_kwarg, str) or not var_kwarg:
+        return False
+    return any(
+        keyword.arg is None
+        and isinstance(keyword.value, ast.Name)
+        and keyword.value.id == var_kwarg
+        for keyword in node.keywords
+    )
+
+
+def _codec_arg_param_name_or_forwarded_kwargs(
+    codec_node: Optional[ast.AST],
+    params: Set[str],
+    call_node: ast.Call,
+    var_kwarg: object,
+) -> Optional[str]:
+    param = _codec_arg_param_name(codec_node, params)
+    if param:
+        return param
+    if _call_forwards_var_kwargs(call_node, var_kwarg):
+        return "encoding"
     return None
 
 
@@ -3748,6 +3774,7 @@ def _higher_order_decode_wrapper_info(func: ast.FunctionDef, constants: Dict[str
     params = signature["params"]
     if not isinstance(params, set):
         return None
+    var_kwarg = signature.get("var_kwarg", "")
     decode_arg_pairs: Set[Tuple[str, str]] = set()
     decoder_factory_arg_pairs: Set[Tuple[str, str]] = set()
     lookup_factory_arg_pairs: Set[Tuple[str, str]] = set()
@@ -3764,20 +3791,35 @@ def _higher_order_decode_wrapper_info(func: ast.FunctionDef, constants: Dict[str
             decoder_param = node.func.id
             module_param = local_module_decode_aliases.get(decoder_param, "")
             if module_param:
-                codec_param = _codec_arg_param_name(_codecs_decode_encoding_node(node), params)
+                codec_param = _codec_arg_param_name_or_forwarded_kwargs(
+                    _codecs_decode_encoding_node(node),
+                    params,
+                    node,
+                    var_kwarg,
+                )
                 if codec_param:
                     module_decode_arg_pairs.add((module_param, codec_param))
                 continue
             if decoder_param not in params:
                 continue
-            codec_param = _codec_arg_param_name(_codecs_decode_encoding_node(node), params)
+            codec_param = _codec_arg_param_name_or_forwarded_kwargs(
+                _codecs_decode_encoding_node(node),
+                params,
+                node,
+                var_kwarg,
+            )
             if codec_param:
                 decode_arg_pairs.add((decoder_param, codec_param))
             continue
         if isinstance(node.func, ast.Call):
             module_param = _getattr_param_name(node.func, params, "decode", constants)
             if module_param:
-                codec_param = _codec_arg_param_name(_codecs_decode_encoding_node(node), params)
+                codec_param = _codec_arg_param_name_or_forwarded_kwargs(
+                    _codecs_decode_encoding_node(node),
+                    params,
+                    node,
+                    var_kwarg,
+                )
                 if codec_param:
                     module_decode_arg_pairs.add((module_param, codec_param))
                 continue
@@ -3823,7 +3865,12 @@ def _higher_order_decode_wrapper_info(func: ast.FunctionDef, constants: Dict[str
             module_param = node.func.value.id
             if module_param not in params:
                 continue
-            codec_param = _codec_arg_param_name(_codecs_decode_encoding_node(node), params)
+            codec_param = _codec_arg_param_name_or_forwarded_kwargs(
+                _codecs_decode_encoding_node(node),
+                params,
+                node,
+                var_kwarg,
+            )
             if codec_param:
                 module_decode_arg_pairs.add((module_param, codec_param))
             continue
