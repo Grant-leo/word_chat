@@ -804,7 +804,32 @@ def _assignment_value_targets(node: ast.AST) -> Tuple[Optional[ast.AST], List[as
     return None, []
 
 
-def _class_attribute_assignment_items(node: ast.ClassDef) -> List[Tuple[str, ast.AST]]:
+def _setattr_assignment_items(node: ast.AST, constants: Dict[str, str]) -> List[Tuple[ast.AST, str, ast.AST]]:
+    call = node.value if isinstance(node, ast.Expr) else node
+    if (
+        not isinstance(call, ast.Call)
+        or _call_name(call.func) not in {"setattr", "builtins.setattr"}
+        or len(call.args) < 3
+    ):
+        return []
+    attr = _string_constant(call.args[1], constants)
+    if not attr:
+        return []
+    return [(call.args[0], attr, call.args[2])]
+
+
+def _attribute_names_for_object(node: ast.AST, attr: str, object_aliases: Dict[str, str]) -> Set[str]:
+    name = _call_name(node)
+    if not name:
+        return set()
+    names = {f"{name}.{attr}"}
+    source = object_aliases.get(name, name)
+    if source:
+        names.add(f"{source}.{attr}")
+    return names
+
+
+def _class_attribute_assignment_items(node: ast.ClassDef, constants: Dict[str, str]) -> List[Tuple[str, ast.AST]]:
     items: List[Tuple[str, ast.AST]] = []
     for child in node.body:
         if isinstance(child, ast.FunctionDef) and child.name == "__init__":
@@ -814,6 +839,9 @@ def _class_attribute_assignment_items(node: ast.ClassDef) -> List[Tuple[str, ast
             if not self_names:
                 continue
             for stmt in ast.walk(child):
+                for obj, attr, item in _setattr_assignment_items(stmt, constants):
+                    if isinstance(obj, ast.Name) and obj.id in self_names:
+                        items.append((attr, item))
                 value, targets = _assignment_value_targets(stmt)
                 if value is None:
                     continue
@@ -1007,7 +1035,7 @@ def _decoder_factory_attribute_aliases(
         changed = False
         for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef):
-                for attr, item in _class_attribute_assignment_items(node):
+                for attr, item in _class_attribute_assignment_items(node, constants):
                     kind, encoding = _decoder_factory_value_alias(
                         item,
                         module_aliases,
@@ -1029,6 +1057,28 @@ def _decoder_factory_attribute_aliases(
                         lookup_attributes[attr_name] = encoding
                         changed = True
                 continue
+
+            for obj, attr, item in _setattr_assignment_items(node, constants):
+                kind, encoding = _decoder_factory_value_alias(
+                    item,
+                    module_aliases,
+                    getdecoder_aliases,
+                    lookup_aliases,
+                    constants,
+                    decoder_results,
+                    lookup_results,
+                    decoder_containers,
+                    lookup_containers,
+                    decoder_attributes,
+                    lookup_attributes,
+                )
+                for attr_name in _attribute_names_for_object(obj, attr, object_aliases):
+                    if kind == "getdecoder" and decoder_attributes.get(attr_name) != encoding:
+                        decoder_attributes[attr_name] = encoding
+                        changed = True
+                    elif kind == "lookup" and lookup_attributes.get(attr_name) != encoding:
+                        lookup_attributes[attr_name] = encoding
+                        changed = True
 
             value, targets = _assignment_value_targets(node)
             if value is None:
@@ -1613,7 +1663,7 @@ def _codec_literal_container_aliases(
         changed = False
         for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef):
-                for attr, value in _class_attribute_assignment_items(node):
+                for attr, value in _class_attribute_assignment_items(node, constants):
                     changed = set_container(module_containers, f"{node.name}.{attr}", module_items_for(value)) or changed
                     changed = set_container(decode_containers, f"{node.name}.{attr}", decode_items_for(value)) or changed
                 for child in node.body:
@@ -1634,6 +1684,13 @@ def _codec_literal_container_aliases(
                     changed = set_container(module_containers, node.name, module_items_for(value)) or changed
                     changed = set_container(decode_containers, node.name, decode_items_for(value)) or changed
                 continue
+
+            for obj, attr, item in _setattr_assignment_items(node, constants):
+                module_items = module_items_for(item)
+                decode_items = decode_items_for(item)
+                for attr_name in _attribute_names_for_object(obj, attr, object_aliases):
+                    changed = set_container(module_containers, attr_name, module_items) or changed
+                    changed = set_container(decode_containers, attr_name, decode_items) or changed
 
             value, targets = _assignment_value_targets(node)
             if value is None:
@@ -1814,11 +1871,16 @@ def _codecs_decode_attribute_aliases(
         changed = False
         for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef):
-                for attr, value in _class_attribute_assignment_items(node):
+                for attr, value in _class_attribute_assignment_items(node, constants):
                     if not value_is_decode(value):
                         continue
                     changed = add_attribute(f"{node.name}.{attr}") or changed
                 continue
+
+            for obj, attr, value in _setattr_assignment_items(node, constants):
+                if value_is_decode(value):
+                    for attr_name in _attribute_names_for_object(obj, attr, object_aliases):
+                        changed = add_attribute(attr_name) or changed
 
             value, targets = _assignment_value_targets(node)
             if value is None:
@@ -2179,10 +2241,15 @@ def _codec_module_attribute_aliases(
         changed = False
         for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef):
-                for attr, value in _class_attribute_assignment_items(node):
+                for attr, value in _class_attribute_assignment_items(node, constants):
                     if value_is_module(value):
                         changed = add_attribute(f"{node.name}.{attr}") or changed
                 continue
+
+            for obj, attr, value in _setattr_assignment_items(node, constants):
+                if value_is_module(value):
+                    for attr_name in _attribute_names_for_object(obj, attr, object_aliases):
+                        changed = add_attribute(attr_name) or changed
 
             value, targets = _assignment_value_targets(node)
             if value is None:

@@ -714,6 +714,15 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = box.decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
         ),
+        "qa_generated_setattr_object_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "class Box:\n"
+            "    pass\n"
+            "box = Box()\n"
+            "setattr(box, 'decode', codecs.decode)\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = box.decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
         "qa_generated_object_alias_attribute_codecs_decode_wrong_charset": (
             "import codecs\n"
             "class Box:\n"
@@ -754,6 +763,15 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "class Holder:\n"
             "    def __init__(self):\n"
             "        self.decode = codecs.decode\n"
+            "holder = Holder()\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = holder.decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_setattr_instance_attribute_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "class Holder:\n"
+            "    def __init__(self):\n"
+            "        setattr(self, 'decode', codecs.decode)\n"
             "holder = Holder()\n"
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = holder.decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
