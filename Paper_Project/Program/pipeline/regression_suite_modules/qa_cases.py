@@ -1084,6 +1084,65 @@ def qa_flags_generated_script_star_import_codecs_decode_routes() -> None:
 
 
 @case
+def qa_does_not_flag_star_import_codecs_routes_after_safe_shadowing() -> None:
+    text = "中文字符保持原样：编码测试。"
+    scripts = {
+        "qa_star_import_function_shadow_safe_decoder": (
+            "from codecs import *\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "def decode(value, encoding, errors=None):\n"
+            "    return value.decode('utf-8') if isinstance(value, bytes) else value\n"
+            "roundtrip = decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_star_import_assignment_shadow_safe_decoder": (
+            "from codecs import *\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "def safe_decode(value, encoding, errors=None):\n"
+            "    return value.decode('utf-8') if isinstance(value, bytes) else value\n"
+            "decode = safe_decode\n"
+            "roundtrip = decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_star_import_factory_shadow_safe_decoder": (
+            "from codecs import *\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "def getdecoder(encoding):\n"
+            "    return lambda value, errors=None: (value.decode('utf-8'), len(value))\n"
+            "roundtrip = getdecoder('gbk')(text.encode('utf-8'), errors='ignore')[0]\n"
+        ),
+        "qa_star_import_lookup_shadow_safe_decoder": (
+            "from codecs import *\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "class SafeCodec:\n"
+            "    def decode(self, value, errors=None):\n"
+            "        return (value.decode('utf-8'), len(value))\n"
+            "def lookup(encoding):\n"
+            "    return SafeCodec()\n"
+            "roundtrip = lookup('gbk').decode(text.encode('utf-8'), errors='ignore')[0]\n"
+        ),
+    }
+
+    for name, script in scripts.items():
+        work = new_workdir(name)
+        doc = Document()
+        doc.add_paragraph("Synthetic Thesis")
+        doc.add_paragraph("1 Introduction")
+        doc.add_paragraph(text)
+        doc.save(work / "out.docx")
+        write_json(work / "content.json", base_content([text]))
+        write_json(work / "format.json", base_format())
+        write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {}})
+        write_json(work / "workflow_mode.json", {"mode": "user"})
+        (work / "build_generated.py").write_text(script, encoding="utf-8")
+
+        report = check_output(str(work), mode="user", output_docx_name="out.docx")
+        codes = [item["code"] for item in report["issues"]]
+        assert_true(
+            "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" not in codes,
+            f"QA falsely treated a star-import shadowed safe decoder as real codecs route {name}: {report}",
+        )
+
+
+@case
 def qa_flags_generated_script_getattr_codecs_decode_text_reencoding() -> None:
     text = "中文字符保持原样：编码测试。"
     scripts = {

@@ -114,6 +114,68 @@ def _has_keyword_unpack(node: ast.Call) -> bool:
     return any(keyword.arg is None for keyword in node.keywords or [])
 
 
+def _codec_import_bound_names(stmt: ast.stmt) -> Set[str]:
+    if not isinstance(stmt, ast.ImportFrom) or stmt.module != "codecs":
+        return set()
+    names: Set[str] = set()
+    for alias in stmt.names:
+        if alias.name == "*":
+            names.update({"decode", "escape_decode", "getdecoder", "lookup"})
+        elif alias.name in {"decode", "escape_decode", "getdecoder", "lookup"}:
+            names.add(alias.asname or alias.name)
+    return names
+
+
+def _target_names(node: ast.AST) -> Set[str]:
+    if isinstance(node, ast.Name):
+        return {node.id}
+    if isinstance(node, (ast.Tuple, ast.List)):
+        names: Set[str] = set()
+        for item in node.elts:
+            names.update(_target_names(item))
+        return names
+    return set()
+
+
+def _statement_bound_names(stmt: ast.stmt) -> Set[str]:
+    if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return {stmt.name}
+    if isinstance(stmt, ast.Assign):
+        names: Set[str] = set()
+        for target in stmt.targets:
+            names.update(_target_names(target))
+        return names
+    if isinstance(stmt, ast.AnnAssign):
+        return _target_names(stmt.target)
+    if isinstance(stmt, ast.AugAssign):
+        return _target_names(stmt.target)
+    if isinstance(stmt, ast.Import):
+        return {alias.asname or alias.name.split(".")[0] for alias in stmt.names}
+    if isinstance(stmt, ast.ImportFrom):
+        return {alias.asname or alias.name for alias in stmt.names if alias.name != "*"}
+    return set()
+
+
+def _top_level_shadowed_codec_import_aliases(tree: ast.AST) -> Set[str]:
+    if not isinstance(tree, ast.Module):
+        return set()
+    states: Dict[str, str] = {}
+    for stmt in tree.body:
+        codec_imports = _codec_import_bound_names(stmt)
+        if codec_imports:
+            for name in codec_imports:
+                states[name] = "imported"
+            continue
+        self_assignment = isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Name)
+        for name in _statement_bound_names(stmt):
+            if states.get(name) != "imported":
+                continue
+            if self_assignment and stmt.value.id == name:
+                continue
+            states[name] = "shadowed"
+    return {name for name, state in states.items() if state == "shadowed"}
+
+
 def _codec_import_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str], Set[str], Set[str], Set[str]]:
     module_aliases = {"codecs"}
     decode_aliases: Set[str] = set()
@@ -142,6 +204,11 @@ def _codec_import_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str], Set[str], 
                     getdecoder_aliases.add(imported_name)
                 elif alias.name == "lookup":
                     lookup_aliases.add(imported_name)
+    for shadowed_name in _top_level_shadowed_codec_import_aliases(tree):
+        decode_aliases.discard(shadowed_name)
+        escape_decode_aliases.discard(shadowed_name)
+        getdecoder_aliases.discard(shadowed_name)
+        lookup_aliases.discard(shadowed_name)
     return module_aliases, decode_aliases, escape_decode_aliases, getdecoder_aliases, lookup_aliases
 
 
