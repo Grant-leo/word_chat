@@ -2378,6 +2378,65 @@ def _param_getattr_call_has_codecs_module(
     )
 
 
+def _add_bound_codecs_module_method_aliases(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    decode_aliases: Set[str],
+    getdecoder_aliases: Set[str],
+    lookup_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    module_containers: Dict[str, Dict[ContainerAliasKey, str]],
+    module_attributes: Set[str],
+    module_functions: Set[str],
+    class_aliases: Dict[str, str],
+    factory_aliases: Dict[str, str],
+) -> None:
+    alias_sets = {
+        "decode": decode_aliases,
+        "getdecoder": getdecoder_aliases,
+        "lookup": lookup_aliases,
+    }
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            value, targets = _assignment_value_targets(node)
+            if value is None:
+                continue
+            attr = ""
+            if isinstance(value, ast.Attribute) and value.attr in alias_sets:
+                if _is_codecs_module_ref_or_result(
+                    value.value,
+                    module_aliases,
+                    constants,
+                    importlib_module_aliases,
+                    import_module_aliases,
+                    module_dict_aliases,
+                    module_containers,
+                    module_attributes,
+                    module_functions,
+                    class_aliases,
+                    factory_aliases,
+                ):
+                    attr = value.attr
+            elif isinstance(value, ast.Name):
+                for candidate, aliases in alias_sets.items():
+                    if value.id in aliases:
+                        attr = candidate
+                        break
+            if not attr:
+                continue
+            aliases = alias_sets[attr]
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id not in aliases:
+                    aliases.add(target.id)
+                    changed = True
+        if not changed:
+            break
+
+
 def _codecs_decode_function_results(
     tree: ast.AST,
     module_aliases: Set[str],
@@ -3359,6 +3418,22 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         import_module_aliases,
         module_dict_aliases,
         codec_module_containers,
+    )
+    _add_bound_codecs_module_method_aliases(
+        tree,
+        module_aliases,
+        decode_aliases,
+        getdecoder_aliases,
+        lookup_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        codec_module_containers,
+        codec_module_attributes,
+        codec_module_functions,
+        class_aliases,
+        factory_aliases,
     )
     param_getattr_decode_functions = _param_getattr_return_functions(tree, "decode", constants)
     param_getattr_getdecoder_functions = _param_getattr_return_functions(tree, "getdecoder", constants)
