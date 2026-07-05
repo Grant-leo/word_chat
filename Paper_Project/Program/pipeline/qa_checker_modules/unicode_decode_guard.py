@@ -392,11 +392,17 @@ def _literal_dict_subscript(
     aliases: Dict[str, Set[str]],
     constants: Dict[str, str],
 ) -> bool:
-    return (
-        isinstance(node, ast.Subscript)
-        and isinstance(node.value, ast.Name)
-        and _string_constant(node.slice, constants) in aliases.get(node.value.id, set())
-    )
+    if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
+        return _string_constant(node.slice, constants) in aliases.get(node.value.id, set())
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "get"
+        and isinstance(node.func.value, ast.Name)
+        and node.args
+    ):
+        return _string_constant(node.args[0], constants) in aliases.get(node.func.value.id, set())
+    return False
 
 
 def _static_codecs_module_ref(
@@ -484,9 +490,20 @@ def _module_dict_decode_subscript(
     import_module_aliases: Set[str],
     module_dict_aliases: Dict[str, Set[str]],
 ) -> bool:
-    if not isinstance(node, ast.Subscript) or _string_constant(node.slice, constants) != "decode":
+    if isinstance(node, ast.Subscript):
+        if _string_constant(node.slice, constants) != "decode":
+            return False
+        value = node.value
+    elif (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "get"
+        and node.args
+        and _string_constant(node.args[0], constants) == "decode"
+    ):
+        value = node.func.value
+    else:
         return False
-    value = node.value
     if isinstance(value, ast.Attribute) and value.attr == "__dict__":
         return _static_codecs_module_ref(
             value.value,
@@ -2002,16 +2019,31 @@ def _container_subscript_path(
     node: ast.AST,
     constants: Dict[str, str],
 ) -> Optional[Tuple[str, Tuple[Tuple[str, str], ...]]]:
-    if not isinstance(node, ast.Subscript):
-        return None
     keys: List[Tuple[str, str]] = []
     current = node
-    while isinstance(current, ast.Subscript):
-        key = _container_key_from_literal(current.slice, constants)
-        if key is None:
-            return None
-        keys.append(key)
-        current = current.value
+    while True:
+        if isinstance(current, ast.Subscript):
+            key = _container_key_from_literal(current.slice, constants)
+            if key is None:
+                return None
+            keys.append(key)
+            current = current.value
+            continue
+        if (
+            isinstance(current, ast.Call)
+            and isinstance(current.func, ast.Attribute)
+            and current.func.attr == "get"
+            and current.args
+        ):
+            key = _container_key_from_literal(current.args[0], constants)
+            if key is None:
+                return None
+            keys.append(key)
+            current = current.func.value
+            continue
+        break
+    if not keys:
+        return None
     keys.reverse()
     if isinstance(current, ast.Name):
         container_name = current.id

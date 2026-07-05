@@ -440,6 +440,28 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = vars(codecs)['decode'](text.encode('utf-8'), 'gbk', errors='ignore')\n"
         ),
+        "qa_generated_codecs_dict_get_decode_wrong_charset": (
+            "import codecs\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = codecs.__dict__.get('decode')(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_vars_codecs_get_decode_wrong_charset": (
+            "import codecs\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = vars(codecs).get('decode')(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_codecs_dict_get_decode_alias_wrong_charset": (
+            "import codecs\n"
+            "decode_text = codecs.__dict__.get('decode')\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = decode_text(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_vars_codecs_get_decode_alias_wrong_charset": (
+            "import codecs\n"
+            "decode_text = vars(codecs).get('decode')\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = decode_text(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
         "qa_generated_globals_codecs_decode_wrong_charset": (
             "import codecs\n"
             "text = '中文字符保持原样：编码测试。'\n"
@@ -451,11 +473,23 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = funcs['decode'](text.encode('utf-8'), 'gbk', errors='ignore')\n"
         ),
+        "qa_generated_literal_dict_get_decode_wrong_charset": (
+            "import codecs\n"
+            "funcs = {'decode': codecs.decode}\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = funcs.get('decode')(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
         "qa_generated_literal_dict_module_decode_wrong_charset": (
             "import codecs\n"
             "modules = {'text_codecs': codecs}\n"
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = modules['text_codecs'].decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_literal_dict_get_module_decode_wrong_charset": (
+            "import codecs\n"
+            "modules = {'text_codecs': codecs}\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = modules.get('text_codecs').decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
         ),
         "qa_generated_literal_dict_decode_alias_wrong_charset": (
             "import codecs\n"
