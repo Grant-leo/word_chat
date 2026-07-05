@@ -1248,6 +1248,34 @@ def visual_sample_pages_prioritize_late_risk_content_pages() -> None:
 
 
 @case
+def visual_sample_pages_prioritize_formula_before_table_continuation_when_bounded() -> None:
+    import qa_visual
+
+    pages = [
+        "cover",
+        "contents",
+        "preface",
+        "1. Introduction",
+        "background prose",
+        "method prose",
+        "middle prose",
+        "body prose",
+        "图 2 模型结构",
+        "Table 3 Ablation Results",
+        "Table 3 continued row 30 row 31 row 32",
+        "公式 (3.1) E = mc^2",
+        "discussion",
+        "references",
+    ]
+    samples = qa_visual._sample_pages(14, pages)
+    assert_true(len(samples) <= 6, f"sample page selection should stay bounded: {samples}")
+    assert_true(
+        9 in samples and 10 in samples and 12 in samples,
+        f"sample page selection should keep figure/table/formula risk pages before auxiliary continuation pages: {samples}",
+    )
+
+
+@case
 def visual_sample_pages_include_table_continuation_page() -> None:
     import qa_visual
 

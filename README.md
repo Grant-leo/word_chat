@@ -159,7 +159,7 @@ build_generated.py ─────────→ 最终论文.docx
 - “图 1 展示了……”这类正文引用句会保持正文样式；“图 1 xxx 示意图”这类真实图注才按图注排版。
 - 缺图、损坏/不支持的本地 Markdown 图片、远程 Markdown 图片 URL、DOCX 图片关系读取失败、公式丢失、表格数量不匹配、占位符残留会进入 QA 报告；本地坏图、GIF/WebP/SVG 等不支持格式、扩展名不匹配或 data URI MIME/真实格式不一致会点名 `CONTENT_IMAGE_UNREADABLE` 并提示重新导出 PNG/JPG，DOCX 坏图片关系会点名 `IMAGE_EXTRACT_FAILED` 并提示重新导出/插入普通 PNG/JPG，远程图片会点名 `CONTENT_IMAGE_REMOTE_UNSUPPORTED`，不会误导用户等待自动下载。
 - PDF 模板需要 Poppler 的 `pdfinfo`、`pdftotext`；如果工具缺失，会在生成脚本前进入 `PDF_TEMPLATE_DEPENDENCY_MISSING` 并提示修复 Poppler 后重跑；如果 PDF 需要打开密码或禁止复制/提取文字，会进入 `PDF_TEMPLATE_PROTECTED`，提示解除密码/权限或重新导出无密码、可复制文字的 PDF；如果 Poppler 已运行但 PDF 损坏/不可读取，会进入 `PDF_TEMPLATE_READ_FAILED`，提示重新导出可正常打开、可复制文字的 PDF 或改用 DOCX；扫描件或不可复制文字会进入 `PDF_TEMPLATE_UNSUPPORTED`，提示用户提供 DOCX、文字说明 PDF 或 OCR 后重跑；文字说明 PDF 如果缺少标题、图表题注、参考文献等关键规则，会以 `PDF_TEMPLATE_INSTRUCTION_INCOMPLETE` warning 告诉用户补哪些规则或做重点人工核对；视觉样张 PDF 会以 `PDF_TEMPLATE_VISUAL_APPROXIMATION` warning 提醒用户用 Word/WPS 核对估算版式；横向 PDF 模板会以 `PDF_TEMPLATE_LANDSCAPE_PAGE` warning 提醒用户核对最终 DOCX 的页面方向、页边距和正文/表格压缩情况。
-- `--qa-level visual` 会尝试用 Word/WPS 导出 PDF，并做页数、纸张、文本和抽样 PNG 检查；抽样页会优先覆盖封面、目录/正文起点，以及能识别到的图片、表格、公式风险页。
+- `--qa-level visual` 会尝试用 Word/WPS 导出 PDF，并做页数、纸张、文本和抽样 PNG 检查；抽样页会优先覆盖封面、目录/正文起点，以及能识别到的图片、表格、公式风险页；长表续页会在这些主风险页之后用剩余额度补充。
 
 基础依赖：Python 3.10+、`python-docx`、`Pillow`、`lxml`。PDF 模板解析需要 Poppler 的 `pdfinfo`、`pdftotext`；自动目录页码可选依赖 `pywin32`；视觉 QA 还需要 Word/WPS COM 和 Poppler 工具 `pdfinfo`、`pdftotext`、`pdftoppm`。
 
@@ -212,7 +212,7 @@ build_generated.py ─────────→ 最终论文.docx
 - DOCX 横向表格富文本媒体/块级源序保护：当同一个 `rich_text.items` 桥接段里同时携带代码、图片、行内公式、题注、小表等内容时，引擎会按源顺序渲染这些媒体和块级子项，显式 `type=inline` 公式保持行内 OMML 形态，再为后续宽表单独建立横向 section，避免图片/公式收集器、display 公式误提升或按类型批量输出造成内容错位。
 - DOCX 横向表格列表桥接保护：相邻横向宽表之间如果出现 `-` / 编号 / `[1]` / `（1）` / `一、` / `①` 等列表式正文，引擎会结束前一个横向 section，把列表段落放回纵向正文流，再为后续宽表单独建立横向 section，避免正文清单或参考文献式编号被误当成表格短注释。
 - DOCX 长宽表跨页表头：自动横向保护的长宽表会默认给第一行写入 Word `tblHeader`，跨页时表头可重复；短小表格和显式 `table_repeat_header_rows=0` 不会被误加重复表头。
-- visual QA 长表样张覆盖：图表清单、目录和点线页码清单不会被误当成真实图表风险页；长表风险页会额外抽取后一页，便于在 `visual_qa/samples/` 中核对跨页表头和延续页。PDF 模板解析和 visual QA 的 Poppler 工具查找都会跳过 PATH 中损坏或无法执行的 `pdfinfo` / `pdftotext` / `pdftoppm` shim，继续尝试后续可用候选。
+- visual QA 长表样张覆盖：图表清单、目录和点线页码清单不会被误当成真实图表风险页；长表风险页会在图/表/公式主风险页之后用剩余额度额外抽取后一页，便于在 `visual_qa/samples/` 中核对跨页表头和延续页，同时避免表格续页挤掉公式风险页。PDF 模板解析和 visual QA 的 Poppler 工具查找都会跳过 PATH 中损坏或无法执行的 `pdfinfo` / `pdftotext` / `pdftoppm` shim，继续尝试后续可用候选。
 - 模板说明清理：DOCX 模板里的“格式说明”、封面字段说明、源目录样例和 TOC 页码样例不会再进入最终论文；本地脱敏真实样例已通过 developer visual 端到端验证，结构 QA、strict conformance、visual QA 均为 `0` error / `0` warning。
 - 后置章节等价：结构 QA 现在把 `Acknowledgements` / `Acknowledgment` / `致谢`、`References` / `参考文献`、`Appendix` / `附录` 这类语义等价标题视为已覆盖，避免让用户为中英文模板标题差异处理误报的 `CONTENT_HEADING_MISSING`。
 - QA JSON 契约：结构 `qa_report.json`、strict `conformance_report.json`、visual `visual_report.json` 都显式写入 `status`（`passed` / `passed_with_warnings` / `failed`）和 `result_label`（例如 `通过但有警告`）；依赖缺失、QA 崩溃、构建失败、提取验证失败等 fallback 报告也必须写同样字段。流水线会对结构、strict、visual 三类 QA 报告都运行契约检查，包括依赖缺失和 QA 崩溃 fallback 报告，并在终端报告缺失字段或与 `passed` / warning 状态不一致的字段，`agent_summary.json` 的每个报告条目也同步暴露该状态，避免界面或 Agent 只靠 `passed` 猜测。

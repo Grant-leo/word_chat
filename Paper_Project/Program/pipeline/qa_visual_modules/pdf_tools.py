@@ -160,6 +160,7 @@ def _sample_pages(page_count: int, pages_text: List[str]) -> List[int]:
         [r"表\s*\d+", r"\btable\s*\d+", r"三线表"],
         [r"公式", r"方程", r"\bequation\b", r"\beq\.?\s*\(?\d+"],
     ]
+    table_continuation_candidates: List[int] = []
     for risk_index, patterns in enumerate(risk_page_patterns):
         for page in _find_pages(pages_text, patterns):
             if page - 1 < len(pages_text) and _is_front_matter_list_page(pages_text[page - 1]):
@@ -167,8 +168,10 @@ def _sample_pages(page_count: int, pages_text: List[str]) -> List[int]:
             if page not in samples:
                 _add_sample(samples, page, page_count)
                 if risk_index == 1:
-                    _add_sample(samples, page + 1, page_count)
+                    table_continuation_candidates.append(page + 1)
                 break
+    for page in table_continuation_candidates:
+        _add_sample(samples, page, page_count)
 
     for page in (
         3 if page_count >= 3 else None,
