@@ -1010,6 +1010,57 @@ def script_generator_does_not_repeat_tall_first_row_for_auto_landscape_tables() 
 
 
 @case
+def script_generator_does_not_repeat_media_first_row_for_auto_landscape_tables() -> None:
+    img_src = new_workdir("auto_landscape_media_first_row_src")
+    write_sample_png(img_src / "first_row_image.png", width=160, height=96)
+    rows = [[f"Visual first row {idx}" for idx in range(1, 10)]]
+    rows.extend([[f"Measurement row {row}-{col}" for col in range(1, 10)] for row in range(1, 34)])
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Long auto landscape table with visual first row"},
+            {
+                "role": "table",
+                "table_rows": rows,
+                "table_col_widths_twips": [1200] * 9,
+                "table_cell_items": [
+                    {
+                        "row": 0,
+                        "col": 0,
+                        "items": [
+                            {
+                                "role": "image",
+                                "image": "first_row_image.png",
+                                "location": "table_cell",
+                                "after_paragraph_index": 0,
+                            }
+                        ],
+                    }
+                ],
+            },
+            "Portrait body after media-first-row landscape table.",
+        ],
+        meta_tables=1,
+    )
+    fmt = base_format()
+    content["_meta"]["images_dir"] = str(img_src)
+    result = run_generated_case("auto_landscape_media_first_row_no_header", content, fmt)
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 1,
+        "media-first-row overwide table should still be auto-landscaped",
+    )
+    assert_true("<w:drawing>" in result["xml"], "first-row media should render inside the table")
+    assert_true(
+        "<w:tblHeader" not in result["xml"],
+        "media-bearing first rows should not be repeated as default table headers",
+    )
+    counts = result["manifest"]["counts"]
+    assert_true(
+        counts.get("content_table_repeat_header_rows_rendered", 0) == 0,
+        f"media first rows should not increment default repeat-header count: {counts}",
+    )
+
+
+@case
 def script_generator_does_not_default_repeat_header_for_short_tables() -> None:
     content = base_content(
         [

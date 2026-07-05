@@ -2682,7 +2682,7 @@ def _param_getattr_call_has_codecs_module(
     module_param = function_info.get("module_param")
     if not isinstance(module_param, str):
         return False
-    module_node = _wrapper_call_arg_node(node, function_info, module_param)
+    module_node = _wrapper_call_arg_or_default_node(node, function_info, module_param)
     return _is_codecs_module_ref_or_result(
         module_node,
         module_aliases,
@@ -3212,15 +3212,18 @@ def _function_signature(node: ast.FunctionDef, constants: Dict[str, str]) -> Dic
     positional = [arg.arg for arg in [*node.args.posonlyargs, *node.args.args]]
     kwonly = [arg.arg for arg in node.args.kwonlyargs]
     defaults: Dict[str, str] = {}
+    default_nodes: Dict[str, ast.AST] = {}
     if node.args.defaults:
         default_names = positional[-len(node.args.defaults):]
         for name, default in zip(default_names, node.args.defaults):
+            default_nodes[name] = default
             value = _static_string_value(default, constants)
             if value is not None:
                 defaults[name] = value
     for name, default in zip(kwonly, node.args.kw_defaults):
         if default is None:
             continue
+        default_nodes[name] = default
         value = _static_string_value(default, constants)
         if value is not None:
             defaults[name] = value
@@ -3228,6 +3231,7 @@ def _function_signature(node: ast.FunctionDef, constants: Dict[str, str]) -> Dic
         "positions": {name: index for index, name in enumerate(positional)},
         "params": set(positional + kwonly),
         "defaults": defaults,
+        "default_nodes": default_nodes,
     }
 
 
@@ -3354,6 +3358,7 @@ def _param_getattr_return_functions(
             "module_param": module_param,
             "positions": signature["positions"],
             "defaults": signature["defaults"],
+            "default_nodes": signature["default_nodes"],
         }
     _add_simple_wrapper_assignment_aliases(tree, functions)
     return functions
@@ -3424,6 +3429,7 @@ def _codec_wrapper_functions(
                 "codec_params": codec_params,
                 "positions": signature["positions"],
                 "defaults": signature["defaults"],
+                "default_nodes": signature["default_nodes"],
             }
     return wrappers
 
@@ -3586,6 +3592,7 @@ def _higher_order_decode_wrapper_info(func: ast.FunctionDef, constants: Dict[str
         "module_lookup_arg_pairs": module_lookup_arg_pairs,
         "positions": signature["positions"],
         "defaults": signature["defaults"],
+        "default_nodes": signature["default_nodes"],
     }
 
 
@@ -3622,6 +3629,22 @@ def _wrapper_call_arg_node(node: ast.Call, wrapper: Dict[str, object], param_nam
         if isinstance(position, int) and position < len(node.args):
             return node.args[position]
     return _keyword_node(node, param_name)
+
+
+def _wrapper_call_arg_or_default_node(
+    node: ast.Call,
+    wrapper: Dict[str, object],
+    param_name: str,
+) -> Optional[ast.AST]:
+    value = _wrapper_call_arg_node(node, wrapper, param_name)
+    if value is not None:
+        return value
+    default_nodes = wrapper.get("default_nodes") or {}
+    if isinstance(default_nodes, dict):
+        default = default_nodes.get(param_name)
+        if isinstance(default, ast.AST):
+            return default
+    return None
 
 
 def _wrapper_call_encoding(node: ast.Call, wrapper: Dict[str, object], param_name: str, constants: Dict[str, str]) -> str:
@@ -4569,7 +4592,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             decode_arg_pairs = higher_order_wrapper.get("decode_arg_pairs") or set()
             if isinstance(decode_arg_pairs, set):
                 for decoder_param, codec_param in decode_arg_pairs:
-                    decoder_node = _wrapper_call_arg_node(node, higher_order_wrapper, decoder_param)
+                    decoder_node = _wrapper_call_arg_or_default_node(node, higher_order_wrapper, decoder_param)
                     decoder_function_name = _zero_arg_function_call_name(decoder_node) if decoder_node is not None else ""
                     is_decode_arg = _is_decode_function_ref(
                         decoder_node,
@@ -4588,7 +4611,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             decoder_factory_arg_pairs = higher_order_wrapper.get("decoder_factory_arg_pairs") or set()
             if isinstance(decoder_factory_arg_pairs, set):
                 for factory_param, codec_param in decoder_factory_arg_pairs:
-                    factory_node = _wrapper_call_arg_node(node, higher_order_wrapper, factory_param)
+                    factory_node = _wrapper_call_arg_or_default_node(node, higher_order_wrapper, factory_param)
                     factory_function_name = _zero_arg_function_call_name(factory_node) if factory_node is not None else ""
                     factory_kind = _factory_function_ref_kind(
                         factory_node,
@@ -4604,7 +4627,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             lookup_factory_arg_pairs = higher_order_wrapper.get("lookup_factory_arg_pairs") or set()
             if isinstance(lookup_factory_arg_pairs, set):
                 for factory_param, codec_param in lookup_factory_arg_pairs:
-                    factory_node = _wrapper_call_arg_node(node, higher_order_wrapper, factory_param)
+                    factory_node = _wrapper_call_arg_or_default_node(node, higher_order_wrapper, factory_param)
                     factory_function_name = _zero_arg_function_call_name(factory_node) if factory_node is not None else ""
                     factory_kind = _factory_function_ref_kind(
                         factory_node,
@@ -4620,7 +4643,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             module_decode_arg_pairs = higher_order_wrapper.get("module_decode_arg_pairs") or set()
             if isinstance(module_decode_arg_pairs, set):
                 for module_param, codec_param in module_decode_arg_pairs:
-                    module_node = _wrapper_call_arg_node(node, higher_order_wrapper, module_param)
+                    module_node = _wrapper_call_arg_or_default_node(node, higher_order_wrapper, module_param)
                     if not _is_codecs_module_ref_or_result(
                         module_node,
                         module_aliases,
@@ -4640,7 +4663,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             module_getdecoder_arg_pairs = higher_order_wrapper.get("module_getdecoder_arg_pairs") or set()
             if isinstance(module_getdecoder_arg_pairs, set):
                 for module_param, codec_param in module_getdecoder_arg_pairs:
-                    module_node = _wrapper_call_arg_node(node, higher_order_wrapper, module_param)
+                    module_node = _wrapper_call_arg_or_default_node(node, higher_order_wrapper, module_param)
                     if not _is_codecs_module_ref_or_result(
                         module_node,
                         module_aliases,
@@ -4660,7 +4683,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             module_lookup_arg_pairs = higher_order_wrapper.get("module_lookup_arg_pairs") or set()
             if isinstance(module_lookup_arg_pairs, set):
                 for module_param, codec_param in module_lookup_arg_pairs:
-                    module_node = _wrapper_call_arg_node(node, higher_order_wrapper, module_param)
+                    module_node = _wrapper_call_arg_or_default_node(node, higher_order_wrapper, module_param)
                     if not _is_codecs_module_ref_or_result(
                         module_node,
                         module_aliases,

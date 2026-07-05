@@ -216,10 +216,44 @@ def should_keep_table_together(rows):
     return estimated_lines <= 18
 
 
-def should_default_repeat_first_row(rows, ncols=0, nested=False, max_width_twips=None):
+def table_first_row_has_rich_cell_items(cell_items):
+    for entry in cell_items or []:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            row = int(entry.get('row') or 0)
+        except Exception:
+            continue
+        if row != 0:
+            continue
+        items = entry.get('items')
+        candidates = items if isinstance(items, list) else [entry]
+        for media in candidates:
+            if not isinstance(media, dict):
+                continue
+            if (
+                media.get('role') in {'image', 'figure', 'formula', 'rich_text', 'note_ref', 'missing_image'}
+                or media.get('type') == 'note_ref'
+                or media.get('image')
+                or media.get('filename')
+                or media.get('asset')
+                or media.get('latex')
+                or media.get('xml')
+                or media.get('math')
+                or media.get('table_rows')
+                or media.get('items')
+                or media.get('runs')
+            ):
+                return True
+    return False
+
+
+def should_default_repeat_first_row(rows, ncols=0, nested=False, max_width_twips=None, cell_items=None):
     if nested or not rows or len(rows) <= 12:
         return False
     if ncols <= 1:
+        return False
+    if table_first_row_has_rich_cell_items(cell_items):
         return False
     first_row_lines = estimate_table_row_lines(rows[0])
     if first_row_lines > 3:
@@ -1248,6 +1282,7 @@ def render_table(rows, cell_items=None, table_merges=None, table_col_widths_twip
         ncols=ncols,
         nested=nested,
         max_width_twips=max_width_twips,
+        cell_items=cell_items,
     ):
         repeat_header_count = 1
     repeat_header_count = max(0, min(repeat_header_count, len(rows)))
