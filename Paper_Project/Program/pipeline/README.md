@@ -113,6 +113,13 @@ Current baseline as of 2026-07-05:
   usual beginner-facing next action. Regression:
   `pipeline_execution_blocks_unsafe_unicode_decode_before_subprocess` /
   `pipeline_build_phase_blocks_unsafe_unicode_decode_before_execution`.
+- Generated-script `operator.methodcaller` codecs guard: structural QA now
+  treats `operator.methodcaller("decode", payload, "gbk")(codecs)`, assigned
+  methodcaller aliases, and no-required-argument helper returns as real
+  `codecs.decode(...)` handoffs when the payload is text-derived bytes. The
+  same-shaped call on a safe custom object remains unblocked. Regression:
+  `qa_flags_generated_script_general_codecs_decode_text_reencoding` /
+  `qa_does_not_flag_shadowed_method_factory_name_for_safe_decoder`.
 - Generated-script codecs module-container handoff guard: structural QA now
   follows no-required-argument helpers that return simple literal containers
   carrying the real `codecs` module before a container item is passed to a

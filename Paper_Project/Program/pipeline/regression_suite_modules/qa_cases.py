@@ -715,6 +715,27 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = get_decode()(text.encode('utf-8'), 'gbk', errors='ignore')\n"
         ),
+        "qa_generated_operator_methodcaller_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "import operator\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = operator.methodcaller('decode', text.encode('utf-8'), 'gbk', errors='ignore')(codecs)\n"
+        ),
+        "qa_generated_operator_methodcaller_codecs_decode_alias_wrong_charset": (
+            "import codecs\n"
+            "from operator import methodcaller\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "decode_text = methodcaller('decode', text.encode('utf-8'), 'gbk', errors='ignore')\n"
+            "mojibake = decode_text(codecs)\n"
+        ),
+        "qa_generated_function_returns_operator_methodcaller_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "from operator import methodcaller\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "def get_decode():\n"
+            "    return methodcaller('decode', text.encode('utf-8'), 'gbk', errors='ignore')\n"
+            "mojibake = get_decode()(codecs)\n"
+        ),
         "qa_generated_lambda_returns_codecs_decode_wrong_charset": (
             "import codecs\n"
             "get_decode = lambda: codecs.decode\n"
@@ -2307,6 +2328,33 @@ def qa_does_not_flag_shadowed_method_factory_name_for_safe_decoder() -> None:
     assert_true(
         "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" not in codes,
         f"QA falsely treated a safe attrgetter decode method as codecs: {report}",
+    )
+
+    work = new_workdir("qa_safe_operator_methodcaller_decode_is_not_codecs")
+    doc = Document()
+    doc.add_paragraph("Synthetic Thesis")
+    doc.add_paragraph("1 Introduction")
+    doc.add_paragraph(text)
+    doc.save(work / "out.docx")
+    write_json(work / "content.json", base_content([text]))
+    write_json(work / "format.json", base_format())
+    write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {}})
+    write_json(work / "workflow_mode.json", {"mode": "user"})
+    (work / "build_generated.py").write_text(
+        "from operator import methodcaller\n"
+        "class SafeModule:\n"
+        "    def decode(self, value, encoding, errors='strict'):\n"
+        "        return value.decode('utf-8')\n"
+        "text = '中文字符保持原样：编码测试。'\n"
+        "decode_via_module_shape = methodcaller('decode', text.encode('utf-8'), 'gbk', errors='ignore')(SafeModule())\n",
+        encoding="utf-8",
+    )
+
+    report = check_output(str(work), mode="user", output_docx_name="out.docx")
+    codes = [item["code"] for item in report["issues"]]
+    assert_true(
+        "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" not in codes,
+        f"QA falsely treated a safe methodcaller decode route as codecs: {report}",
     )
 
     work = new_workdir("qa_safe_local_getattr_module_decode_alias")

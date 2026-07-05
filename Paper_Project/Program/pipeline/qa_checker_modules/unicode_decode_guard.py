@@ -1329,6 +1329,40 @@ def _operator_methodcaller_decode_encoding(
     return "utf-8"
 
 
+def _operator_methodcaller_codecs_decode_info(
+    node: ast.AST,
+    operator_module_aliases: Set[str],
+    methodcaller_aliases: Set[str],
+    constants: Dict[str, str],
+    encoded_text_bytes: Dict[str, str],
+    byte_constructor_aliases: Set[str],
+) -> Optional[Tuple[str, str]]:
+    if not isinstance(node, ast.Call):
+        return None
+    is_methodcaller = (
+        _call_name(node.func) in methodcaller_aliases
+        or _attribute_on_module_alias(node.func, operator_module_aliases, "methodcaller")
+    )
+    if not is_methodcaller or len(node.args) < 2:
+        return None
+    if _string_constant(node.args[0], constants) != "decode":
+        return None
+    encoded_as = _encoded_text_bytes_encoding(
+        node.args[1],
+        encoded_text_bytes,
+        constants,
+        byte_constructor_aliases,
+    )
+    if encoded_as is None:
+        return None
+    if len(node.args) >= 3:
+        encoding = _string_constant(node.args[2], constants)
+    else:
+        keyword = _keyword_node(node, "encoding")
+        encoding = _string_constant(keyword, constants) if keyword is not None else "utf-8"
+    return encoded_as, encoding
+
+
 def _operator_attrgetter_decode_ref(
     node: ast.AST,
     operator_module_aliases: Set[str],
@@ -2169,6 +2203,40 @@ def _operator_methodcaller_result_aliases(
     return aliases
 
 
+def _operator_methodcaller_codecs_decode_result_aliases(
+    tree: ast.AST,
+    operator_module_aliases: Set[str],
+    methodcaller_aliases: Set[str],
+    constants: Dict[str, str],
+    encoded_text_bytes: Dict[str, str],
+    byte_constructor_aliases: Set[str],
+) -> Dict[str, Tuple[str, str]]:
+    aliases: Dict[str, Tuple[str, str]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            value = node.value
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            value = node.value
+            targets = [node.target]
+        else:
+            continue
+        info = _operator_methodcaller_codecs_decode_info(
+            value,
+            operator_module_aliases,
+            methodcaller_aliases,
+            constants,
+            encoded_text_bytes,
+            byte_constructor_aliases,
+        )
+        if info is None:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                aliases[target.id] = info
+    return aliases
+
+
 def _operator_methodcaller_container_aliases(
     tree: ast.AST,
     operator_module_aliases: Set[str],
@@ -2259,6 +2327,58 @@ def _operator_methodcaller_function_results(
             for target in targets:
                 if isinstance(target, ast.Name) and functions.get(target.id) != encoding:
                     functions[target.id] = encoding
+                    changed = True
+        if not changed:
+            break
+    return functions
+
+
+def _operator_methodcaller_codecs_decode_function_results(
+    tree: ast.AST,
+    operator_module_aliases: Set[str],
+    methodcaller_aliases: Set[str],
+    constants: Dict[str, str],
+    methodcaller_codecs_result_aliases: Dict[str, Tuple[str, str]],
+    encoded_text_bytes: Dict[str, str],
+    byte_constructor_aliases: Set[str],
+) -> Dict[str, Tuple[str, str]]:
+    functions: Dict[str, Tuple[str, str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+            continue
+        value = _single_return_value(node)
+        if value is None:
+            continue
+        if isinstance(value, ast.Name) and value.id in methodcaller_codecs_result_aliases:
+            info = methodcaller_codecs_result_aliases[value.id]
+        else:
+            info = _operator_methodcaller_codecs_decode_info(
+                value,
+                operator_module_aliases,
+                methodcaller_aliases,
+                constants,
+                encoded_text_bytes,
+                byte_constructor_aliases,
+            )
+        if info is not None:
+            functions[node.name] = info
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if not isinstance(value, ast.Name) or value.id not in functions:
+                continue
+            info = functions[value.id]
+            for target in targets:
+                if isinstance(target, ast.Name) and functions.get(target.id) != info:
+                    functions[target.id] = info
                     changed = True
         if not changed:
             break
@@ -3831,6 +3951,14 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         methodcaller_aliases,
         constants,
     )
+    methodcaller_codecs_results = _operator_methodcaller_codecs_decode_result_aliases(
+        tree,
+        operator_module_aliases,
+        methodcaller_aliases,
+        constants,
+        encoded_text_bytes,
+        byte_constructor_aliases,
+    )
     decode_method_containers = _decode_method_container_aliases(
         tree,
         encoded_text_bytes,
@@ -3889,6 +4017,15 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         constants,
         methodcaller_results,
     )
+    methodcaller_codecs_functions = _operator_methodcaller_codecs_decode_function_results(
+        tree,
+        operator_module_aliases,
+        methodcaller_aliases,
+        constants,
+        methodcaller_codecs_results,
+        encoded_text_bytes,
+        byte_constructor_aliases,
+    )
     partial_results = _partial_decode_result_aliases(
         tree,
         functools_module_aliases,
@@ -3942,6 +4079,35 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             if encoded_as is not None and _is_mismatched_text_redecode(encoded_as, methodcaller_encoding):
                 hits.append(f"operator.methodcaller(decode {_codec_label(methodcaller_encoding)} after encode {_codec_label(encoded_as)})")
                 continue
+        methodcaller_codecs_info = _operator_methodcaller_codecs_decode_info(
+            node.func,
+            operator_module_aliases,
+            methodcaller_aliases,
+            constants,
+            encoded_text_bytes,
+            byte_constructor_aliases,
+        )
+        if (
+            methodcaller_codecs_info is not None
+            and node.args
+            and _is_codecs_module_ref_or_result(
+                node.args[0],
+                module_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+                codec_module_containers,
+                codec_module_attributes,
+                codec_module_functions,
+                class_aliases,
+                factory_aliases,
+            )
+        ):
+            encoded_as, encoding = methodcaller_codecs_info
+            if _is_mismatched_text_redecode(encoded_as, encoding):
+                hits.append(f"operator.methodcaller(codecs.decode {_codec_label(encoding)} after encode {_codec_label(encoded_as)})")
+                continue
         if name in methodcaller_results and node.args:
             encoded_as = _encoded_text_bytes_encoding(
                 node.args[0],
@@ -3952,6 +4118,27 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             encoding = methodcaller_results[name]
             if encoded_as is not None and _is_mismatched_text_redecode(encoded_as, encoding):
                 hits.append(f"{name}(decode {_codec_label(encoding)} after encode {_codec_label(encoded_as)})")
+                continue
+        if (
+            name in methodcaller_codecs_results
+            and node.args
+            and _is_codecs_module_ref_or_result(
+                node.args[0],
+                module_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+                codec_module_containers,
+                codec_module_attributes,
+                codec_module_functions,
+                class_aliases,
+                factory_aliases,
+            )
+        ):
+            encoded_as, encoding = methodcaller_codecs_results[name]
+            if _is_mismatched_text_redecode(encoded_as, encoding):
+                hits.append(f"{name}(codecs.decode {_codec_label(encoding)} after encode {_codec_label(encoded_as)})")
                 continue
         container_methodcaller_encoding = _container_subscript_lookup(node.func, methodcaller_containers, constants)
         if container_methodcaller_encoding is not None and node.args:
@@ -3976,6 +4163,27 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             encoding = methodcaller_functions[function_methodcaller_name]
             if encoded_as is not None and _is_mismatched_text_redecode(encoded_as, encoding):
                 hits.append(f"{function_methodcaller_name}()(decode {_codec_label(encoding)} after encode {_codec_label(encoded_as)})")
+                continue
+        if (
+            function_methodcaller_name in methodcaller_codecs_functions
+            and node.args
+            and _is_codecs_module_ref_or_result(
+                node.args[0],
+                module_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+                codec_module_containers,
+                codec_module_attributes,
+                codec_module_functions,
+                class_aliases,
+                factory_aliases,
+            )
+        ):
+            encoded_as, encoding = methodcaller_codecs_functions[function_methodcaller_name]
+            if _is_mismatched_text_redecode(encoded_as, encoding):
+                hits.append(f"{function_methodcaller_name}()(codecs.decode {_codec_label(encoding)} after encode {_codec_label(encoded_as)})")
                 continue
         bound_encoded_as = _decode_method_source_encoding(
             node.func,
