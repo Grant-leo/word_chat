@@ -1346,6 +1346,46 @@ def _operator_attrgetter_decode_ref(
     )
 
 
+def _operator_attrgetter_codecs_decode_ref(
+    node: ast.AST,
+    operator_module_aliases: Set[str],
+    attrgetter_aliases: Set[str],
+    module_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    module_containers: Dict[str, Dict[ContainerAliasKey, str]],
+    module_attributes: Set[str],
+    module_functions: Set[str],
+    class_aliases: Dict[str, str],
+    factory_aliases: Dict[str, str],
+) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and _operator_attrgetter_decode_ref(
+            node.func,
+            operator_module_aliases,
+            attrgetter_aliases,
+            constants,
+        )
+        and node.args
+        and _is_codecs_module_ref_or_result(
+            node.args[0],
+            module_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            module_containers,
+            module_attributes,
+            module_functions,
+            class_aliases,
+            factory_aliases,
+        )
+    )
+
+
 def _decode_method_source_encoding(
     node: ast.AST,
     encoded_text_aliases: Dict[str, str],
@@ -2460,6 +2500,8 @@ def _add_bound_codecs_module_method_aliases(
     module_functions: Set[str],
     class_aliases: Dict[str, str],
     factory_aliases: Dict[str, str],
+    operator_module_aliases: Set[str],
+    attrgetter_aliases: Set[str],
 ) -> None:
     alias_sets = {
         "decode": decode_aliases,
@@ -2483,6 +2525,22 @@ def _add_bound_codecs_module_method_aliases(
                 factory_aliases,
             ):
                 return value.attr
+        if _operator_attrgetter_codecs_decode_ref(
+            value,
+            operator_module_aliases,
+            attrgetter_aliases,
+            module_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            module_containers,
+            module_attributes,
+            module_functions,
+            class_aliases,
+            factory_aliases,
+        ):
+            return "decode"
         if isinstance(value, ast.Name):
             for candidate, aliases in alias_sets.items():
                 if value.id in aliases:
@@ -2522,6 +2580,8 @@ def _bound_codecs_module_method_function_refs(
     module_functions: Set[str],
     class_aliases: Dict[str, str],
     factory_aliases: Dict[str, str],
+    operator_module_aliases: Set[str],
+    attrgetter_aliases: Set[str],
 ) -> Tuple[Set[str], Set[str], Set[str]]:
     alias_sets = {
         "decode": decode_aliases,
@@ -2555,6 +2615,22 @@ def _bound_codecs_module_method_function_refs(
                 factory_aliases,
             ):
                 return value.attr
+        if _operator_attrgetter_codecs_decode_ref(
+            value,
+            operator_module_aliases,
+            attrgetter_aliases,
+            module_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            module_containers,
+            module_attributes,
+            module_functions,
+            class_aliases,
+            factory_aliases,
+        ):
+            return "decode"
         if isinstance(value, ast.Name):
             for candidate, aliases in alias_sets.items():
                 if value.id in aliases:
@@ -3594,6 +3670,8 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         codec_module_functions,
         class_aliases,
         factory_aliases,
+        operator_module_aliases,
+        attrgetter_aliases,
     )
     bound_decode_functions, bound_getdecoder_factory_functions, bound_lookup_factory_functions = (
         _bound_codecs_module_method_function_refs(
@@ -3611,6 +3689,8 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             codec_module_functions,
             class_aliases,
             factory_aliases,
+            operator_module_aliases,
+            attrgetter_aliases,
         )
     )
     param_getattr_decode_functions = _param_getattr_return_functions(tree, "decode", constants)
@@ -3912,6 +3992,24 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         if function_codec_decode_name in codec_decode_functions:
             encoding = _codecs_decode_encoding(node, constants)
             hits.append(f"{function_codec_decode_name}()({_codec_label(encoding)})")
+            continue
+        if isinstance(node.func, ast.Call) and _operator_attrgetter_codecs_decode_ref(
+            node.func,
+            operator_module_aliases,
+            attrgetter_aliases,
+            module_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            codec_module_containers,
+            codec_module_attributes,
+            codec_module_functions,
+            class_aliases,
+            factory_aliases,
+        ):
+            encoding = _codecs_decode_encoding(node, constants)
+            hits.append(f"operator.attrgetter(codecs.decode)({_codec_label(encoding)})")
             continue
         if isinstance(node.func, ast.Call):
             param_getattr_decode_name = _call_name(node.func.func)
