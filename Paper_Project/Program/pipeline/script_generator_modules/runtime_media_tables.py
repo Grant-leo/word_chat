@@ -978,9 +978,13 @@ def render_table_cell_rich_text(cell, item, prof, force_new_paragraph=False, nco
         item_math_entries = _rich_text_item_math_entries(item)
     except Exception:
         item_math_entries = []
+    try:
+        item_note_entries = _rich_text_note_items(item)
+    except Exception:
+        item_note_entries = []
     if not runs and item.get('text'):
         runs = [{'type': 'text', 'text': item.get('text') or ''}]
-    if not runs and not has_item_images and not item_math_entries:
+    if not runs and not has_item_images and not item_math_entries and not item_note_entries:
         return False
     p = cell.add_paragraph() if force_new_paragraph else (
         cell.paragraphs[0] if cell.paragraphs and not cell.paragraphs[0].text.strip() else cell.add_paragraph()
@@ -1006,6 +1010,8 @@ def render_table_cell_rich_text(cell, item, prof, force_new_paragraph=False, nco
         wrote = append_table_cell_inline_image_run(p, item, ncols=ncols, rendered_image_keys=rendered_image_keys) or wrote
     for m in item_math_entries:
         wrote = append_inline_formula(p, m) or wrote
+    for note in item_note_entries:
+        wrote = append_note_reference(p, note) or wrote
     return wrote
 
 

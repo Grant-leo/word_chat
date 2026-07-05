@@ -2004,6 +2004,60 @@ def script_generator_renders_rich_text_image_run_in_grid_after_omission_zone() -
 
 
 @case
+def script_generator_renders_rich_text_note_item_in_grid_after_omission_zone() -> None:
+    note_text = "Nested rich note item in an omitted grid zone must render natively."
+    content = base_content(
+        [
+            {
+                "role": "table",
+                "table_rows": [["Header", "Value"], ["Visible cell", ""]],
+                "table_row_grid_after": [0, 1],
+                "table_cell_items": [
+                    {
+                        "row": 1,
+                        "col": 1,
+                        "items": [
+                            {
+                                "role": "rich_text",
+                                "items": [
+                                    {
+                                        "role": "note_ref",
+                                        "type": "note_ref",
+                                        "note_type": "footnote",
+                                        "source_id": "53",
+                                        "text": note_text,
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        meta_tables=1,
+    )
+    content["_meta"]["footnote_references_extracted"] = 1
+    content["_meta"]["footnote_definitions_extracted"] = 1
+
+    result = run_generated_case("generator_grid_after_rich_note_item_guard_generated", content, base_format())
+    root = etree.fromstring(result["xml"].encode("utf-8"))
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    tables = root.xpath(".//w:tbl[.//w:t='Header']", namespaces=ns)
+    assert_true(len(tables) == 1, f"generated table missing or duplicated: {len(tables)}")
+    rows = tables[0].xpath("./w:tr", namespaces=ns)
+    second_grid_after = rows[1].xpath("./w:trPr/w:gridAfter/@w:val", namespaces=ns)
+    assert_true(second_grid_after == [], "row omission should not be restored when omitted zone carries rich note items")
+    assert_true("<w:footnoteReference" in result["xml"], "rich-text nested note item in omitted grid zone did not render natively")
+    counts = result["manifest"]["counts"]
+    assert_true(counts.get("footnote_references_rendered") == 1, f"rich nested note item render count missing: {counts}")
+    assert_true(
+        counts.get("content_table_grid_after_media_guard_rows_skipped") == 1,
+        f"gridAfter guard did not record the rich-note protected row: {counts}",
+    )
+    assert_true(result["report"]["passed"] is True, f"rich note-item row-omission render should pass QA: {result['report']}")
+
+
+@case
 def script_generator_records_text_guard_for_row_omission_zones() -> None:
     content = base_content(
         [

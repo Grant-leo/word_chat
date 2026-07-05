@@ -119,6 +119,20 @@ def _rich_text_item_math_entries(item):
     return entries
 
 
+def _rich_text_note_items(item):
+    if not isinstance(item, dict):
+        return []
+    entries = []
+    kind = str(item.get('type') or '').strip()
+    role = str(item.get('role') or '').strip()
+    if kind == 'note_ref' or role == 'note_ref':
+        entries.append(item)
+    for nested in item.get('items') or []:
+        if isinstance(nested, dict):
+            entries.extend(_rich_text_note_items(nested))
+    return entries
+
+
 def add_rich_text_runs(item, role='body', first_indent=True, render_item_media=True):
     prof = profile(role)
     runs = item.get('runs') or []

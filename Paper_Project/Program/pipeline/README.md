@@ -103,14 +103,21 @@ CLI, output, verification, and QA details in a focused package:
 
 Current baseline as of 2026-07-06:
 
-- Current full synthetic regression: `432 passed, 0 failed`. Latest additions:
-  table-cell `rich_text` rendering now preserves image runs inside generated
-  Word tables, including `gridAfter` omitted-zone payloads that also contain
-  text, inline formulas, and native footnote/endnote references. Generated-
-  script decode guards still block higher-order helpers that forward `**kwargs`
-  into a decoder parameter, such as `apply_decoder(codecs.decode, payload,
-  encoding="gbk")`, before text-derived UTF-8 Chinese bytes are re-decoded as
-  GBK or another wrong charset. The same guard still follows
+- Current full synthetic regression: `434 passed, 0 failed`. Latest additions:
+  generated-script decode guards now block batch callbacks such as
+  `map(codecs.decode, payloads, encodings)` and
+  `itertools.starmap(codecs.decode, rows)` before text-derived UTF-8 Chinese
+  bytes are re-decoded as GBK or another wrong charset; a user-defined safe
+  `map` that shadows the built-in before the call is not treated as this batch
+  callback route. Table-cell
+  `rich_text.items[]` rendering now preserves nested native footnote/endnote
+  references inside generated Word tables, including `gridAfter` omitted-zone
+  payloads. Table-cell `rich_text` image runs also remain preserved inside
+  generated Word tables, including `gridAfter` omitted-zone payloads that
+  contain text, inline formulas, and native note references. Generated-script
+  decode guards still block higher-order helpers that forward `**kwargs` into
+  a decoder parameter, such as `apply_decoder(codecs.decode, payload,
+  encoding="gbk")`. The same guard still follows
   `builtins.__import__("codecs")`,
   aliases assigned from `builtins.__import__` / `importlib.import_module`, and
   direct or assigned `getattr(importlib, "import_module")` /

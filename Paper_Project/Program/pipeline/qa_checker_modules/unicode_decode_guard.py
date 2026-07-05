@@ -156,6 +156,25 @@ def _statement_bound_names(stmt: ast.stmt) -> Set[str]:
     return set()
 
 
+def _top_level_bound_name_lines(tree: ast.AST, names: Set[str]) -> Dict[str, List[int]]:
+    lines: Dict[str, List[int]] = {name: [] for name in names}
+    if not isinstance(tree, ast.Module):
+        return lines
+    for stmt in tree.body:
+        lineno = getattr(stmt, "lineno", 0)
+        if not lineno:
+            continue
+        for name in _statement_bound_names(stmt):
+            if name in lines:
+                lines[name].append(lineno)
+    return lines
+
+
+def _name_bound_before_call(bound_lines: Dict[str, List[int]], name: str, node: ast.AST) -> bool:
+    lineno = getattr(node, "lineno", 0)
+    return bool(lineno and any(bound_line < lineno for bound_line in bound_lines.get(name, [])))
+
+
 def _top_level_shadowed_codec_import_aliases(tree: ast.AST) -> Set[str]:
     if not isinstance(tree, ast.Module):
         return set()
@@ -350,6 +369,21 @@ def _operator_import_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str], Set[str
                 elif alias.name == "attrgetter":
                     attrgetter_aliases.add(imported_name)
     return module_aliases, methodcaller_aliases, attrgetter_aliases
+
+
+def _itertools_import_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str]]:
+    module_aliases: Set[str] = set()
+    starmap_aliases: Set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "itertools":
+                    module_aliases.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "itertools":
+            for alias in node.names:
+                if alias.name == "starmap":
+                    starmap_aliases.add(alias.asname or alias.name)
+    return module_aliases, starmap_aliases
 
 
 def _builtins_constructor_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str]]:
@@ -3393,6 +3427,87 @@ def _codecs_decode_encoding(node: ast.Call, constants: Dict[str, str]) -> str:
     return _keyword_value(node, constants, "encoding")
 
 
+def _literal_iterable_string_at(node: ast.AST, index: int, constants: Dict[str, str]) -> str:
+    if isinstance(node, (ast.List, ast.Tuple)) and len(node.elts) > index:
+        return _string_constant(node.elts[index], constants)
+    return ""
+
+
+def _starmap_tuple_encoding(node: ast.AST, constants: Dict[str, str]) -> str:
+    if not isinstance(node, (ast.List, ast.Tuple)) or not node.elts:
+        return ""
+    first = node.elts[0]
+    if isinstance(first, (ast.List, ast.Tuple)) and len(first.elts) >= 2:
+        return _string_constant(first.elts[1], constants)
+    return ""
+
+
+def _map_codecs_decode_encoding(
+    node: ast.Call,
+    builtin_shadow_lines: Dict[str, List[int]],
+    module_aliases: Set[str],
+    decode_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    decode_dict_aliases: Dict[str, Set[str]],
+) -> Optional[str]:
+    if _call_name(node.func) != "map" or not node.args:
+        return None
+    if _name_bound_before_call(builtin_shadow_lines, "map", node):
+        return None
+    if not _is_decode_function_ref(
+        node.args[0],
+        module_aliases,
+        decode_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        decode_dict_aliases,
+    ):
+        return None
+    if len(node.args) >= 3:
+        return _literal_iterable_string_at(node.args[2], 0, constants)
+    return ""
+
+
+def _itertools_starmap_codecs_decode_encoding(
+    node: ast.Call,
+    itertools_module_aliases: Set[str],
+    starmap_aliases: Set[str],
+    module_aliases: Set[str],
+    decode_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    decode_dict_aliases: Dict[str, Set[str]],
+) -> Optional[str]:
+    is_starmap = _call_name(node.func) in starmap_aliases or _attribute_on_module_alias(
+        node.func,
+        itertools_module_aliases,
+        "starmap",
+    )
+    if not is_starmap or not node.args:
+        return None
+    if not _is_decode_function_ref(
+        node.args[0],
+        module_aliases,
+        decode_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        decode_dict_aliases,
+    ):
+        return None
+    if len(node.args) >= 2:
+        return _starmap_tuple_encoding(node.args[1], constants)
+    return ""
+
+
 def _codec_factory_encoding(node: ast.Call, constants: Dict[str, str]) -> str:
     if node.args:
         return _string_constant(node.args[0], constants)
@@ -4170,6 +4285,8 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
     functools_module_aliases, partial_aliases = _functools_import_aliases(tree)
     importlib_module_aliases, import_module_aliases = _importlib_import_aliases(tree, constants)
     operator_module_aliases, methodcaller_aliases, attrgetter_aliases = _operator_import_aliases(tree)
+    itertools_module_aliases, starmap_aliases = _itertools_import_aliases(tree)
+    builtin_shadow_lines = _top_level_bound_name_lines(tree, {"map"})
     class_aliases = _class_aliases(tree)
     factory_aliases = _class_factory_aliases(tree, class_aliases)
     module_dict_aliases: Dict[str, Set[str]] = {}
@@ -4472,6 +4589,35 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         if not isinstance(node, ast.Call):
             continue
         name = _call_name(node.func)
+        map_encoding = _map_codecs_decode_encoding(
+            node,
+            builtin_shadow_lines,
+            module_aliases,
+            decode_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            decode_dict_aliases,
+        )
+        if map_encoding is not None:
+            hits.append(f"map(codecs.decode)({_codec_label(map_encoding)})")
+            continue
+        starmap_encoding = _itertools_starmap_codecs_decode_encoding(
+            node,
+            itertools_module_aliases,
+            starmap_aliases,
+            module_aliases,
+            decode_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            decode_dict_aliases,
+        )
+        if starmap_encoding is not None:
+            hits.append(f"itertools.starmap(codecs.decode)({_codec_label(starmap_encoding)})")
+            continue
         if name == "str" and node.args:
             encoded_as = _encoded_text_bytes_encoding(node.args[0], encoded_text_bytes, constants, byte_constructor_aliases)
             if encoded_as is not None:
