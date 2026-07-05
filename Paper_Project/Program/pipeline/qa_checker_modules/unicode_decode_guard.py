@@ -2399,33 +2399,36 @@ def _add_bound_codecs_module_method_aliases(
         "getdecoder": getdecoder_aliases,
         "lookup": lookup_aliases,
     }
+
+    def bound_module_method_attr(value: Optional[ast.AST]) -> str:
+        if isinstance(value, ast.Attribute) and value.attr in alias_sets:
+            if _is_codecs_module_ref_or_result(
+                value.value,
+                module_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+                module_containers,
+                module_attributes,
+                module_functions,
+                class_aliases,
+                factory_aliases,
+            ):
+                return value.attr
+        if isinstance(value, ast.Name):
+            for candidate, aliases in alias_sets.items():
+                if value.id in aliases:
+                    return candidate
+        return ""
+
     for _ in range(4):
         changed = False
         for node in ast.walk(tree):
             value, targets = _assignment_value_targets(node)
             if value is None:
                 continue
-            attr = ""
-            if isinstance(value, ast.Attribute) and value.attr in alias_sets:
-                if _is_codecs_module_ref_or_result(
-                    value.value,
-                    module_aliases,
-                    constants,
-                    importlib_module_aliases,
-                    import_module_aliases,
-                    module_dict_aliases,
-                    module_containers,
-                    module_attributes,
-                    module_functions,
-                    class_aliases,
-                    factory_aliases,
-                ):
-                    attr = value.attr
-            elif isinstance(value, ast.Name):
-                for candidate, aliases in alias_sets.items():
-                    if value.id in aliases:
-                        attr = candidate
-                        break
+            attr = bound_module_method_attr(value)
             if not attr:
                 continue
             aliases = alias_sets[attr]
@@ -2435,6 +2438,96 @@ def _add_bound_codecs_module_method_aliases(
                     changed = True
         if not changed:
             break
+
+
+def _bound_codecs_module_method_function_refs(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    decode_aliases: Set[str],
+    getdecoder_aliases: Set[str],
+    lookup_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    module_containers: Dict[str, Dict[ContainerAliasKey, str]],
+    module_attributes: Set[str],
+    module_functions: Set[str],
+    class_aliases: Dict[str, str],
+    factory_aliases: Dict[str, str],
+) -> Tuple[Set[str], Set[str], Set[str]]:
+    alias_sets = {
+        "decode": decode_aliases,
+        "getdecoder": getdecoder_aliases,
+        "lookup": lookup_aliases,
+    }
+    function_sets = {
+        "decode": set(),
+        "getdecoder": set(),
+        "lookup": set(),
+    }
+    function_nodes = {
+        "decode": set(),
+        "getdecoder": set(),
+        "lookup": set(),
+    }
+
+    def bound_module_method_attr(value: Optional[ast.AST]) -> str:
+        if isinstance(value, ast.Attribute) and value.attr in alias_sets:
+            if _is_codecs_module_ref_or_result(
+                value.value,
+                module_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+                module_containers,
+                module_attributes,
+                module_functions,
+                class_aliases,
+                factory_aliases,
+            ):
+                return value.attr
+        if isinstance(value, ast.Name):
+            for candidate, aliases in alias_sets.items():
+                if value.id in aliases:
+                    return candidate
+        return ""
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+            continue
+        attr = bound_module_method_attr(_single_own_return_value(node))
+        if not attr:
+            continue
+        function_sets[attr].add(node.name)
+        function_nodes[attr].add(id(node))
+
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+                continue
+            value = _single_own_return_value(node)
+            call_name = _zero_arg_function_call_name(value) if value is not None else ""
+            direct_child = _direct_child_functions(node).get(call_name)
+            if direct_child is None:
+                continue
+            child_id = id(direct_child)
+            for attr, nodes in function_nodes.items():
+                if child_id not in nodes or node.name in function_sets[attr]:
+                    continue
+                function_sets[attr].add(node.name)
+                nodes.add(id(node))
+                changed = True
+        if not changed:
+            break
+
+    return (
+        function_sets["decode"],
+        function_sets["getdecoder"],
+        function_sets["lookup"],
+    )
 
 
 def _codecs_decode_function_results(
@@ -3435,6 +3528,24 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         class_aliases,
         factory_aliases,
     )
+    bound_decode_functions, bound_getdecoder_factory_functions, bound_lookup_factory_functions = (
+        _bound_codecs_module_method_function_refs(
+            tree,
+            module_aliases,
+            decode_aliases,
+            getdecoder_aliases,
+            lookup_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            codec_module_containers,
+            codec_module_attributes,
+            codec_module_functions,
+            class_aliases,
+            factory_aliases,
+        )
+    )
     param_getattr_decode_functions = _param_getattr_return_functions(tree, "decode", constants)
     param_getattr_getdecoder_functions = _param_getattr_return_functions(tree, "getdecoder", constants)
     param_getattr_lookup_functions = _param_getattr_return_functions(tree, "lookup", constants)
@@ -3457,6 +3568,8 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         lookup_aliases,
         constants,
     )
+    getdecoder_factory_functions.update(bound_getdecoder_factory_functions)
+    lookup_factory_functions.update(bound_lookup_factory_functions)
     wrappers = _codec_wrapper_functions(
         tree,
         module_aliases,
@@ -3544,6 +3657,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         codec_decode_containers,
         codec_decode_attributes,
     )
+    codec_decode_functions.update(bound_decode_functions)
     decoder_functions, lookup_functions = _decoder_factory_function_results(
         tree,
         module_aliases,
@@ -3779,6 +3893,12 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
                 encoding = _codec_factory_encoding(node.func, constants)
                 hits.append(f"{param_getattr_getdecoder_name}()({_codec_label(encoding)})")
                 continue
+        if isinstance(node.func, ast.Call):
+            factory_function_name = _zero_arg_function_call_name(node.func.func)
+            if factory_function_name in getdecoder_factory_functions:
+                encoding = _codec_factory_encoding(node.func, constants)
+                hits.append(f"{factory_function_name}()({_codec_label(encoding)})")
+                continue
         container_decoder_encoding = _container_subscript_lookup(node.func, decoder_containers, constants)
         if container_decoder_encoding is not None:
             hits.append(f"{_subscript_call_label(node.func)}({_codec_label(container_decoder_encoding)})")
@@ -3834,6 +3954,12 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             if function_lookup_name in lookup_functions:
                 hits.append(f"{function_lookup_name}().decode({_codec_label(lookup_functions[function_lookup_name])})")
                 continue
+            if isinstance(node.func.value, ast.Call):
+                lookup_factory_function_name = _zero_arg_function_call_name(node.func.value.func)
+                if lookup_factory_function_name in lookup_factory_functions:
+                    encoding = _codec_factory_encoding(node.func.value, constants)
+                    hits.append(f"{lookup_factory_function_name}().decode({_codec_label(encoding)})")
+                    continue
             kind, encoding = _factory_call_encoding(
                 node.func.value,
                 module_aliases,
