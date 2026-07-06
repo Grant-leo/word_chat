@@ -1358,6 +1358,44 @@ def visual_sample_pages_keep_table_continuation_in_complex_long_document() -> No
 
 
 @case
+def visual_sample_pages_keep_later_table_continuation_across_sections() -> None:
+    import qa_visual
+
+    pages = [
+        "cover with title",
+        "contents",
+        "1. Introduction",
+        "Table 1 First Section Wide Measurements",
+        "FirstWideHeader1 FirstWideHeader2 FirstWideRow030 FirstWideRow031",
+        "图 2 模型结构",
+        "method prose",
+        "公式 (3.1) E = mc^2",
+        "discussion prose",
+        "Table 2 Second Section Wide Measurements",
+        "SecondWideHeader1 SecondWideHeader2 SecondWideRow030 SecondWideRow031",
+        "more discussion",
+        "body",
+        "body",
+        "references",
+        "appendix",
+    ]
+    samples = qa_visual._sample_pages(16, pages)
+    assert_true(len(samples) <= 8, f"sample page selection should stay bounded: {samples}")
+    assert_true(
+        4 in samples and 5 in samples,
+        f"sample page selection should keep the first wide-table start and continuation pages: {samples}",
+    )
+    assert_true(
+        6 in samples and 8 in samples,
+        f"sample page selection should still keep figure/formula risk pages before auxiliary later-table evidence: {samples}",
+    )
+    assert_true(
+        11 in samples,
+        f"multi-section visual QA should keep the later wide-table continuation page before generic end-page samples: {samples}",
+    )
+
+
+@case
 def visual_sample_pages_include_table_continuation_page() -> None:
     import qa_visual
 

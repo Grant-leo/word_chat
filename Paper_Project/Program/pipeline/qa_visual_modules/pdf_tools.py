@@ -165,13 +165,19 @@ def _sample_pages(page_count: int, pages_text: List[str]) -> List[int]:
     ]
     table_continuation_candidates: List[int] = []
     for risk_index, patterns in enumerate(risk_page_patterns):
+        primary_added = False
         for page in _find_pages(pages_text, patterns):
             if page - 1 < len(pages_text) and _is_front_matter_list_page(pages_text[page - 1]):
                 continue
-            if page not in samples:
+            if risk_index == 1:
+                if not primary_added:
+                    _add_sample(samples, page, page_count)
+                    primary_added = True
+                table_continuation_candidates.append(page + 1)
+                continue
+            if not primary_added and page not in samples:
                 _add_sample(samples, page, page_count)
-                if risk_index == 1:
-                    table_continuation_candidates.append(page + 1)
+                primary_added = True
                 break
     for page in table_continuation_candidates:
         _add_sample(samples, page, page_count)

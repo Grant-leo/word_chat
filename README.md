@@ -183,7 +183,8 @@ build_generated.py ─────────→ 最终论文.docx
 
 截至 2026-07-06：
 
-- 合成回归：`447 passed, 0 failed`
+- 合成回归：`448 passed, 0 failed`
+- visual QA 多 section 宽表证据链：有界样张仍保持最多 8 页，但会优先保留后续 section 中宽表的延续页，同时不挤掉图/公式主风险页，便于在 `visual_qa/samples/` 和 `visual_qa/wps/samples/` 里核对复杂长文的跨页表头、续页和 Word/WPS 同页差异。
 - DOCX 横向宽表短说明：相邻横向宽表之间的 `rich_text` 桥接段即使没有顶层 `text`、只在 `runs` 中保存普通文字和 `note_ref` 脚注/尾注锚点，也会按可见 run 文字识别为短说明并保留在同一个 landscape section；脚注/尾注继续以 Word 原生 note reference 渲染，不会要求用户手动处理。
 - DOCX 富文本 run 内嵌块级内容：`rich_text.runs[].items` 里的代码、图片、题注和小表会按源顺序插入在前后文字 run 之间；不会被提前塞进当前段落，也不会被整体推迟到整段文字之后。
 - DOCX 富文本 run 单元格来源块级内容：`rich_text.runs[].table_cell_items` 里的代码、图片、题注和小表也会按源顺序插入在前后文字 run 之间；不会因为被挂在 table-cell 兼容结构下而静默丢失。
