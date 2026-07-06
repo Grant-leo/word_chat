@@ -1244,6 +1244,80 @@ def content_parser_coalesces_mixed_gridspan_hmerge_vmerge_rectangle() -> None:
 
 
 @case
+def content_parser_coalesces_split_vmerge_continuations_under_gridspan_restart() -> None:
+    work = new_workdir("parser_split_vmerge_under_gridspan")
+    docx = work / "split_vmerge_under_gridspan.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=3)
+    table.cell(0, 0).text = "Split 2D block"
+    table.cell(0, 1).text = ""
+    table.cell(0, 2).text = "Score"
+    table.cell(1, 0).text = ""
+    table.cell(1, 1).text = ""
+    table.cell(1, 2).text = "1"
+    doc.save(docx)
+
+    def inject_split_vmerge_continuations(xml: str) -> str:
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + w_ns + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(w_ns + "tr")
+        assert_true(len(rows) == 2, "test rows missing")
+
+        def ensure_tc_pr(cell):
+            tc_pr = cell.find(w_ns + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(w_ns + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        first_row_cells = rows[0].findall(w_ns + "tc")
+        second_row_cells = rows[1].findall(w_ns + "tc")
+        assert_true(len(first_row_cells) == 3 and len(second_row_cells) == 3, "test row cells missing")
+
+        first_pr = ensure_tc_pr(first_row_cells[0])
+        grid_span = first_pr.find(w_ns + "gridSpan")
+        if grid_span is None:
+            grid_span = ET.SubElement(first_pr, w_ns + "gridSpan")
+        grid_span.set(w_ns + "val", "2")
+        vmerge = ET.SubElement(first_pr, w_ns + "vMerge")
+        vmerge.set(w_ns + "val", "restart")
+        rows[0].remove(first_row_cells[1])
+
+        for cell in second_row_cells[:2]:
+            ET.SubElement(ensure_tc_pr(cell), w_ns + "vMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_split_vmerge_continuations)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"split vMerge table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [
+            ["Split 2D block", "", "Score"],
+            ["", "", "1"],
+        ],
+        f"split vMerge continuations should keep a stable grid: {table_item}",
+    )
+    assert_true(
+        table_item.get("table_merges") == [{"row": 0, "col": 0, "rowspan": 2, "colspan": 2}],
+        f"split vMerge continuations should coalesce into one safe 2D merge: {table_item}",
+    )
+
+    result = run_generated_case("parser_split_vmerge_under_gridspan_generated", content, base_format())
+    assert_true(result["report"]["passed"] is True, f"split vMerge repair should pass QA: {result['report']}")
+    counts = result["manifest"].get("counts") or {}
+    assert_true(
+        counts.get("content_table_merges_rendered") == 1,
+        f"split vMerge 2D block should render as one merge operation: {counts}",
+    )
+
+
+@case
 def content_parser_preserves_visible_mixed_gridspan_hmerge_vmerge_continuation_text() -> None:
     work = new_workdir("parser_visible_mixed_gridspan_hmerge_vmerge")
     docx = work / "visible_mixed_gridspan_hmerge_vmerge.docx"

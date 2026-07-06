@@ -1189,7 +1189,10 @@ def extract_table_from_ooxml(
         hmerge_gridspan_remaining = 0
         row_heights.append(_row_height_twips(tr))
         header_flags.append(_row_repeats_header(tr))
-        for tc in _iter_table_cell_elements(tr):
+        row_cells = _iter_table_cell_elements(tr)
+        cell_pos = 0
+        while cell_pos < len(row_cells):
+            tc = row_cells[cell_pos]
             col_idx = len(cells)
             colspan = _cell_grid_span(tc)
             vmerge_kind = _cell_vmerge_kind(tc)
@@ -1215,6 +1218,59 @@ def extract_table_from_ooxml(
             duplicate_probe_nested_items: Optional[List[Dict[str, Any]]] = None
             vmerge_probe_text: Optional[str] = None
             vmerge_probe_nested_items: Optional[List[Dict[str, Any]]] = None
+            split_vmerge_continue_end: Optional[int] = None
+            if (
+                vmerge_kind == "continue"
+                and vmerge_record is not None
+                and vmerge_record_colspan > colspan
+                and id(vmerge_record) not in continued_records
+                and all(active_vmerges.get(col_idx + offset) is vmerge_record for offset in range(vmerge_record_colspan))
+            ):
+                probe_pos = cell_pos
+                probe_col = col_idx
+                covered = 0
+                split_ok = True
+                while covered < vmerge_record_colspan and probe_pos < len(row_cells):
+                    probe_tc = row_cells[probe_pos]
+                    probe_span = _cell_grid_span(probe_tc)
+                    probe_vmerge_kind = _cell_vmerge_kind(probe_tc)
+                    if (
+                        probe_vmerge_kind != "continue"
+                        or covered + probe_span > vmerge_record_colspan
+                        or any(active_vmerges.get(probe_col + offset) is not vmerge_record for offset in range(probe_span))
+                    ):
+                        split_ok = False
+                        break
+                    probe_text, probe_nested_items = _cell_text_and_nested_items_from_ooxml(
+                        probe_tc,
+                        clean_text_func=clean_text_func,
+                        nested_depth=nested_depth,
+                        max_nested_depth=max_nested_depth,
+                        image_rels=image_rels,
+                        image_registry=image_registry,
+                        image_items_func=image_items_func,
+                        image_run_items_func=image_run_items_func,
+                        notes=notes,
+                    )
+                    if probe_text or probe_nested_items:
+                        split_ok = False
+                        break
+                    covered += probe_span
+                    probe_col += probe_span
+                    probe_pos += 1
+                if split_ok and covered == vmerge_record_colspan:
+                    split_vmerge_continue_end = probe_pos
+            if split_vmerge_continue_end is not None:
+                cells.extend([""] * vmerge_record_colspan)
+                record_id = id(vmerge_record)
+                vmerge_record["rowspan"] = int(vmerge_record.get("rowspan") or 1) + 1
+                continued_records.add(record_id)
+                for offset in range(vmerge_record_colspan):
+                    seen_vmerge_cols.add(col_idx + offset)
+                current_hmerge_record = None
+                hmerge_gridspan_remaining = 0
+                cell_pos = split_vmerge_continue_end
+                continue
             if is_gridspan_duplicate_hmerge:
                 duplicate_probe_text, duplicate_probe_nested_items = _cell_text_and_nested_items_from_ooxml(
                     tc,
@@ -1229,6 +1285,7 @@ def extract_table_from_ooxml(
                 )
                 if not duplicate_probe_text and not duplicate_probe_nested_items:
                     hmerge_gridspan_remaining = max(0, hmerge_gridspan_remaining - colspan)
+                    cell_pos += 1
                     continue
                 is_vmerge_continue = False
             if is_vmerge_continue:
@@ -1324,6 +1381,7 @@ def extract_table_from_ooxml(
             else:
                 current_hmerge_record = None
                 hmerge_gridspan_remaining = 0
+            cell_pos += 1
 
         if grid_after > 0:
             cells.extend([""] * grid_after)

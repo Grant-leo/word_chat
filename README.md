@@ -183,7 +183,7 @@ build_generated.py ─────────→ 最终论文.docx
 
 截至 2026-07-06：
 
-- 合成回归：`444 passed, 0 failed`
+- 合成回归：`447 passed, 0 failed`
 - DOCX 横向宽表短说明：相邻横向宽表之间的 `rich_text` 桥接段即使没有顶层 `text`、只在 `runs` 中保存普通文字和 `note_ref` 脚注/尾注锚点，也会按可见 run 文字识别为短说明并保留在同一个 landscape section；脚注/尾注继续以 Word 原生 note reference 渲染，不会要求用户手动处理。
 - DOCX 富文本 run 内嵌块级内容：`rich_text.runs[].items` 里的代码、图片、题注和小表会按源顺序插入在前后文字 run 之间；不会被提前塞进当前段落，也不会被整体推迟到整段文字之后。
 - DOCX 富文本 run 单元格来源块级内容：`rich_text.runs[].table_cell_items` 里的代码、图片、题注和小表也会按源顺序插入在前后文字 run 之间；不会因为被挂在 table-cell 兼容结构下而静默丢失。
@@ -216,6 +216,7 @@ build_generated.py ─────────→ 最终论文.docx
 - DOCX 包装横向分节审计：源审计现在按 Word 最终视图穿透正文级 `w:sdt`、`w:customXml` / `w:smartTag` 和接受修订容器中的 `sectPr`，横向 section 内宽表会继续计入 `landscape_wide_table_risk_count`，不会因为 section break 被包装而漏掉人工复核提示。
 - DOCX 删除修订表格审计：源审计的表格数量、合并计数、嵌套深度、宽表和异常合并风险都按 Word 最终视图可见表格计算；`w:del` / `w:moveFrom` 中已经删除的隐藏表格不会制造 `COMPLEX_TABLE_UNSUPPORTED` 假警告，但仍会保留 `TRACKED_CHANGES_PRESENT` 提醒用户确认修订。
 - DOCX 矩形合并单元格：同一单元格同时跨多行、多列时，内容解析会归一成一个矩形 `table_merges`，避免把 `gridSpan` 和 `vMerge` 拆成重叠合并记录后让生成端重复 merge。
+- DOCX 分裂 vMerge 延续修复：当上方单元格用 `gridSpan + vMerge restart` 表示二维合并、下方转换器却拆成多个空的 `vMerge continue` 单元格时，内容解析会把它们折叠为一个安全矩形 `table_merges`；如果任一延续单元格带有可见文字、图片、公式、嵌套表或注释锚点，则继续 fail-open 保留为可见单元格并进入复核链路。
 - DOCX 旧式 hMerge 表格合并：兼容旧版/兼容模式 Word 的 `w:hMerge restart/continue`，内容解析会转为 `table_merges`，生成端用标准 `gridSpan` 输出；源审计和私有资料清分会把 `hMerge` 计入合并单元格风险并给出 `TABLE_MERGE_UNSUPPORTED` 复核提示。
 - DOCX 旧式 hMerge + vMerge 矩形合并：兼容旧式横向合并和纵向合并组合成 2D 合并块时，内容解析会归一成一个矩形 `table_merges`，避免生成端重复执行多条重叠 merge。
 - DOCX 非矩形旧式 hMerge + vMerge 冲突：如果旧式横向合并和纵向合并不是同宽矩形，引擎会 fail-open 保留 continuation 可见文本，只保留安全横向合并，并由源审计标记 `COMPLEX_TABLE_UNSUPPORTED` 复核。
