@@ -818,6 +818,46 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = decode_text(text.encode('utf-8'), 'gbk', errors='ignore')\n"
         ),
+        "qa_generated_simple_namespace_get_default_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "from types import SimpleNamespace\n"
+            "holder = SimpleNamespace(routes={})\n"
+            "decode_text = holder.routes.get('decode', codecs.decode)\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = decode_text(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_class_attribute_get_default_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "\n"
+            "class Holder:\n"
+            "    routes = {}\n"
+            "\n"
+            "decode_text = Holder.routes.get('decode', codecs.decode)\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = decode_text(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_object_attribute_assigned_get_default_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "routes = {}\n"
+            "\n"
+            "class Box:\n"
+            "    pass\n"
+            "\n"
+            "box = Box()\n"
+            "box.decoder = routes.get('decode', codecs.decode)\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = box.decoder(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_class_attribute_assigned_get_default_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "routes = {}\n"
+            "\n"
+            "class Box:\n"
+            "    decoder = routes.get('decode', codecs.decode)\n"
+            "\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = Box.decoder(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
         "qa_generated_assigned_dict_setdefault_codecs_decode_wrong_charset": (
             "import codecs\n"
             "routes = {}\n"
@@ -887,6 +927,46 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "text_codecs = modules.get('m', codecs)\n"
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = text_codecs.decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_simple_namespace_get_default_codecs_module_decode_wrong_charset": (
+            "import codecs\n"
+            "from types import SimpleNamespace\n"
+            "holder = SimpleNamespace(modules={})\n"
+            "text_codecs = holder.modules.get('m', codecs)\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = text_codecs.decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_class_attribute_get_default_codecs_module_decode_wrong_charset": (
+            "import codecs\n"
+            "\n"
+            "class Holder:\n"
+            "    modules = {}\n"
+            "\n"
+            "text_codecs = Holder.modules.get('m', codecs)\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = text_codecs.decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_object_attribute_assigned_get_default_codecs_module_decode_wrong_charset": (
+            "import codecs\n"
+            "modules = {}\n"
+            "\n"
+            "class Box:\n"
+            "    pass\n"
+            "\n"
+            "box = Box()\n"
+            "box.text_codecs = modules.get('m', codecs)\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = box.text_codecs.decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_class_attribute_assigned_get_default_codecs_module_decode_wrong_charset": (
+            "import codecs\n"
+            "modules = {}\n"
+            "\n"
+            "class Box:\n"
+            "    text_codecs = modules.get('m', codecs)\n"
+            "\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = Box.text_codecs.decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
         ),
         "qa_generated_assigned_dict_setdefault_codecs_module_decode_wrong_charset": (
             "import codecs\n"
@@ -1912,6 +1992,52 @@ def qa_does_not_flag_dynamic_container_safe_decoder() -> None:
             "text = '中文字符保持原样：编码测试。'\n"
             "routes = {}\n"
             "roundtrip = apply_decoder(routes.get('decode', safe_decode), text.encode('utf-8'), 'gbk')\n"
+        ),
+        "qa_dynamic_container_simple_namespace_existing_safe_decoder": (
+            "import codecs\n"
+            "from types import SimpleNamespace\n"
+            "def safe_decode(value, encoding, errors='strict'):\n"
+            "    return value.decode('utf-8')\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "holder = SimpleNamespace(routes={'decode': safe_decode})\n"
+            "roundtrip = holder.routes.get('decode', codecs.decode)(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_dynamic_container_class_attribute_existing_safe_decoder": (
+            "import codecs\n"
+            "def safe_decode(value, encoding, errors='strict'):\n"
+            "    return value.decode('utf-8')\n"
+            "\n"
+            "class Holder:\n"
+            "    routes = {'decode': safe_decode}\n"
+            "\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "roundtrip = Holder.routes.get('decode', codecs.decode)(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_dynamic_container_object_attribute_get_default_safe_decoder": (
+            "import codecs\n"
+            "def safe_decode(value, encoding, errors='strict'):\n"
+            "    return value.decode('utf-8')\n"
+            "routes = {}\n"
+            "\n"
+            "class Box:\n"
+            "    pass\n"
+            "\n"
+            "box = Box()\n"
+            "box.decoder = routes.get('decode', safe_decode)\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "roundtrip = box.decoder(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_dynamic_container_class_attribute_get_default_safe_decoder": (
+            "import codecs\n"
+            "def safe_decode(value, encoding, errors='strict'):\n"
+            "    return value.decode('utf-8')\n"
+            "routes = {}\n"
+            "\n"
+            "class Box:\n"
+            "    decoder = routes.get('decode', safe_decode)\n"
+            "\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "roundtrip = Box.decoder(text.encode('utf-8'), 'gbk', errors='ignore')\n"
         ),
     }
 

@@ -104,7 +104,15 @@ CLI, output, verification, and QA details in a focused package:
 Current baseline as of 2026-07-06:
 
 - Current full synthetic regression: `443 passed, 0 failed`. Latest additions:
-  generated-script decode guards now also block dynamic container mutations
+  generated-script decode guards now also block attribute-container method
+  returns and method-return attribute handoffs, including
+  `SimpleNamespace(routes={})` / `class Holder: routes = {}` followed by
+  `holder.routes.get("decode", codecs.decode)` or
+  `Holder.routes.get("decode", codecs.decode)`, plus `box.decoder =
+  routes.get("decode", codecs.decode)` and `Box.text_codecs =
+  modules.get("m", codecs)` before later calls can damage Chinese text.
+  Same-shaped safe custom decoders remain unblocked. Generated-script decode
+  guards also block dynamic container mutations
   such as `routes.append(codecs.decode)`, `routes["decode"] = codecs.decode`,
   `modules.append(codecs)`, `routes.extend([codecs.decode])`,
   `routes.insert(0, codecs.decode)`, `routes.update({"decode":

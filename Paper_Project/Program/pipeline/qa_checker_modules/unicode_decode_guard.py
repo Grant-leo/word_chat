@@ -2309,6 +2309,10 @@ def _codec_literal_container_aliases(
         set_container_item(container, key, call.args[1])
 
     for node in sorted(ast.walk(tree), key=lambda item: (getattr(item, "lineno", 0), getattr(item, "col_offset", 0))):
+        if isinstance(node, ast.ClassDef):
+            for attr, class_value in _class_attribute_assignment_items(node, constants):
+                set_literal_container(f"{node.name}.{attr}", class_value)
+
         value, targets = _assignment_value_targets(node)
         if value is not None:
             for target in targets:
@@ -2318,6 +2322,11 @@ def _codec_literal_container_aliases(
                 key_info = assignment_container_key(target)
                 if key_info is not None:
                     set_container_item(key_info[0], key_info[1], value)
+            for target in targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                for attr, item in _simple_namespace_keyword_items(value):
+                    set_literal_container(f"{target.id}.{attr}", item)
 
         call = node.value if isinstance(node, ast.Expr) else node
         if not (
@@ -2338,6 +2347,17 @@ def _codec_literal_container_aliases(
             update_container_values(container, call)
         elif call.func.attr == "setdefault":
             setdefault_container_value(container, call)
+
+    for alias, source in object_aliases.items():
+        prefix = f"{source}."
+        for name, keys in list(known_container_keys.items()):
+            if name.startswith(prefix):
+                known_container_keys.setdefault(f"{alias}.{name[len(prefix):]}", set()).update(keys)
+    for instance, class_name in class_instances.items():
+        prefix = f"{class_name}."
+        for name, keys in list(known_container_keys.items()):
+            if name.startswith(prefix):
+                known_container_keys.setdefault(f"{instance}.{name[len(prefix):]}", set()).update(keys)
     return module_containers, decode_containers, known_container_keys
 
 
@@ -2542,7 +2562,9 @@ def _codecs_decode_attribute_aliases(
     import_module_aliases: Set[str],
     module_dict_aliases: Dict[str, Set[str]],
     decode_dict_aliases: Dict[str, Set[str]],
-    decode_containers: Dict[str, Dict[Tuple[str, str], str]],
+    decode_containers: Dict[str, Dict[ContainerAliasKey, str]],
+    known_container_keys: Optional[Dict[str, Set[ContainerAliasKey]]] = None,
+    decode_default_alias: Optional[Callable[[ast.AST], Optional[str]]] = None,
 ) -> Set[str]:
     attributes: Set[str] = set()
     object_aliases: Dict[str, str] = {}
@@ -2561,6 +2583,18 @@ def _codecs_decode_attribute_aliases(
                 decode_dict_aliases,
             )
             or _container_subscript_lookup(value, decode_containers, constants) is not None
+            or (
+                known_container_keys is not None
+                and decode_default_alias is not None
+                and _container_method_return_lookup(
+                    value,
+                    decode_containers,
+                    known_container_keys,
+                    constants,
+                    decode_default_alias,
+                )
+                is not None
+            )
             or _attribute_name_alias_lookup(value, attributes)
         )
 
@@ -3027,7 +3061,9 @@ def _codec_module_attribute_aliases(
     importlib_module_aliases: Set[str],
     import_module_aliases: Set[str],
     module_dict_aliases: Dict[str, Set[str]],
-    module_containers: Dict[str, Dict[Tuple[str, str], str]],
+    module_containers: Dict[str, Dict[ContainerAliasKey, str]],
+    known_container_keys: Optional[Dict[str, Set[ContainerAliasKey]]] = None,
+    module_default_alias: Optional[Callable[[ast.AST], Optional[str]]] = None,
 ) -> Set[str]:
     attributes: Set[str] = set()
     object_aliases: Dict[str, str] = {}
@@ -3044,6 +3080,18 @@ def _codec_module_attribute_aliases(
                 module_dict_aliases,
             )
             or _container_subscript_lookup(value, module_containers, constants) is not None
+            or (
+                known_container_keys is not None
+                and module_default_alias is not None
+                and _container_method_return_lookup(
+                    value,
+                    module_containers,
+                    known_container_keys,
+                    constants,
+                    module_default_alias,
+                )
+                is not None
+            )
             or _attribute_name_alias_lookup(value, attributes)
         )
 
@@ -5517,6 +5565,8 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         import_module_aliases,
         module_dict_aliases,
         codec_module_containers,
+        codec_container_known_keys,
+        codec_module_default_alias,
     )
     codec_module_functions = _codecs_module_function_results(
         tree,
@@ -5578,6 +5628,8 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         module_dict_aliases,
         decode_dict_aliases,
         codec_decode_containers,
+        codec_container_known_keys,
+        codec_decode_default_alias,
     )
     _add_simple_factory_assignment_aliases(tree, module_aliases, getdecoder_aliases, lookup_aliases)
     getdecoder_factory_functions, lookup_factory_functions = _decoder_factory_function_ref_results(
