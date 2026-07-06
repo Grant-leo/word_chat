@@ -183,7 +183,8 @@ build_generated.py ─────────→ 最终论文.docx
 
 截至 2026-07-06：
 
-- 合成回归：`441 passed, 0 failed`
+- 合成回归：`442 passed, 0 failed`
+- DOCX 横向宽表短说明：相邻横向宽表之间的 `rich_text` 桥接段即使没有顶层 `text`、只在 `runs` 中保存普通文字和 `note_ref` 脚注/尾注锚点，也会按可见 run 文字识别为短说明并保留在同一个 landscape section；脚注/尾注继续以 Word 原生 note reference 渲染，不会要求用户手动处理。
 - DOCX 富文本 run 内嵌块级内容：`rich_text.runs[].items` 里的代码、图片、题注和小表会按源顺序插入在前后文字 run 之间；不会被提前塞进当前段落，也不会被整体推迟到整段文字之后。
 - DOCX 富文本 run 单元格来源块级内容：`rich_text.runs[].table_cell_items` 里的代码、图片、题注和小表也会按源顺序插入在前后文字 run 之间；不会因为被挂在 table-cell 兼容结构下而静默丢失。
 - DOCX 表格富文本图片 run：`table_cell_items` 里的 `role="rich_text"` 如果直接携带 `runs[].type="image"`，图片会在生成的 Word 表格单元格内按表格图片尺寸渲染，并与文字、行内公式、脚注/尾注锚点保持同一单元格源顺序；`gridAfter` 省略区遇到这种富内容时会保留完整行，不会静默删掉图片。

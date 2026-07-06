@@ -103,8 +103,12 @@ CLI, output, verification, and QA details in a focused package:
 
 Current baseline as of 2026-07-06:
 
-- Current full synthetic regression: `441 passed, 0 failed`. Latest additions:
-  generated-script decode guards now also block returned direct child closures
+- Current full synthetic regression: `442 passed, 0 failed`. Latest additions:
+  landscape-table grouping now recognizes compact `rich_text` bridge notes
+  whose visible text exists only in `runs`, including native `note_ref`
+  footnote/endnote anchors, so compatible adjacent landscape tables keep one
+  landscape section without losing the note reference. Generated-script decode
+  guards now also block returned direct child closures
   that capture decoder parameters, such as `make_decoder(codecs.decode)(
   payload, "gbk")`, plus assigned returned closures such as
   `decode_text = make_decoder(codecs.decode); decode_text(payload, "gbk")`,
@@ -361,9 +365,11 @@ Current baseline as of 2026-07-06:
   captions do not stay behind on the portrait page. Consecutive compatible
   landscape table groups with no bridge note also share one landscape section
   instead of creating an unnecessary portrait/landscape flip between tables.
-  Adjacent landscape tables separated only by a short note, including a very short English sentence such
-  as `Short bridge note.`, share the same landscape section, so the note stays
-  with the table group and the document avoids unnecessary
+  Adjacent landscape tables separated only by a short note, including a very
+  short English sentence such as `Short bridge note.` or a `rich_text` bridge
+  whose visible text is stored only in `runs` beside native `note_ref`
+  footnote/endnote anchors, share the same landscape section, so the note
+  stays with the table group and the document avoids unnecessary
   portrait/landscape page flips. Longer explanatory bridge prose that exceeds
   the compact-note budget is treated as body flow: the generator closes the
   first landscape section, restores portrait flow for that prose, and opens a

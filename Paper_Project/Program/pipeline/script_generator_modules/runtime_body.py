@@ -439,6 +439,37 @@ def table_group_at(paragraphs, idx):
     return None
 
 
+def landscape_table_bridge_visible_text(item):
+    if item is None:
+        return ''
+    if isinstance(item, str):
+        return item
+    if not isinstance(item, dict):
+        return ''
+    role = str(item.get('role') or '').strip()
+    kind = str(item.get('type') or '').strip()
+    if role == 'note_ref' or kind == 'note_ref':
+        return ''
+    parts = []
+    text = item.get('text')
+    if text:
+        return str(text)
+    for run in item.get('runs') or []:
+        run_text = landscape_table_bridge_visible_text(run)
+        if run_text:
+            parts.append(run_text)
+    for nested in item.get('items') or []:
+        nested_text = landscape_table_bridge_visible_text(nested)
+        if nested_text:
+            parts.append(nested_text)
+    for cell in item.get('table_cell_items') or []:
+        for nested in cell.get('items') or []:
+            nested_text = landscape_table_bridge_visible_text(nested)
+            if nested_text:
+                parts.append(nested_text)
+    return ''.join(parts)
+
+
 def landscape_table_bridge_text(item):
     if not isinstance(item, str):
         if not isinstance(item, dict):
@@ -448,7 +479,7 @@ def landscape_table_bridge_text(item):
             return ''
         if paragraph_item_has_image(item) or paragraph_item_has_display_math(item) or paragraph_item_has_block_formula_item(item) or paragraph_item_has_table(item) or paragraph_item_has_code(item) or paragraph_item_has_caption(item):
             return ''
-        text = clean_text_artifacts(item.get('text') or '').strip()
+        text = clean_text_artifacts(landscape_table_bridge_visible_text(item)).strip()
     else:
         text = clean_text_artifacts(item).strip()
     if not text:
