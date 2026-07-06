@@ -4640,6 +4640,185 @@ def _returned_higher_order_decode_wrappers(tree: ast.AST, constants: Dict[str, s
     return wrappers
 
 
+def _function_scope_bound_name_lines(func: ast.FunctionDef, names: Set[str]) -> Dict[str, List[int]]:
+    lines: Dict[str, List[int]] = {name: [] for name in names}
+    for stmt in func.body:
+        lineno = getattr(stmt, "lineno", 0)
+        if not lineno:
+            continue
+        for name in _statement_bound_names(stmt):
+            if name in lines:
+                lines[name].append(lineno)
+    return lines
+
+
+def _subscript_root_name(node: ast.AST) -> str:
+    current = node
+    while isinstance(current, ast.Subscript):
+        current = current.value
+    return current.id if isinstance(current, ast.Name) else ""
+
+
+def _returned_closure_decode_wrapper_info(
+    func: ast.FunctionDef,
+    constants: Dict[str, str],
+) -> Optional[Dict[str, object]]:
+    outer_signature = _function_signature(func, constants)
+    outer_params = outer_signature["params"]
+    if not isinstance(outer_params, set):
+        return None
+    value = _single_own_return_value(func)
+    if not isinstance(value, ast.Name):
+        return None
+    child = _direct_child_functions(func).get(value.id)
+    if child is None:
+        return None
+
+    child_signature = _function_signature(child, constants)
+    child_params = child_signature["params"]
+    if not isinstance(child_params, set):
+        return None
+    child_var_kwarg = child_signature.get("var_kwarg", "")
+    base_param_aliases, base_index_aliases = _local_param_and_index_aliases(child, child_params, constants)
+    comprehension_aliases = _comprehension_param_and_index_aliases(
+        child,
+        child_params,
+        constants,
+        base_param_aliases,
+        base_index_aliases,
+    )
+    outer_callable_aliases, outer_callable_containers = _local_callable_param_aliases(func, outer_params, constants)
+    outer_callable_names = outer_params | set(outer_callable_aliases) | set(outer_callable_containers)
+    child_bound_lines = _function_scope_bound_name_lines(child, outer_callable_names)
+
+    def outer_decoder_param_from_callable(value: ast.AST, call_node: ast.Call) -> str:
+        if isinstance(value, ast.Name):
+            if _name_bound_before_call(child_bound_lines, value.id, call_node):
+                return ""
+            if value.id in outer_params:
+                return value.id
+            return outer_callable_aliases.get(value.id, "")
+        root = _subscript_root_name(value)
+        if root and _name_bound_before_call(child_bound_lines, root, call_node):
+            return ""
+        return _container_subscript_lookup(value, outer_callable_containers, constants) or ""
+
+    decode_arg_pairs: Set[Tuple[str, ParamAccess]] = set()
+    for stmt in child.body:
+        for node in _current_scope_calls(stmt):
+            local_param_aliases, local_index_aliases = comprehension_aliases.get(
+                id(node),
+                (base_param_aliases, base_index_aliases),
+            )
+            decoder_param = outer_decoder_param_from_callable(node.func, node)
+            if not decoder_param:
+                continue
+            codec_param = _codec_arg_param_name_or_forwarded_kwargs(
+                _codecs_decode_encoding_node(node),
+                child_params,
+                node,
+                child_var_kwarg,
+                constants,
+                local_param_aliases,
+                local_index_aliases,
+            )
+            if codec_param:
+                decode_arg_pairs.add((decoder_param, codec_param))
+
+    if not decode_arg_pairs:
+        return None
+    return {
+        "decode_arg_pairs": decode_arg_pairs,
+        "positions": outer_signature["positions"],
+        "defaults": outer_signature["defaults"],
+        "default_nodes": outer_signature["default_nodes"],
+        "child_positions": child_signature["positions"],
+        "child_defaults": child_signature["defaults"],
+        "child_default_nodes": child_signature["default_nodes"],
+    }
+
+
+def _returned_closure_decode_wrappers(tree: ast.AST, constants: Dict[str, str]) -> Dict[str, Dict[str, object]]:
+    wrappers: Dict[str, Dict[str, object]] = {}
+    for func in [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]:
+        info = _returned_closure_decode_wrapper_info(func, constants)
+        if info:
+            wrappers[func.name] = info
+    _add_simple_wrapper_assignment_aliases(tree, wrappers)
+    return wrappers
+
+
+def _local_statement_scopes(tree: ast.AST) -> List[Union[ast.Module, ast.FunctionDef]]:
+    scopes: List[Union[ast.Module, ast.FunctionDef]] = []
+    if isinstance(tree, ast.Module):
+        scopes.append(tree)
+    scopes.extend(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef))
+    return scopes
+
+
+def _assigned_returned_closure_decode_calls(
+    tree: ast.AST,
+    returned_closure_wrappers: Dict[str, Dict[str, object]],
+) -> Dict[int, Dict[str, object]]:
+    calls: Dict[int, Dict[str, object]] = {}
+
+    def nested_statement_blocks(stmt: ast.stmt) -> List[List[ast.stmt]]:
+        if isinstance(stmt, (ast.If, ast.For, ast.AsyncFor, ast.While)):
+            return [stmt.body, stmt.orelse]
+        if isinstance(stmt, (ast.With, ast.AsyncWith)):
+            return [stmt.body]
+        if isinstance(stmt, ast.Try):
+            blocks = [stmt.body, stmt.orelse, stmt.finalbody]
+            blocks.extend(handler.body for handler in stmt.handlers)
+            return blocks
+        return []
+
+    def bind_assignment(stmt: ast.stmt, active: Dict[str, Dict[str, object]]) -> None:
+        value, targets = _assignment_value_targets(stmt)
+        if value is None or not targets:
+            return
+        target_names: Set[str] = set()
+        for target in targets:
+            target_names.update(_target_names(target))
+        for target_name in target_names:
+            active.pop(target_name, None)
+
+        assigned_info: Optional[Dict[str, object]] = None
+        if isinstance(value, ast.Call):
+            wrapper_name = _call_name(value.func)
+            wrapper = returned_closure_wrappers.get(wrapper_name)
+            if wrapper:
+                assigned_info = {"wrapper_name": wrapper_name, "wrapper": wrapper, "factory_call": value}
+        elif isinstance(value, ast.Name):
+            assigned_info = active.get(value.id)
+
+        if not assigned_info:
+            return
+        for target in targets:
+            if isinstance(target, ast.Name):
+                active[target.id] = assigned_info
+
+    def visit_statements(statements: List[ast.stmt], active: Dict[str, Dict[str, object]]) -> None:
+        for stmt in statements:
+            blocks = nested_statement_blocks(stmt)
+            if blocks:
+                for block in blocks:
+                    visit_statements(block, dict(active))
+                bind_assignment(stmt, active)
+                continue
+
+            for call in _current_scope_calls(stmt):
+                name = _call_name(call.func)
+                info = active.get(name)
+                if info:
+                    calls[id(call)] = info
+            bind_assignment(stmt, active)
+
+    for scope in _local_statement_scopes(tree):
+        visit_statements(scope.body, {})
+    return calls
+
+
 def _literal_container_value_at(
     node: ast.AST,
     path: Tuple[Tuple[str, str], ...],
@@ -5051,6 +5230,8 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
     higher_order_wrappers = _higher_order_decode_wrappers(tree, constants)
     higher_order_wrappers.update(_returned_higher_order_decode_wrappers(tree, constants))
     _add_simple_wrapper_assignment_aliases(tree, higher_order_wrappers)
+    returned_closure_wrappers = _returned_closure_decode_wrappers(tree, constants)
+    assigned_returned_closure_calls = _assigned_returned_closure_decode_calls(tree, returned_closure_wrappers)
     decoder_results, lookup_results = _decoder_factory_result_aliases(
         tree,
         module_aliases,
@@ -5677,6 +5858,84 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
                         hits.append(f"{name}({encoding})")
             if name not in higher_order_wrappers and _zero_arg_function_call_name(node.func) not in higher_order_wrappers:
                 continue
+        assigned_returned_closure = assigned_returned_closure_calls.get(id(node))
+        if assigned_returned_closure:
+            returned_closure_name = str(assigned_returned_closure.get("wrapper_name") or name)
+            returned_closure_wrapper = assigned_returned_closure.get("wrapper")
+            factory_call = assigned_returned_closure.get("factory_call")
+            if isinstance(returned_closure_wrapper, dict) and isinstance(factory_call, ast.Call):
+                child_wrapper = {
+                    "positions": returned_closure_wrapper.get("child_positions") or {},
+                    "defaults": returned_closure_wrapper.get("child_defaults") or {},
+                    "default_nodes": returned_closure_wrapper.get("child_default_nodes") or {},
+                }
+                added = False
+                decode_arg_pairs = returned_closure_wrapper.get("decode_arg_pairs") or set()
+                if isinstance(decode_arg_pairs, set):
+                    for decoder_param, codec_param in decode_arg_pairs:
+                        decoder_node = _wrapper_call_arg_or_default_node(
+                            factory_call,
+                            returned_closure_wrapper,
+                            decoder_param,
+                        )
+                        decoder_function_name = (
+                            _zero_arg_function_call_name(decoder_node) if decoder_node is not None else ""
+                        )
+                        is_decode_arg = _is_decode_function_ref(
+                            decoder_node,
+                            module_aliases,
+                            decode_aliases,
+                            constants,
+                            importlib_module_aliases,
+                            import_module_aliases,
+                            module_dict_aliases,
+                            decode_dict_aliases,
+                        )
+                        if not (is_decode_arg or decoder_function_name in codec_decode_functions):
+                            continue
+                        encoding = _wrapper_call_encoding(node, child_wrapper, codec_param, constants, string_containers)
+                        hits.append(f"{returned_closure_name}->{name}({_codec_label(encoding)})")
+                        added = True
+                if added:
+                    continue
+        if isinstance(node.func, ast.Call):
+            returned_closure_name = _call_name(node.func.func)
+            returned_closure_wrapper = returned_closure_wrappers.get(returned_closure_name)
+            if returned_closure_wrapper:
+                child_wrapper = {
+                    "positions": returned_closure_wrapper.get("child_positions") or {},
+                    "defaults": returned_closure_wrapper.get("child_defaults") or {},
+                    "default_nodes": returned_closure_wrapper.get("child_default_nodes") or {},
+                }
+                added = False
+                decode_arg_pairs = returned_closure_wrapper.get("decode_arg_pairs") or set()
+                if isinstance(decode_arg_pairs, set):
+                    for decoder_param, codec_param in decode_arg_pairs:
+                        decoder_node = _wrapper_call_arg_or_default_node(
+                            node.func,
+                            returned_closure_wrapper,
+                            decoder_param,
+                        )
+                        decoder_function_name = (
+                            _zero_arg_function_call_name(decoder_node) if decoder_node is not None else ""
+                        )
+                        is_decode_arg = _is_decode_function_ref(
+                            decoder_node,
+                            module_aliases,
+                            decode_aliases,
+                            constants,
+                            importlib_module_aliases,
+                            import_module_aliases,
+                            module_dict_aliases,
+                            decode_dict_aliases,
+                        )
+                        if not (is_decode_arg or decoder_function_name in codec_decode_functions):
+                            continue
+                        encoding = _wrapper_call_encoding(node, child_wrapper, codec_param, constants, string_containers)
+                        hits.append(f"{returned_closure_name}()({_codec_label(encoding)})")
+                        added = True
+                if added:
+                    continue
         higher_order_wrapper_name = name
         higher_order_wrapper = higher_order_wrappers.get(higher_order_wrapper_name)
         if higher_order_wrapper is None:

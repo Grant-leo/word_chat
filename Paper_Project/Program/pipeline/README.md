@@ -104,6 +104,15 @@ CLI, output, verification, and QA details in a focused package:
 Current baseline as of 2026-07-06:
 
 - Current full synthetic regression: `441 passed, 0 failed`. Latest additions:
+  generated-script decode guards now also block returned direct child closures
+  that capture decoder parameters, such as `make_decoder(codecs.decode)(
+  payload, "gbk")`, plus assigned returned closures such as
+  `decode_text = make_decoder(codecs.decode); decode_text(payload, "gbk")`,
+  including assigned-then-called closures inside `if`/loop statement blocks.
+  The closure body may call `decoder(value, encoding)` directly or call an
+  outer local callback container such as `callbacks = [decoder];
+  callbacks[0](value, encoding)`. Same-shaped custom safe decoders and later
+  reassignment to safe functions remain unblocked. Existing
   generated-script decode guards now also block high-order helpers that hide
   decoder parameters inside local callback containers, such as
   `callbacks = [decoder]; callbacks[0](value, encoding)` and
@@ -186,6 +195,20 @@ Current baseline as of 2026-07-06:
   usual beginner-facing next action. Regression:
   `pipeline_execution_blocks_unsafe_unicode_decode_before_subprocess` /
   `pipeline_build_phase_blocks_unsafe_unicode_decode_before_execution`.
+- Generated-script returned closure decoder guard: structural QA now
+  recognizes outer helpers that return a direct child closure capturing a
+  decoder parameter, including direct `decoder(value, encoding)` calls and
+  outer local callback containers such as `callbacks = [decoder];
+  callbacks[0](value, encoding)`. If the call site supplies real
+  `codecs.decode`, text-derived UTF-8 Chinese bytes, and an unsafe encoding
+  through `make_decoder(codecs.decode)(payload, "gbk")` or an assigned closure
+  such as `decode_text = make_decoder(codecs.decode);
+  decode_text(payload, "gbk")`, including inside simple statement blocks, the
+  run fails closed before
+  `build_generated.py` can damage Chinese text. Same-shaped custom safe
+  decoder closures and later reassignment to safe functions remain unblocked.
+  Regression: `qa_flags_generated_script_general_codecs_decode_text_reencoding`
+  / `qa_does_not_flag_local_callback_container_safe_decoder`.
 - Generated-script `operator.methodcaller` codecs guard: structural QA now
   treats `operator.methodcaller("decode", payload, "gbk")(codecs)`, assigned
   methodcaller aliases, and no-required-argument helper returns as real
