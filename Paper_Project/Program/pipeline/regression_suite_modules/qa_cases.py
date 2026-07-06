@@ -513,6 +513,29 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "encodings = ['gbk']\n"
             "mojibake = decode_all(codecs.decode, payloads, encodings)\n"
         ),
+        "qa_generated_codecs_decode_custom_batch_rows_loop_wrong_charset": (
+            "import codecs\n"
+            "\n"
+            "def decode_all(decoder, rows):\n"
+            "    for value, encoding in rows:\n"
+            "        return decoder(value, encoding, errors='ignore')\n"
+            "    return ''\n"
+            "\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "rows = [(text.encode('utf-8'), 'gbk')]\n"
+            "mojibake = decode_all(codecs.decode, rows)\n"
+        ),
+        "qa_generated_codecs_decode_custom_batch_rows_listcomp_wrong_charset": (
+            "import codecs\n"
+            "\n"
+            "def decode_all(decoder, rows):\n"
+            "    return [decoder(value, encoding, errors='ignore')\n"
+            "            for value, encoding in rows][0]\n"
+            "\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "rows = [(text.encode('utf-8'), 'gbk')]\n"
+            "mojibake = decode_all(codecs.decode, rows)\n"
+        ),
         "qa_generated_returned_higher_order_wrapper_codecs_decode_wrong_charset": (
             "import codecs\n"
             "\n"
@@ -1375,6 +1398,62 @@ def qa_does_not_flag_custom_batch_comprehension_safe_decoder() -> None:
         assert_true(
             "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" not in codes,
             f"QA falsely flagged a custom safe comprehension decoder {name} as unsafe: {report}",
+        )
+
+
+@case
+def qa_does_not_flag_custom_batch_paired_rows_safe_decoder() -> None:
+    text = "中文字符保持原样：编码测试。"
+    scripts = {
+        "qa_custom_batch_rows_loop_safe_decoder": (
+            "import codecs\n"
+            "\n"
+            "def decode_all(decoder, rows):\n"
+            "    for value, encoding in rows:\n"
+            "        return decoder(value, encoding, errors='strict')\n"
+            "    return ''\n"
+            "\n"
+            "def safe_decode(value, encoding, errors='strict'):\n"
+            "    return value.decode('utf-8')\n"
+            "\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "rows = [(text.encode('utf-8'), 'gbk')]\n"
+            "roundtrip = decode_all(safe_decode, rows)\n"
+        ),
+        "qa_custom_batch_rows_listcomp_safe_decoder": (
+            "import codecs\n"
+            "\n"
+            "def decode_all(decoder, rows):\n"
+            "    return [decoder(value, encoding, errors='strict')\n"
+            "            for value, encoding in rows][0]\n"
+            "\n"
+            "def safe_decode(value, encoding, errors='strict'):\n"
+            "    return value.decode('utf-8')\n"
+            "\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "rows = [(text.encode('utf-8'), 'gbk')]\n"
+            "roundtrip = decode_all(safe_decode, rows)\n"
+        ),
+    }
+
+    for name, script in scripts.items():
+        work = new_workdir(name)
+        doc = Document()
+        doc.add_paragraph("Synthetic Thesis")
+        doc.add_paragraph("1 Introduction")
+        doc.add_paragraph(text)
+        doc.save(work / "out.docx")
+        write_json(work / "content.json", base_content([text]))
+        write_json(work / "format.json", base_format())
+        write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {}})
+        write_json(work / "workflow_mode.json", {"mode": "user"})
+        (work / "build_generated.py").write_text(script, encoding="utf-8")
+
+        report = check_output(str(work), mode="user", output_docx_name="out.docx")
+        codes = [item["code"] for item in report["issues"]]
+        assert_true(
+            "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" not in codes,
+            f"QA falsely flagged a custom safe paired-rows decoder {name} as unsafe: {report}",
         )
 
 

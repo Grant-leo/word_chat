@@ -3690,8 +3690,12 @@ def _param_access_path(access: ParamAccess) -> Tuple[Tuple[str, str], ...]:
     return tuple()
 
 
+def _param_access_with_index_item(access: ParamAccess, index: int) -> ParamAccess:
+    return (_param_access_root(access), _param_access_path(access) + (("index", str(index)),))
+
+
 def _param_access_with_first_item(access: ParamAccess) -> ParamAccess:
-    return (_param_access_root(access), _param_access_path(access) + (("index", "0"),))
+    return _param_access_with_index_item(access, 0)
 
 
 def _param_access_from_node(
@@ -3750,6 +3754,9 @@ def _local_param_and_index_aliases(
         if isinstance(target, ast.Name):
             aliases[target.id] = access
             index_aliases.pop(target.id, None)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for index, child in enumerate(target.elts):
+                bind_target(child, _param_access_with_index_item(access, index))
 
     def bind_index_target(target: ast.AST, index_key: IndexAlias) -> None:
         if isinstance(target, ast.Name):
@@ -3869,6 +3876,9 @@ def _comprehension_param_and_index_aliases(
         if isinstance(target, ast.Name):
             aliases[target.id] = access
             index_aliases.pop(target.id, None)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for index, child in enumerate(target.elts):
+                bind_target(child, _param_access_with_index_item(access, index), aliases, index_aliases)
 
     def bind_index_target(
         target: ast.AST,
