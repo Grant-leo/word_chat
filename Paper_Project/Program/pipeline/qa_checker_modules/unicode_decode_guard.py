@@ -4015,6 +4015,74 @@ def _local_param_access_aliases(
     return aliases
 
 
+def _local_callable_param_aliases(
+    func: ast.FunctionDef,
+    params: Set[str],
+    constants: Dict[str, str],
+) -> Tuple[Dict[str, str], Dict[str, Dict[ContainerAliasKey, str]]]:
+    aliases: Dict[str, str] = {}
+    containers: Dict[str, Dict[ContainerAliasKey, str]] = {}
+
+    def resolve(value: ast.AST) -> str:
+        if isinstance(value, ast.Name):
+            if value.id in params:
+                return value.id
+            return aliases.get(value.id, "")
+        return _container_subscript_lookup(value, containers, constants) or ""
+
+    def container_items_for(value: ast.AST) -> Dict[ContainerAliasKey, str]:
+        items: Dict[ContainerAliasKey, str] = {}
+        for key, child in _literal_container_path_items(value, constants):
+            param = resolve(child)
+            if param:
+                items[key] = param
+        return items
+
+    def bind_target(target: ast.AST, param: str, container_items: Dict[ContainerAliasKey, str]) -> None:
+        if not isinstance(target, ast.Name):
+            return
+        aliases.pop(target.id, None)
+        containers.pop(target.id, None)
+        if param:
+            aliases[target.id] = param
+        if container_items:
+            containers[target.id] = dict(container_items)
+
+    class Visitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            if node is func:
+                self.generic_visit(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            return
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return
+
+        def visit_Assign(self, node: ast.Assign) -> None:
+            param = resolve(node.value)
+            container_items = container_items_for(node.value)
+            if not param and isinstance(node.value, ast.Name):
+                container_items = dict(containers.get(node.value.id, {}))
+            for target in node.targets:
+                bind_target(target, param, container_items)
+            self.generic_visit(node)
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            if node.value is None or not isinstance(node.target, ast.Name):
+                self.generic_visit(node)
+                return
+            param = resolve(node.value)
+            container_items = container_items_for(node.value)
+            if not param and isinstance(node.value, ast.Name):
+                container_items = dict(containers.get(node.value.id, {}))
+            bind_target(node.target, param, container_items)
+            self.generic_visit(node)
+
+    Visitor().visit(func)
+    return aliases, containers
+
+
 def _codec_arg_param_name(
     codec_node: Optional[ast.AST],
     params: Set[str],
@@ -4308,6 +4376,15 @@ def _higher_order_decode_wrapper_info(func: ast.FunctionDef, constants: Dict[str
     local_module_decode_aliases = _local_getattr_param_aliases(func, params, "decode", constants)
     local_module_getdecoder_aliases = _local_getattr_param_aliases(func, params, "getdecoder", constants)
     local_module_lookup_aliases = _local_getattr_param_aliases(func, params, "lookup", constants)
+    local_callable_aliases, local_callable_containers = _local_callable_param_aliases(func, params, constants)
+
+    def decoder_param_from_callable(value: ast.AST) -> str:
+        if isinstance(value, ast.Name):
+            if value.id in params:
+                return value.id
+            return local_callable_aliases.get(value.id, "")
+        return _container_subscript_lookup(value, local_callable_containers, constants) or ""
+
     for node in ast.walk(func):
         if not isinstance(node, ast.Call):
             continue
@@ -4331,8 +4408,23 @@ def _higher_order_decode_wrapper_info(func: ast.FunctionDef, constants: Dict[str
                 if codec_param:
                     module_decode_arg_pairs.add((module_param, codec_param))
                 continue
-            if decoder_param not in params:
+            decoder_param = decoder_param_from_callable(node.func)
+            if not decoder_param:
                 continue
+            codec_param = _codec_arg_param_name_or_forwarded_kwargs(
+                _codecs_decode_encoding_node(node),
+                params,
+                node,
+                var_kwarg,
+                constants,
+                local_param_aliases,
+                local_index_aliases,
+            )
+            if codec_param:
+                decode_arg_pairs.add((decoder_param, codec_param))
+            continue
+        decoder_param = decoder_param_from_callable(node.func)
+        if decoder_param:
             codec_param = _codec_arg_param_name_or_forwarded_kwargs(
                 _codecs_decode_encoding_node(node),
                 params,

@@ -103,7 +103,14 @@ CLI, output, verification, and QA details in a focused package:
 
 Current baseline as of 2026-07-06:
 
-- Current full synthetic regression: `440 passed, 0 failed`. Latest additions:
+- Current full synthetic regression: `441 passed, 0 failed`. Latest additions:
+  generated-script decode guards now also block high-order helpers that hide
+  decoder parameters inside local callback containers, such as
+  `callbacks = [decoder]; callbacks[0](value, encoding)` and
+  `callbacks = {"decode": decoder}; callbacks["decode"](value, encoding)`,
+  when the call site passes real `codecs.decode`, text-derived UTF-8 Chinese
+  bytes, and an unsafe encoding such as `"gbk"`; same-shaped custom safe
+  decoders and overwritten safe callback containers remain unblocked. Existing
   generated-script decode guards now also block custom batch wrappers that
   hide payload/encoding pairs inside a paired `rows` parameter, such as
   `for value, encoding in rows: decoder(value, encoding)` and
@@ -390,6 +397,7 @@ Current baseline as of 2026-07-06:
 - Generated-script batch-wrapper range/index guard: structural QA now also recognizes helper bodies that loop with `for idx in range(len(values))` and pass `values[idx]` / `encodings[idx]` into a decoder parameter. If the call site supplies real `codecs.decode`, text-derived UTF-8 Chinese bytes, and an unsafe encoding container such as `encodings = ["gbk"]`, the run fails closed before `build_generated.py` can damage Chinese text. Same-shaped custom safe decoder functions remain unblocked. Regression: `qa_flags_generated_script_general_codecs_decode_text_reencoding` / `qa_does_not_flag_custom_batch_range_index_safe_decoder`.
 - Generated-script batch-wrapper comprehension guard: structural QA now also recognizes helper bodies that use list comprehensions or generator expressions with `for value, encoding in zip(values, encodings)` and pass `value` / `encoding` into a decoder parameter. If the call site supplies real `codecs.decode`, text-derived UTF-8 Chinese bytes, and an unsafe encoding container such as `encodings = ["gbk"]`, the run fails closed before `build_generated.py` can damage Chinese text. Same-shaped custom safe decoder functions remain unblocked. Regression: `qa_flags_generated_script_general_codecs_decode_text_reencoding` / `qa_does_not_flag_custom_batch_comprehension_safe_decoder`.
 - Generated-script batch-wrapper paired-rows guard: structural QA now also recognizes helper bodies that unpack already-paired rows with `for value, encoding in rows` or `[decoder(value, encoding) for value, encoding in rows]`. If the call site supplies real `codecs.decode`, text-derived UTF-8 Chinese bytes, and an unsafe paired row such as `rows = [(text.encode("utf-8"), "gbk")]`, the run fails closed before `build_generated.py` can damage Chinese text. Same-shaped custom safe decoder functions remain unblocked. Regression: `qa_flags_generated_script_general_codecs_decode_text_reencoding` / `qa_does_not_flag_custom_batch_paired_rows_safe_decoder`.
+- Generated-script local callback-container guard: structural QA now recognizes high-order helper bodies that store a decoder parameter in a local list or dict and then call it through a subscript. If the call site supplies real `codecs.decode`, text-derived UTF-8 Chinese bytes, and an unsafe encoding such as `"gbk"`, the run fails closed before `build_generated.py` can damage Chinese text. Same-shaped custom safe decoder functions and overwritten safe callback containers remain unblocked. Regression: `qa_flags_generated_script_general_codecs_decode_text_reencoding` / `qa_does_not_flag_local_callback_container_safe_decoder`.
 - Generated-script `operator.attrgetter` decode guard: structural QA also treats
   `operator.attrgetter("decode")(codecs)` as a statically provable
   `codecs.decode` handoff before Chinese text-derived UTF-8 bytes are decoded
