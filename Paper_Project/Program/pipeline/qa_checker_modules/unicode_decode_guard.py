@@ -2438,6 +2438,52 @@ def _container_method_return_lookup(
     return default_alias(node.args[1])
 
 
+def _add_container_method_return_assignment_aliases(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    decode_aliases: Set[str],
+    module_containers: Dict[str, Dict[ContainerAliasKey, str]],
+    decode_containers: Dict[str, Dict[ContainerAliasKey, str]],
+    known_container_keys: Dict[str, Set[ContainerAliasKey]],
+    constants: Dict[str, str],
+    module_default_alias: Callable[[ast.AST], Optional[str]],
+    decode_default_alias: Callable[[ast.AST], Optional[str]],
+) -> None:
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            value, targets = _assignment_value_targets(node)
+            if value is None:
+                continue
+            is_module = _container_method_return_lookup(
+                value,
+                module_containers,
+                known_container_keys,
+                constants,
+                module_default_alias,
+            ) is not None
+            is_decode = _container_method_return_lookup(
+                value,
+                decode_containers,
+                known_container_keys,
+                constants,
+                decode_default_alias,
+            ) is not None
+            if not is_module and not is_decode:
+                continue
+            for target in targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                if is_module and target.id not in module_aliases:
+                    module_aliases.add(target.id)
+                    changed = True
+                if is_decode and target.id not in decode_aliases:
+                    decode_aliases.add(target.id)
+                    changed = True
+        if not changed:
+            break
+
+
 def _attribute_alias_lookup(node: ast.AST, aliases: Dict[str, str]) -> Optional[str]:
     if not isinstance(node, ast.Attribute):
         return None
@@ -5178,8 +5224,11 @@ def _is_decode_function_ref(
     import_module_aliases: Set[str],
     module_dict_aliases: Dict[str, Set[str]],
     decode_dict_aliases: Dict[str, Set[str]],
+    decode_containers: Optional[Dict[str, Dict[ContainerAliasKey, str]]] = None,
+    known_container_keys: Optional[Dict[str, Set[ContainerAliasKey]]] = None,
+    decode_default_alias: Optional[Callable[[ast.AST], Optional[str]]] = None,
 ) -> bool:
-    return _static_codecs_decode_ref(
+    if _static_codecs_decode_ref(
         node,
         module_aliases,
         decode_aliases,
@@ -5188,7 +5237,22 @@ def _is_decode_function_ref(
         import_module_aliases,
         module_dict_aliases,
         decode_dict_aliases,
-    )
+    ):
+        return True
+    if (
+        node is not None
+        and decode_containers is not None
+        and known_container_keys is not None
+        and decode_default_alias is not None
+    ):
+        return _container_method_return_lookup(
+            node,
+            decode_containers,
+            known_container_keys,
+            constants,
+            decode_default_alias,
+        ) is not None
+    return False
 
 
 def _is_functools_partial_call(node: ast.AST, module_aliases: Set[str], partial_aliases: Set[str]) -> bool:
@@ -5419,6 +5483,32 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
             )
             else None
         )
+
+    def codec_module_default_alias(value: ast.AST) -> Optional[str]:
+        return (
+            "codecs"
+            if _static_codecs_module_ref(
+                value,
+                module_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+            )
+            else None
+        )
+
+    _add_container_method_return_assignment_aliases(
+        tree,
+        module_aliases,
+        decode_aliases,
+        codec_module_containers,
+        codec_decode_containers,
+        codec_container_known_keys,
+        constants,
+        codec_module_default_alias,
+        codec_decode_default_alias,
+    )
     codec_module_attributes = _codec_module_attribute_aliases(
         tree,
         module_aliases,
@@ -6187,6 +6277,9 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
                             import_module_aliases,
                             module_dict_aliases,
                             decode_dict_aliases,
+                            codec_decode_containers,
+                            codec_container_known_keys,
+                            codec_decode_default_alias,
                         )
                         if not (is_decode_arg or decoder_function_name in codec_decode_functions):
                             continue
@@ -6225,6 +6318,9 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
                             import_module_aliases,
                             module_dict_aliases,
                             decode_dict_aliases,
+                            codec_decode_containers,
+                            codec_container_known_keys,
+                            codec_decode_default_alias,
                         )
                         if not (is_decode_arg or decoder_function_name in codec_decode_functions):
                             continue
@@ -6253,6 +6349,9 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
                         import_module_aliases,
                         module_dict_aliases,
                         decode_dict_aliases,
+                        codec_decode_containers,
+                        codec_container_known_keys,
+                        codec_decode_default_alias,
                     )
                     if not (is_decode_arg or decoder_function_name in codec_decode_functions):
                         continue

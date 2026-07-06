@@ -811,6 +811,37 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = routes.pop('decode')(text.encode('utf-8'), 'gbk', errors='ignore')\n"
         ),
+        "qa_generated_assigned_dict_get_default_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "routes = {}\n"
+            "decode_text = routes.get('decode', codecs.decode)\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = decode_text(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_assigned_dict_setdefault_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "routes = {}\n"
+            "decode_text = routes.setdefault('decode', codecs.decode)\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = decode_text(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_assigned_dict_pop_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "routes = {'decode': codecs.decode}\n"
+            "decode_text = routes.pop('decode')\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = decode_text(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_higher_order_dict_get_default_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "\n"
+            "def apply_decoder(decoder, value, encoding):\n"
+            "    return decoder(value, encoding, errors='ignore')\n"
+            "\n"
+            "routes = {}\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = apply_decoder(routes.get('decode', codecs.decode), text.encode('utf-8'), 'gbk')\n"
+        ),
         "qa_generated_list_append_codecs_module_decode_wrong_charset": (
             "import codecs\n"
             "modules = []\n"
@@ -849,6 +880,27 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "modules = {'m': codecs}\n"
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = modules.pop('m').decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_assigned_dict_get_default_codecs_module_decode_wrong_charset": (
+            "import codecs\n"
+            "modules = {}\n"
+            "text_codecs = modules.get('m', codecs)\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = text_codecs.decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_assigned_dict_setdefault_codecs_module_decode_wrong_charset": (
+            "import codecs\n"
+            "modules = {}\n"
+            "text_codecs = modules.setdefault('m', codecs)\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = text_codecs.decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_assigned_dict_pop_codecs_module_decode_wrong_charset": (
+            "import codecs\n"
+            "modules = {'m': codecs}\n"
+            "text_codecs = modules.pop('m')\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = text_codecs.decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
         ),
         "qa_generated_function_returns_codecs_decode_wrong_charset": (
             "import codecs\n"
@@ -1841,6 +1893,25 @@ def qa_does_not_flag_dynamic_container_safe_decoder() -> None:
             "text = '中文字符保持原样：编码测试。'\n"
             "routes = {'decode': safe_decode}\n"
             "roundtrip = routes.pop('decode')(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_dynamic_container_assigned_get_default_safe_decoder": (
+            "import codecs\n"
+            "def safe_decode(value, encoding, errors='strict'):\n"
+            "    return value.decode('utf-8')\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "routes = {}\n"
+            "decode_text = routes.get('decode', safe_decode)\n"
+            "roundtrip = decode_text(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_dynamic_container_higher_order_get_default_safe_decoder": (
+            "import codecs\n"
+            "def safe_decode(value, encoding, errors='strict'):\n"
+            "    return value.decode('utf-8')\n"
+            "def apply_decoder(decoder, value, encoding):\n"
+            "    return decoder(value, encoding, errors='ignore')\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "routes = {}\n"
+            "roundtrip = apply_decoder(routes.get('decode', safe_decode), text.encode('utf-8'), 'gbk')\n"
         ),
     }
 
