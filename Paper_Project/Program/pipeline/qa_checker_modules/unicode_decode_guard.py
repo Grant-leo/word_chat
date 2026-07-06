@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import ast
 import codecs
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Callable, Dict, List, Optional, Set, Tuple, Union
 
 DANGEROUS_UNICODE_CODECS = {"unicode-escape", "raw-unicode-escape"}
 
@@ -1915,7 +1915,11 @@ def _codec_literal_container_aliases(
     import_module_aliases: Set[str],
     module_dict_aliases: Dict[str, Set[str]],
     decode_dict_aliases: Dict[str, Set[str]],
-) -> Tuple[Dict[str, Dict[ContainerAliasKey, str]], Dict[str, Dict[ContainerAliasKey, str]]]:
+) -> Tuple[
+    Dict[str, Dict[ContainerAliasKey, str]],
+    Dict[str, Dict[ContainerAliasKey, str]],
+    Dict[str, Set[ContainerAliasKey]],
+]:
     module_containers: Dict[str, Dict[ContainerAliasKey, str]] = {}
     decode_containers: Dict[str, Dict[ContainerAliasKey, str]] = {}
     for _ in range(4):
@@ -2334,7 +2338,7 @@ def _codec_literal_container_aliases(
             update_container_values(container, call)
         elif call.func.attr == "setdefault":
             setdefault_container_value(container, call)
-    return module_containers, decode_containers
+    return module_containers, decode_containers, known_container_keys
 
 
 def _container_subscript_path(
@@ -2354,7 +2358,7 @@ def _container_subscript_path(
         if (
             isinstance(current, ast.Call)
             and isinstance(current.func, ast.Attribute)
-            and current.func.attr == "get"
+            and current.func.attr in {"get", "setdefault", "pop"}
             and current.args
         ):
             key = _container_key_from_literal(current.args[0], constants)
@@ -2393,6 +2397,45 @@ def _container_subscript_lookup(
         if direct is not None:
             return direct
     return items.get(path)
+
+
+def _container_method_return_lookup(
+    node: ast.AST,
+    aliases: Dict[str, Dict[ContainerAliasKey, str]],
+    known_container_keys: Dict[str, Set[ContainerAliasKey]],
+    constants: Dict[str, str],
+    default_alias: Callable[[ast.AST], Optional[str]],
+) -> Optional[str]:
+    direct = _container_subscript_lookup(node, aliases, constants)
+    if direct is not None:
+        return direct
+    if not (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"get", "setdefault", "pop"}
+        and node.args
+    ):
+        return None
+    key = _container_key_from_literal(node.args[0], constants)
+    if key is None:
+        return None
+    container_path = _container_subscript_path(node.func.value, constants)
+    if container_path is not None:
+        container_name, prefix_path = container_path
+        key = prefix_path + (key,)
+    elif isinstance(node.func.value, ast.Name):
+        container_name = node.func.value.id
+    elif isinstance(node.func.value, ast.Attribute):
+        container_name = _call_name(node.func.value)
+    else:
+        container_name = _zero_arg_function_call_name(node.func.value)
+    if not container_name or container_name not in known_container_keys:
+        return None
+    if key in known_container_keys.get(container_name, set()):
+        return None
+    if len(node.args) < 2:
+        return None
+    return default_alias(node.args[1])
 
 
 def _attribute_alias_lookup(node: ast.AST, aliases: Dict[str, str]) -> Optional[str]:
@@ -3129,6 +3172,7 @@ def _is_codecs_module_ref_or_result(
     module_functions: Set[str],
     class_aliases: Dict[str, str],
     factory_aliases: Dict[str, str],
+    known_container_keys: Optional[Dict[str, Set[ContainerAliasKey]]] = None,
 ) -> bool:
     if node is None:
         return False
@@ -3142,6 +3186,23 @@ def _is_codecs_module_ref_or_result(
     ):
         return True
     if _container_subscript_lookup(node, module_containers, constants) is not None:
+        return True
+    if _container_method_return_lookup(
+        node,
+        module_containers,
+        known_container_keys or {},
+        constants,
+        lambda value: "codecs"
+        if _static_codecs_module_ref(
+            value,
+            module_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+        )
+        else None,
+    ) is not None:
         return True
     if _attribute_name_alias_lookup(node, module_attributes):
         return True
@@ -3163,6 +3224,7 @@ def _param_getattr_call_has_codecs_module(
     module_functions: Set[str],
     class_aliases: Dict[str, str],
     factory_aliases: Dict[str, str],
+    known_container_keys: Optional[Dict[str, Set[ContainerAliasKey]]] = None,
 ) -> bool:
     module_param = function_info.get("module_param")
     if not isinstance(module_param, str):
@@ -3180,6 +3242,7 @@ def _param_getattr_call_has_codecs_module(
         module_functions,
         class_aliases,
         factory_aliases,
+        known_container_keys,
     )
 
 
@@ -5330,7 +5393,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         module_dict_aliases,
         decode_dict_aliases,
     )
-    codec_module_containers, codec_decode_containers = _codec_literal_container_aliases(
+    codec_module_containers, codec_decode_containers, codec_container_known_keys = _codec_literal_container_aliases(
         tree,
         module_aliases,
         decode_aliases,
@@ -5340,6 +5403,22 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         module_dict_aliases,
         decode_dict_aliases,
     )
+
+    def codec_decode_default_alias(value: ast.AST) -> Optional[str]:
+        return (
+            "codecs.decode"
+            if _static_codecs_decode_ref(
+                value,
+                module_aliases,
+                decode_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+                decode_dict_aliases,
+            )
+            else None
+        )
     codec_module_attributes = _codec_module_attribute_aliases(
         tree,
         module_aliases,
@@ -5661,6 +5740,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
                 codec_module_functions,
                 class_aliases,
                 factory_aliases,
+                codec_container_known_keys,
             )
         ):
             encoded_as, encoding = methodcaller_codecs_info
@@ -5693,6 +5773,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
                 codec_module_functions,
                 class_aliases,
                 factory_aliases,
+                codec_container_known_keys,
             )
         ):
             encoded_as, encoding = methodcaller_codecs_results[name]
@@ -5738,6 +5819,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
                 codec_module_functions,
                 class_aliases,
                 factory_aliases,
+                codec_container_known_keys,
             )
         ):
             encoded_as, encoding = methodcaller_codecs_functions[function_methodcaller_name]
@@ -5792,7 +5874,13 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
         if partial_encoding is not None:
             hits.append(f"functools.partial(codecs.decode)({_codec_label(partial_encoding)})")
             continue
-        container_codec_decode = _container_subscript_lookup(node.func, codec_decode_containers, constants)
+        container_codec_decode = _container_method_return_lookup(
+            node.func,
+            codec_decode_containers,
+            codec_container_known_keys,
+            constants,
+            codec_decode_default_alias,
+        )
         if container_codec_decode is not None:
             encoding = _codecs_decode_encoding(node, constants)
             label = _subscript_call_label(node.func)
@@ -5849,6 +5937,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
                 codec_module_functions,
                 class_aliases,
                 factory_aliases,
+                codec_container_known_keys,
             ):
                 encoding = _codecs_decode_encoding(node, constants)
                 hits.append(f"{param_getattr_decode_name}()({_codec_label(encoding)})")
@@ -5876,6 +5965,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
                 codec_module_functions,
                 class_aliases,
                 factory_aliases,
+                codec_container_known_keys,
             ):
                 encoding = _codec_factory_encoding(node.func, constants)
                 hits.append(f"{param_getattr_getdecoder_name}()({_codec_label(encoding)})")
@@ -5989,6 +6079,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
                 codec_module_functions,
                 class_aliases,
                 factory_aliases,
+                codec_container_known_keys,
             ):
                 encoding = _codecs_decode_encoding(node, constants)
                 hits.append(f"{name}({_codec_label(encoding)})")
@@ -6215,6 +6306,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
                         codec_module_functions,
                         class_aliases,
                         factory_aliases,
+                        codec_container_known_keys,
                     ):
                         continue
                     encoding = _wrapper_call_encoding(node, higher_order_wrapper, codec_param, constants, string_containers)
@@ -6235,6 +6327,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
                         codec_module_functions,
                         class_aliases,
                         factory_aliases,
+                        codec_container_known_keys,
                     ):
                         continue
                     encoding = _wrapper_call_encoding(node, higher_order_wrapper, codec_param, constants, string_containers)
@@ -6255,6 +6348,7 @@ def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated
                         codec_module_functions,
                         class_aliases,
                         factory_aliases,
+                        codec_container_known_keys,
                     ):
                         continue
                     encoding = _wrapper_call_encoding(node, higher_order_wrapper, codec_param, constants, string_containers)

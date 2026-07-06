@@ -793,6 +793,24 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = routes['decode'](text.encode('utf-8'), 'gbk', errors='ignore')\n"
         ),
+        "qa_generated_dict_setdefault_direct_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "routes = {}\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = routes.setdefault('decode', codecs.decode)(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_dict_get_default_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "routes = {}\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = routes.get('decode', codecs.decode)(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_dict_pop_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "routes = {'decode': codecs.decode}\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = routes.pop('decode')(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
         "qa_generated_list_append_codecs_module_decode_wrong_charset": (
             "import codecs\n"
             "modules = []\n"
@@ -813,6 +831,24 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "modules.update({'m': codecs})\n"
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = modules['m'].decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_dict_setdefault_direct_codecs_module_decode_wrong_charset": (
+            "import codecs\n"
+            "modules = {}\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = modules.setdefault('m', codecs).decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_dict_get_default_codecs_module_decode_wrong_charset": (
+            "import codecs\n"
+            "modules = {}\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = modules.get('m', codecs).decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_dict_pop_codecs_module_decode_wrong_charset": (
+            "import codecs\n"
+            "modules = {'m': codecs}\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = modules.pop('m').decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
         ),
         "qa_generated_function_returns_codecs_decode_wrong_charset": (
             "import codecs\n"
@@ -1781,6 +1817,30 @@ def qa_does_not_flag_dynamic_container_safe_decoder() -> None:
             "routes = {'decode': safe_decode}\n"
             "routes.setdefault('decode', codecs.decode)\n"
             "roundtrip = routes['decode'](text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_dynamic_container_direct_setdefault_keeps_existing_safe_decoder": (
+            "import codecs\n"
+            "def safe_decode(value, encoding, errors='strict'):\n"
+            "    return value.decode('utf-8')\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "routes = {'decode': safe_decode}\n"
+            "roundtrip = routes.setdefault('decode', codecs.decode)(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_dynamic_container_get_default_safe_decoder": (
+            "import codecs\n"
+            "def safe_decode(value, encoding, errors='strict'):\n"
+            "    return value.decode('utf-8')\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "routes = {}\n"
+            "roundtrip = routes.get('decode', safe_decode)(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_dynamic_container_pop_safe_decoder": (
+            "import codecs\n"
+            "def safe_decode(value, encoding, errors='strict'):\n"
+            "    return value.decode('utf-8')\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "routes = {'decode': safe_decode}\n"
+            "roundtrip = routes.pop('decode')(text.encode('utf-8'), 'gbk', errors='ignore')\n"
         ),
     }
 
