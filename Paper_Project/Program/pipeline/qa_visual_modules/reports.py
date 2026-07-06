@@ -40,8 +40,8 @@ def _append_artifacts(lines: list[str], artifacts: Dict[str, Any]) -> None:
     _append_path_list(artifact_lines, "Word 文本诊断", artifacts.get("word_text") or artifacts.get("rendered_text"))
     _append_path_list(artifact_lines, "WPS PDF", artifacts.get("wps_pdf"))
     _append_path_list(artifact_lines, "WPS 文本诊断", artifacts.get("wps_text"))
-    _append_path_list(artifact_lines, "Word 样张 PNG", artifacts.get("samples"))
-    _append_path_list(artifact_lines, "WPS 样张 PNG", artifacts.get("wps_samples"))
+    _append_path_list(artifact_lines, "Word 样张 PNG", artifacts.get("samples"), limit=8)
+    _append_path_list(artifact_lines, "WPS 样张 PNG", artifacts.get("wps_samples"), limit=8)
     _append_path_list(artifact_lines, "全页 PNG", artifacts.get("all_pages"), limit=3)
     if artifact_lines:
         lines.extend(["", "## 诊断产物", "", *artifact_lines])

@@ -12,6 +12,9 @@ except ImportError:  # pragma: no cover - package-style imports
     from .exporters import _run
 
 
+SAMPLE_PAGE_LIMIT = 8
+
+
 def _tool_candidates(name: str) -> List[str]:
     candidates: List[str] = []
 
@@ -141,7 +144,7 @@ def _is_front_matter_list_page(text: str) -> bool:
     return False
 
 
-def _add_sample(samples: List[int], page: int | None, page_count: int, limit: int = 6) -> None:
+def _add_sample(samples: List[int], page: int | None, page_count: int, limit: int = SAMPLE_PAGE_LIMIT) -> None:
     if page and 1 <= page <= page_count and page not in samples and len(samples) < limit:
         samples.append(page)
 

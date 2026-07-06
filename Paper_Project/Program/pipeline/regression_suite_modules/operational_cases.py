@@ -1289,7 +1289,7 @@ def visual_sample_pages_prioritize_late_risk_content_pages() -> None:
         "appendix",
     ]
     samples = qa_visual._sample_pages(14, pages)
-    assert_true(len(samples) <= 6, f"sample page selection should stay bounded: {samples}")
+    assert_true(len(samples) <= 8, f"sample page selection should stay bounded: {samples}")
     assert_true(
         1 in samples and 2 in samples and 4 in samples,
         f"sample page selection lost cover/TOC/body anchors: {samples}",
@@ -1321,10 +1321,39 @@ def visual_sample_pages_prioritize_formula_before_table_continuation_when_bounde
         "references",
     ]
     samples = qa_visual._sample_pages(14, pages)
-    assert_true(len(samples) <= 6, f"sample page selection should stay bounded: {samples}")
+    assert_true(len(samples) <= 8, f"sample page selection should stay bounded: {samples}")
     assert_true(
         9 in samples and 10 in samples and 12 in samples,
         f"sample page selection should keep figure/table/formula risk pages before auxiliary continuation pages: {samples}",
+    )
+    assert_true(11 in samples, f"sample page selection should keep long-table continuation evidence: {samples}")
+
+
+@case
+def visual_sample_pages_keep_table_continuation_in_complex_long_document() -> None:
+    import qa_visual
+
+    pages = [
+        "cover with title",
+        "contents",
+        "preface",
+        "1. Introduction",
+        "background prose",
+        "method prose",
+        "middle prose",
+        "图 2 模型结构",
+        "Table 3 Long Wide Measurements",
+        "LongWideHeader1 LongWideHeader2 LongWideRow030 LongWideRow031",
+        "公式 (3.1) E = mc^2",
+        "discussion",
+        "references",
+        "appendix",
+    ]
+    samples = qa_visual._sample_pages(14, pages)
+    assert_true(len(samples) <= 8, f"sample page selection should stay bounded: {samples}")
+    assert_true(
+        8 in samples and 9 in samples and 10 in samples and 11 in samples,
+        f"complex long-document visual QA should sample figure, table, continuation, and formula pages: {samples}",
     )
 
 
@@ -1350,7 +1379,7 @@ def visual_sample_pages_include_table_continuation_page() -> None:
         "appendix",
     ]
     samples = qa_visual._sample_pages(15, pages)
-    assert_true(len(samples) <= 6, f"sample page selection should stay bounded: {samples}")
+    assert_true(len(samples) <= 8, f"sample page selection should stay bounded: {samples}")
     assert_true(8 in samples, f"sample page selection missed the long table start page: {samples}")
     assert_true(9 in samples, f"sample page selection missed the long table continuation page: {samples}")
 
@@ -1377,7 +1406,7 @@ def visual_sample_pages_ignore_table_list_for_real_table_pages() -> None:
         "appendix notes",
     ]
     samples = qa_visual._sample_pages(15, pages)
-    assert_true(len(samples) <= 6, f"sample page selection should stay bounded: {samples}")
+    assert_true(len(samples) <= 8, f"sample page selection should stay bounded: {samples}")
     assert_true(6 in samples, f"sample page selection picked table-list page instead of real table start: {samples}")
     assert_true(7 in samples, f"sample page selection missed real table continuation page: {samples}")
 

@@ -753,7 +753,7 @@ stays a thin entrypoint.
 `qa_visual.check_visual`: Word/WPS PDF export, PATH/PATHEXT-aware Poppler tool
 discovery, Poppler text/page rendering,
 sample page selection, rendered image statistics, opt-in golden-baseline comparison,
-WPS PDF metadata/page-count/page-size/text-page validation, WPS sample-image comparison, separate Word/WPS rendered-text diagnostics, and visual QA report writers. `checks.py` owns render QA orchestration while
+WPS PDF metadata/page-count/page-size/text-page validation, WPS sample-image comparison, separate Word/WPS rendered-text diagnostics, and visual QA report writers. The bounded sample-page budget is currently 8 pages so complex long documents can keep cover/TOC/body anchors, figure/table/formula risk pages, and long-table continuation evidence in the same Word/WPS sample comparison; `visual_report.md` lists those bounded Word/WPS sample PNG paths directly. `checks.py` owns render QA orchestration while
 the entrypoint preserves legacy monkeypatch hooks used by regression tests.
 
 ## Public Template Suite Modules

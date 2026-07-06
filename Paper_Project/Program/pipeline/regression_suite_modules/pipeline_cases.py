@@ -2994,6 +2994,26 @@ def pipeline_visual_report_markdown_lists_diagnostic_artifacts() -> None:
 
 
 @case
+def pipeline_visual_report_markdown_lists_all_bounded_sample_artifacts() -> None:
+    from qa_visual_modules.reports import report_to_markdown as visual_report_markdown
+
+    samples = [f"<PROJECT>/Outputs/demo/visual_qa/samples/page_{idx:03d}-01.png" for idx in range(1, 9)]
+    wps_samples = [f"<PROJECT>/Outputs/demo/visual_qa/wps/samples/page_{idx:03d}-01.png" for idx in range(1, 9)]
+    report = {
+        "passed": True,
+        "output_dir_name": "demo",
+        "next_action": "视觉 QA 已通过，打开样张核对。",
+        "counts": {"sample_images": 8, "wps_sample_images": 8},
+        "issues": [],
+        "artifacts": {"samples": samples, "wps_samples": wps_samples},
+    }
+    markdown = visual_report_markdown(report)
+    assert_true("page_008-01.png" in markdown, f"visual report should list every bounded Word sample path: {markdown}")
+    assert_true("visual_qa/wps/samples/page_008-01.png" in markdown, f"visual report should list every bounded WPS sample path: {markdown}")
+    assert_true("另有" not in markdown, f"bounded sample evidence should not be hidden behind overflow text: {markdown}")
+
+
+@case
 def pipeline_summary_mentions_outputs_and_mode() -> None:
     summary = build_completion_summary("2026-05-27_demo", "最终论文.docx", "developer")
     assert_true("Outputs/2026-05-27_demo/" in summary, "output directory missing from completion summary")
