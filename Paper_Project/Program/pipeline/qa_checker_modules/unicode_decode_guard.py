@@ -3756,6 +3756,29 @@ def _local_param_and_index_aliases(
             index_aliases[target.id] = index_key
             aliases.pop(target.id, None)
 
+    def static_nonnegative_int(value: ast.AST) -> Optional[int]:
+        if isinstance(value, ast.Constant) and type(value.value) is int and value.value >= 0:
+            return value.value
+        return None
+
+    def len_param_access(value: ast.AST) -> Optional[ParamAccess]:
+        if not isinstance(value, ast.Call) or _call_name(value.func) != "len":
+            return None
+        if len(value.args) != 1 or value.keywords:
+            return None
+        return resolve(value.args[0])
+
+    def range_index_key(value: ast.AST) -> Optional[IndexAlias]:
+        if not isinstance(value, ast.Call) or _call_name(value.func) != "range" or value.keywords:
+            return None
+        if len(value.args) == 1:
+            return ("index", "0") if len_param_access(value.args[0]) is not None else None
+        if len(value.args) in {2, 3} and len_param_access(value.args[1]) is not None:
+            start = static_nonnegative_int(value.args[0])
+            if start is not None:
+                return ("index", str(start))
+        return None
+
     class Visitor(ast.NodeVisitor):
         def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
             if node is func:
@@ -3803,9 +3826,13 @@ def _local_param_and_index_aliases(
                     if access is not None:
                         bind_target(target, _param_access_with_first_item(access))
             else:
-                iter_access = resolve(node.iter)
-                if iter_access is not None:
-                    bind_target(node.target, _param_access_with_first_item(iter_access))
+                range_key = range_index_key(node.iter)
+                if range_key is not None:
+                    bind_index_target(node.target, range_key)
+                else:
+                    iter_access = resolve(node.iter)
+                    if iter_access is not None:
+                        bind_target(node.target, _param_access_with_first_item(iter_access))
             self.generic_visit(node)
 
     Visitor().visit(func)
