@@ -183,7 +183,7 @@ build_generated.py ─────────→ 最终论文.docx
 
 截至 2026-07-06：
 
-- 合成回归：`442 passed, 0 failed`
+- 合成回归：`443 passed, 0 failed`
 - DOCX 横向宽表短说明：相邻横向宽表之间的 `rich_text` 桥接段即使没有顶层 `text`、只在 `runs` 中保存普通文字和 `note_ref` 脚注/尾注锚点，也会按可见 run 文字识别为短说明并保留在同一个 landscape section；脚注/尾注继续以 Word 原生 note reference 渲染，不会要求用户手动处理。
 - DOCX 富文本 run 内嵌块级内容：`rich_text.runs[].items` 里的代码、图片、题注和小表会按源顺序插入在前后文字 run 之间；不会被提前塞进当前段落，也不会被整体推迟到整段文字之后。
 - DOCX 富文本 run 单元格来源块级内容：`rich_text.runs[].table_cell_items` 里的代码、图片、题注和小表也会按源顺序插入在前后文字 run 之间；不会因为被挂在 table-cell 兼容结构下而静默丢失。
@@ -206,6 +206,7 @@ build_generated.py ─────────→ 最终论文.docx
 - 中文编码防护补充 9：生成脚本 QA 现在会追踪高阶 helper 里先把 decoder 放进局部 list/dict 再调用的写法，例如 `callbacks = [decoder]; callbacks[0](value, encoding)` 和 `callbacks = {"decode": decoder}; callbacks["decode"](value, encoding)`；当外层传入真实 `codecs.decode`、中文 UTF-8 bytes 和 `"gbk"` 等错误编码时会在执行前阻断，同形状的自定义安全 decoder 或重新赋值后的安全 callback 不会误报。
 - 中文编码防护补充 10：生成脚本 QA 现在会识别返回闭包捕获 decoder 参数的高阶写法，例如 `def make_decoder(decoder): ... return call` 后 `make_decoder(codecs.decode)(value, "gbk")`，也会追踪 `decode_text = make_decoder(codecs.decode)` 后再调用 `decode_text(value, "gbk")` 的赋值闭包，包括 `if`/循环等语句块内的赋值后调用；当闭包直接调用 `decoder(...)` 或调用外层局部 `callbacks=[decoder]` 容器里的 callback 时，会在执行前阻断真实 `codecs.decode` + UTF-8 中文 bytes + 错误编码，同形安全 decoder 或后续重赋值为安全函数不会误报。
 - 中文编码防护补充 11：生成脚本 QA 现在会识别动态容器写入后的真实 `codecs.decode` 路由，例如 `routes=[]; routes.append(codecs.decode); routes[0](...)`、`routes={}; routes["decode"]=codecs.decode; routes["decode"](...)`，以及 `modules.append(codecs); modules[0].decode(...)`；这些写法以前没有直接调用节点或字面量容器节点，可能让中文 UTF-8 bytes 被 `"gbk"` 等错误编码静默二次解码，现在会在执行前以 `GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE` 阻断。
+- 中文编码防护补充 12：动态容器写入防护继续覆盖 `extend([codecs.decode])`、`insert(0, codecs.decode)`、`dict.update({"decode": codecs.decode})`、`dict.update(decode=codecs.decode)`、`setdefault("decode", codecs.decode)`，以及同形的 `codecs` 模块容器；已有安全 decoder 的 `setdefault` 不会被误报。
 - DOCX 行省略宽表审计：源审计现在会把 `w:gridAfter` 省略的行尾网格列计入 `max_table_columns` / `wide_table_count`，因此“1 个可见单元格 + 多个尾部省略列”的宽表会触发 `COMPLEX_TABLE_UNSUPPORTED` 复核提示，不会因为只数可见单元格而漏警告；生成端遇到省略区残留可见文本时会保留完整行并记录 text-guard manifest 计数，方便审计解释为什么没有恢复行省略。
 - DOCX 修订包装表格审计：源审计现在按 Word 最终视图穿透 `w:ins` / `w:moveTo`、内容控件和透明容器中的表格行/单元格，宽表和异常表格风险不会因为行被包装而漏掉 `COMPLEX_TABLE_UNSUPPORTED`。
 - DOCX 包装横向分节审计：源审计现在按 Word 最终视图穿透正文级 `w:sdt`、`w:customXml` / `w:smartTag` 和接受修订容器中的 `sectPr`，横向 section 内宽表会继续计入 `landscape_wide_table_risk_count`，不会因为 section break 被包装而漏掉人工复核提示。

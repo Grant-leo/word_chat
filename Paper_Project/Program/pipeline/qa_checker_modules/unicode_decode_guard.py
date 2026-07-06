@@ -2143,6 +2143,7 @@ def _codec_literal_container_aliases(
             break
 
     list_lengths: Dict[str, int] = {}
+    known_container_keys: Dict[str, Set[ContainerAliasKey]] = {}
 
     def container_name(value: ast.AST) -> str:
         if isinstance(value, (ast.Name, ast.Attribute)):
@@ -2174,6 +2175,7 @@ def _codec_literal_container_aliases(
     def set_container_item(container: str, key: ContainerAliasKey, value: ast.AST) -> None:
         if not container:
             return
+        known_container_keys.setdefault(container, set()).add(key)
         if value_is_codecs_module(value):
             module_containers.setdefault(container, {})[key] = "codecs"
         else:
@@ -2188,6 +2190,7 @@ def _codec_literal_container_aliases(
             return
         module_items = module_items_for(value)
         decode_items = decode_items_for(value)
+        known_container_keys[container] = {key for key, _ in _literal_container_path_items(value, constants)}
         if module_items:
             module_containers[container] = module_items
         else:
@@ -2209,6 +2212,98 @@ def _codec_literal_container_aliases(
         alias_key: ContainerAliasKey = keys[0] if len(keys) == 1 else keys
         return container, alias_key
 
+    def static_insert_index(value: ast.AST) -> Optional[int]:
+        if isinstance(value, ast.Constant) and isinstance(value.value, int) and value.value >= 0:
+            return value.value
+        return None
+
+    def shift_indexed_items(container: str, start_index: int) -> None:
+        def shifted_key(key: ContainerAliasKey) -> ContainerAliasKey:
+            if (
+                isinstance(key, tuple)
+                and len(key) == 2
+                and key[0] == "index"
+                and isinstance(key[1], str)
+                and key[1].isdigit()
+            ):
+                index = int(key[1])
+                if index >= start_index:
+                    return ("index", str(index + 1))
+            return key
+
+        if container in module_containers:
+            module_containers[container] = {shifted_key(key): value for key, value in module_containers[container].items()}
+        if container in decode_containers:
+            decode_containers[container] = {shifted_key(key): value for key, value in decode_containers[container].items()}
+        if container in known_container_keys:
+            known_container_keys[container] = {shifted_key(key) for key in known_container_keys[container]}
+
+    def append_container_value(container: str, value: ast.AST) -> None:
+        if not container:
+            return
+        index = list_lengths.get(container)
+        if index is None:
+            index = _next_tracked_list_index(module_containers.get(container, {}))
+            index = max(index, _next_tracked_list_index(decode_containers.get(container, {})))
+        key: ContainerAliasKey = ("index", str(index))
+        set_container_item(container, key, value)
+        list_lengths[container] = index + 1
+
+    def extend_container_values(container: str, value: ast.AST) -> None:
+        if not container or not isinstance(value, (ast.List, ast.Tuple)):
+            return
+        for _, item in _literal_container_items(value, constants):
+            append_container_value(container, item)
+
+    def insert_container_value(container: str, index_node: ast.AST, value: ast.AST) -> None:
+        if not container:
+            return
+        insert_index = static_insert_index(index_node)
+        if insert_index is None:
+            return
+        length = list_lengths.get(container)
+        if length is not None:
+            insert_index = min(insert_index, length)
+        shift_indexed_items(container, insert_index)
+        set_container_item(container, ("index", str(insert_index)), value)
+        if length is None:
+            list_lengths[container] = max(insert_index + 1, _next_tracked_list_index(module_containers.get(container, {})))
+            list_lengths[container] = max(list_lengths[container], _next_tracked_list_index(decode_containers.get(container, {})))
+        else:
+            list_lengths[container] = length + 1
+
+    def update_container_values(container: str, call: ast.Call) -> None:
+        if not container:
+            return
+        if call.args:
+            value = call.args[0]
+            keys = set(module_items_for(value)) | set(decode_items_for(value))
+            keys.update(key for key, _ in _literal_container_path_items(value, constants))
+            for key in keys:
+                if key in module_items_for(value):
+                    module_containers.setdefault(container, {})[key] = "codecs"
+                else:
+                    module_containers.get(container, {}).pop(key, None)
+                if key in decode_items_for(value):
+                    decode_containers.setdefault(container, {})[key] = "codecs.decode"
+                else:
+                    decode_containers.get(container, {}).pop(key, None)
+                known_container_keys.setdefault(container, set()).add(key)
+        for keyword in call.keywords or []:
+            if not keyword.arg:
+                continue
+            set_container_item(container, ("key", keyword.arg), keyword.value)
+
+    def setdefault_container_value(container: str, call: ast.Call) -> None:
+        if not container or len(call.args) < 2:
+            return
+        key = _container_key_from_literal(call.args[0], constants)
+        if key is None:
+            return
+        if key in known_container_keys.get(container, set()):
+            return
+        set_container_item(container, key, call.args[1])
+
     for node in sorted(ast.walk(tree), key=lambda item: (getattr(item, "lineno", 0), getattr(item, "col_offset", 0))):
         value, targets = _assignment_value_targets(node)
         if value is not None:
@@ -2224,20 +2319,21 @@ def _codec_literal_container_aliases(
         if not (
             isinstance(call, ast.Call)
             and isinstance(call.func, ast.Attribute)
-            and call.func.attr == "append"
-            and call.args
         ):
             continue
         container = container_name(call.func.value)
         if not container:
             continue
-        index = list_lengths.get(container)
-        if index is None:
-            index = _next_tracked_list_index(module_containers.get(container, {}))
-            index = max(index, _next_tracked_list_index(decode_containers.get(container, {})))
-        key: ContainerAliasKey = ("index", str(index))
-        set_container_item(container, key, call.args[0])
-        list_lengths[container] = index + 1
+        if call.func.attr == "append" and call.args:
+            append_container_value(container, call.args[0])
+        elif call.func.attr == "extend" and call.args:
+            extend_container_values(container, call.args[0])
+        elif call.func.attr == "insert" and len(call.args) >= 2:
+            insert_container_value(container, call.args[0], call.args[1])
+        elif call.func.attr == "update":
+            update_container_values(container, call)
+        elif call.func.attr == "setdefault":
+            setdefault_container_value(container, call)
     return module_containers, decode_containers
 
 
