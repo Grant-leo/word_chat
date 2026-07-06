@@ -744,6 +744,27 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "text = '中文字符保持原样：编码测试。'\n"
             "mojibake = routes[0](text.encode('utf-8'), 'gbk', errors='ignore')\n"
         ),
+        "qa_generated_list_append_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "routes = []\n"
+            "routes.append(codecs.decode)\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = routes[0](text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_dict_subscript_assignment_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "routes = {}\n"
+            "routes['decode'] = codecs.decode\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = routes['decode'](text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_list_append_codecs_module_decode_wrong_charset": (
+            "import codecs\n"
+            "modules = []\n"
+            "modules.append(codecs)\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = modules[0].decode(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
         "qa_generated_function_returns_codecs_decode_wrong_charset": (
             "import codecs\n"
             "text = '中文字符保持原样：编码测试。'\n"
