@@ -1244,6 +1244,35 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "decode_text = methodcaller('decode', text.encode('utf-8'), 'gbk', errors='ignore')\n"
             "mojibake = decode_text(codecs)\n"
         ),
+        "qa_generated_codecs_decode_dunder_call_wrong_charset": (
+            "import codecs\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = codecs.decode.__call__(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_codecs_decode_dunder_call_alias_wrong_charset": (
+            "import codecs\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "decode_call = codecs.decode.__call__\n"
+            "mojibake = decode_call(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_getattr_codecs_decode_dunder_call_wrong_charset": (
+            "import codecs\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "decode_call = getattr(codecs.decode, '__call__')\n"
+            "mojibake = decode_call(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_operator_call_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "import operator\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = operator.call(codecs.decode, text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_generated_operator_call_alias_codecs_decode_wrong_charset": (
+            "import codecs\n"
+            "from operator import call as operator_call\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "mojibake = operator_call(codecs.decode, text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
         "qa_generated_function_returns_operator_methodcaller_codecs_decode_wrong_charset": (
             "import codecs\n"
             "from operator import methodcaller\n"
@@ -1497,6 +1526,55 @@ def qa_does_not_flag_shadowed_builtin_map_for_safe_decoder() -> None:
         "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" not in codes,
         f"QA falsely treated a shadowed safe map() as the built-in map route: {report}",
     )
+
+
+@case
+def qa_does_not_flag_operator_call_safe_decoder() -> None:
+    text = "中文字符保持原样：编码测试。"
+    scripts = {
+        "qa_operator_call_safe_decoder": (
+            "import codecs\n"
+            "import operator\n"
+            "def safe_decode(value, encoding, errors='strict'):\n"
+            "    return value.decode('utf-8') if isinstance(value, bytes) else value\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "roundtrip = operator.call(safe_decode, text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_safe_decoder_dunder_call": (
+            "import codecs\n"
+            "def safe_decode(value, encoding, errors='strict'):\n"
+            "    return value.decode('utf-8') if isinstance(value, bytes) else value\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "roundtrip = safe_decode.__call__(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+        "qa_getattr_safe_decoder_dunder_call": (
+            "import codecs\n"
+            "def safe_decode(value, encoding, errors='strict'):\n"
+            "    return value.decode('utf-8') if isinstance(value, bytes) else value\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "roundtrip = getattr(safe_decode, '__call__')(text.encode('utf-8'), 'gbk', errors='ignore')\n"
+        ),
+    }
+
+    for name, script in scripts.items():
+        work = new_workdir(name)
+        doc = Document()
+        doc.add_paragraph("Synthetic Thesis")
+        doc.add_paragraph("1 Introduction")
+        doc.add_paragraph(text)
+        doc.save(work / "out.docx")
+        write_json(work / "content.json", base_content([text]))
+        write_json(work / "format.json", base_format())
+        write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {}})
+        write_json(work / "workflow_mode.json", {"mode": "user"})
+        (work / "build_generated.py").write_text(script, encoding="utf-8")
+
+        report = check_output(str(work), mode="user", output_docx_name="out.docx")
+        codes = [item["code"] for item in report["issues"]]
+        assert_true(
+            "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" not in codes,
+            f"QA falsely flagged a safe operator/dunder-call decoder {name} as unsafe: {report}",
+        )
 
 
 @case

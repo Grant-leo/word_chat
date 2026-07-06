@@ -103,9 +103,14 @@ CLI, output, verification, and QA details in a focused package:
 
 Current baseline as of 2026-07-06:
 
-- Current full synthetic regression: `443 passed, 0 failed`. Latest additions:
-  generated-script decode guards now also block attribute-container method
-  returns and method-return attribute handoffs, including
+- Current full synthetic regression: `444 passed, 0 failed`. Latest additions:
+  generated-script decode guards now also block `codecs.decode.__call__(...)`,
+  `getattr(codecs.decode, "__call__")(...)`, and
+  `operator.call(codecs.decode, ...)` before these meta-call routes can
+  re-decode UTF-8 Chinese bytes with a wrong charset; same-shaped safe custom
+  decoders remain unblocked. Generated-script decode guards also block
+  attribute-container method returns and method-return attribute handoffs,
+  including
   `SimpleNamespace(routes={})` / `class Holder: routes = {}` followed by
   `holder.routes.get("decode", codecs.decode)` or
   `Holder.routes.get("decode", codecs.decode)`, plus `box.decoder =
