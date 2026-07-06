@@ -3839,6 +3839,163 @@ def _local_param_and_index_aliases(
     return aliases, index_aliases
 
 
+def _comprehension_param_and_index_aliases(
+    func: ast.FunctionDef,
+    params: Set[str],
+    constants: Dict[str, str],
+    base_param_aliases: Dict[str, ParamAccess],
+    base_index_aliases: Dict[str, IndexAlias],
+) -> Dict[int, Tuple[Dict[str, ParamAccess], Dict[str, IndexAlias]]]:
+    call_aliases: Dict[int, Tuple[Dict[str, ParamAccess], Dict[str, IndexAlias]]] = {}
+
+    def resolve(
+        value: ast.AST,
+        aliases: Dict[str, ParamAccess],
+        index_aliases: Dict[str, IndexAlias],
+    ) -> Optional[ParamAccess]:
+        direct = _param_access_from_node(value, params, constants, index_aliases)
+        if direct is not None:
+            return direct
+        if isinstance(value, ast.Name):
+            return aliases.get(value.id)
+        return None
+
+    def bind_target(
+        target: ast.AST,
+        access: ParamAccess,
+        aliases: Dict[str, ParamAccess],
+        index_aliases: Dict[str, IndexAlias],
+    ) -> None:
+        if isinstance(target, ast.Name):
+            aliases[target.id] = access
+            index_aliases.pop(target.id, None)
+
+    def bind_index_target(
+        target: ast.AST,
+        index_key: IndexAlias,
+        aliases: Dict[str, ParamAccess],
+        index_aliases: Dict[str, IndexAlias],
+    ) -> None:
+        if isinstance(target, ast.Name):
+            index_aliases[target.id] = index_key
+            aliases.pop(target.id, None)
+
+    def static_nonnegative_int(value: ast.AST) -> Optional[int]:
+        if isinstance(value, ast.Constant) and type(value.value) is int and value.value >= 0:
+            return value.value
+        return None
+
+    def len_param_access(
+        value: ast.AST,
+        aliases: Dict[str, ParamAccess],
+        index_aliases: Dict[str, IndexAlias],
+    ) -> Optional[ParamAccess]:
+        if not isinstance(value, ast.Call) or _call_name(value.func) != "len":
+            return None
+        if len(value.args) != 1 or value.keywords:
+            return None
+        return resolve(value.args[0], aliases, index_aliases)
+
+    def range_index_key(
+        value: ast.AST,
+        aliases: Dict[str, ParamAccess],
+        index_aliases: Dict[str, IndexAlias],
+    ) -> Optional[IndexAlias]:
+        if not isinstance(value, ast.Call) or _call_name(value.func) != "range" or value.keywords:
+            return None
+        if len(value.args) == 1:
+            return ("index", "0") if len_param_access(value.args[0], aliases, index_aliases) is not None else None
+        if len(value.args) in {2, 3} and len_param_access(value.args[1], aliases, index_aliases) is not None:
+            start = static_nonnegative_int(value.args[0])
+            if start is not None:
+                return ("index", str(start))
+        return None
+
+    def bind_comprehension_target(
+        target: ast.AST,
+        iter_node: ast.AST,
+        aliases: Dict[str, ParamAccess],
+        index_aliases: Dict[str, IndexAlias],
+    ) -> None:
+        if isinstance(iter_node, ast.Call) and _call_name(iter_node.func) == "enumerate":
+            index_key = _enumerate_index_key(iter_node)
+            iter_access = resolve(iter_node.args[0], aliases, index_aliases) if iter_node.args else None
+            if (
+                index_key is not None
+                and iter_access is not None
+                and isinstance(target, (ast.Tuple, ast.List))
+                and len(target.elts) >= 2
+            ):
+                bind_index_target(target.elts[0], index_key, aliases, index_aliases)
+                bind_target(target.elts[1], _param_access_with_first_item(iter_access), aliases, index_aliases)
+            return
+        if (
+            isinstance(iter_node, ast.Call)
+            and _call_name(iter_node.func) == "zip"
+            and isinstance(target, (ast.Tuple, ast.List))
+        ):
+            for child_target, value in zip(target.elts, iter_node.args):
+                access = resolve(value, aliases, index_aliases)
+                if access is not None:
+                    bind_target(child_target, _param_access_with_first_item(access), aliases, index_aliases)
+            return
+        range_key = range_index_key(iter_node, aliases, index_aliases)
+        if range_key is not None:
+            bind_index_target(target, range_key, aliases, index_aliases)
+            return
+        iter_access = resolve(iter_node, aliases, index_aliases)
+        if iter_access is not None:
+            bind_target(target, _param_access_with_first_item(iter_access), aliases, index_aliases)
+
+    class CallMarker(ast.NodeVisitor):
+        def __init__(
+            self,
+            aliases: Dict[str, ParamAccess],
+            index_aliases: Dict[str, IndexAlias],
+        ) -> None:
+            self.aliases = dict(aliases)
+            self.index_aliases = dict(index_aliases)
+
+        def visit_Call(self, node: ast.Call) -> None:
+            call_aliases[id(node)] = (dict(self.aliases), dict(self.index_aliases))
+            self.generic_visit(node)
+
+        def visit_ListComp(self, node: ast.ListComp) -> None:
+            return
+
+        def visit_SetComp(self, node: ast.SetComp) -> None:
+            return
+
+        def visit_DictComp(self, node: ast.DictComp) -> None:
+            return
+
+        def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+            return
+
+    def mark_calls(
+        value: ast.AST,
+        aliases: Dict[str, ParamAccess],
+        index_aliases: Dict[str, IndexAlias],
+    ) -> None:
+        CallMarker(aliases, index_aliases).visit(value)
+
+    for node in ast.walk(func):
+        if not isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            continue
+        aliases = dict(base_param_aliases)
+        index_aliases = dict(base_index_aliases)
+        for generator in node.generators:
+            bind_comprehension_target(generator.target, generator.iter, aliases, index_aliases)
+            for condition in generator.ifs:
+                mark_calls(condition, aliases, index_aliases)
+        if isinstance(node, ast.DictComp):
+            mark_calls(node.key, aliases, index_aliases)
+            mark_calls(node.value, aliases, index_aliases)
+        else:
+            mark_calls(node.elt, aliases, index_aliases)
+    return call_aliases
+
+
 def _local_param_access_aliases(
     func: ast.FunctionDef,
     params: Set[str],
@@ -4037,10 +4194,21 @@ def _codec_wrapper_functions(
         if not isinstance(params, set):
             continue
         local_param_aliases, local_index_aliases = _local_param_and_index_aliases(func, params, constants)
+        comprehension_aliases = _comprehension_param_and_index_aliases(
+            func,
+            params,
+            constants,
+            local_param_aliases,
+            local_index_aliases,
+        )
         codec_params: Set[ParamAccess] = set()
         for node in ast.walk(func):
             if not isinstance(node, ast.Call):
                 continue
+            call_param_aliases, call_index_aliases = comprehension_aliases.get(
+                id(node),
+                (local_param_aliases, local_index_aliases),
+            )
             name = _call_name(node.func)
             codec_node: Optional[ast.AST] = None
             if isinstance(node.func, ast.Attribute) and node.func.attr == "decode":
@@ -4076,7 +4244,7 @@ def _codec_wrapper_functions(
                 or _attribute_on_module_alias(node.func, module_aliases, "lookup")
             ):
                 codec_node = _codec_factory_encoding_node(node)
-            param = _codec_arg_param_name(codec_node, params, constants, local_param_aliases, local_index_aliases)
+            param = _codec_arg_param_name(codec_node, params, constants, call_param_aliases, call_index_aliases)
             if param:
                 codec_params.add(param)
         if codec_params:
@@ -4119,13 +4287,24 @@ def _higher_order_decode_wrapper_info(func: ast.FunctionDef, constants: Dict[str
     module_decode_arg_pairs: Set[Tuple[str, ParamAccess]] = set()
     module_getdecoder_arg_pairs: Set[Tuple[str, ParamAccess]] = set()
     module_lookup_arg_pairs: Set[Tuple[str, ParamAccess]] = set()
-    local_param_aliases, local_index_aliases = _local_param_and_index_aliases(func, params, constants)
+    base_param_aliases, base_index_aliases = _local_param_and_index_aliases(func, params, constants)
+    comprehension_aliases = _comprehension_param_and_index_aliases(
+        func,
+        params,
+        constants,
+        base_param_aliases,
+        base_index_aliases,
+    )
     local_module_decode_aliases = _local_getattr_param_aliases(func, params, "decode", constants)
     local_module_getdecoder_aliases = _local_getattr_param_aliases(func, params, "getdecoder", constants)
     local_module_lookup_aliases = _local_getattr_param_aliases(func, params, "lookup", constants)
     for node in ast.walk(func):
         if not isinstance(node, ast.Call):
             continue
+        local_param_aliases, local_index_aliases = comprehension_aliases.get(
+            id(node),
+            (base_param_aliases, base_index_aliases),
+        )
         if isinstance(node.func, ast.Name):
             decoder_param = node.func.id
             module_param = local_module_decode_aliases.get(decoder_param, "")

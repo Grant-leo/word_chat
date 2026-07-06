@@ -489,6 +489,30 @@ def qa_flags_generated_script_general_codecs_decode_text_reencoding() -> None:
             "encodings = ['gbk']\n"
             "mojibake = decode_all(codecs.decode, payloads, encodings)\n"
         ),
+        "qa_generated_codecs_decode_custom_batch_listcomp_zip_wrong_charset": (
+            "import codecs\n"
+            "\n"
+            "def decode_all(decoder, values, encodings):\n"
+            "    return [decoder(value, encoding, errors='ignore')\n"
+            "            for value, encoding in zip(values, encodings)][0]\n"
+            "\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "payloads = [text.encode('utf-8')]\n"
+            "encodings = ['gbk']\n"
+            "mojibake = decode_all(codecs.decode, payloads, encodings)\n"
+        ),
+        "qa_generated_codecs_decode_custom_batch_genexp_zip_wrong_charset": (
+            "import codecs\n"
+            "\n"
+            "def decode_all(decoder, values, encodings):\n"
+            "    return next(decoder(value, encoding, errors='ignore')\n"
+            "                for value, encoding in zip(values, encodings))\n"
+            "\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "payloads = [text.encode('utf-8')]\n"
+            "encodings = ['gbk']\n"
+            "mojibake = decode_all(codecs.decode, payloads, encodings)\n"
+        ),
         "qa_generated_returned_higher_order_wrapper_codecs_decode_wrong_charset": (
             "import codecs\n"
             "\n"
@@ -1295,6 +1319,63 @@ def qa_does_not_flag_custom_batch_range_index_safe_decoder() -> None:
         "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" not in codes,
         f"QA falsely flagged a custom safe range/index decoder as unsafe: {report}",
     )
+
+
+@case
+def qa_does_not_flag_custom_batch_comprehension_safe_decoder() -> None:
+    text = "中文字符保持原样：编码测试。"
+    scripts = {
+        "qa_custom_batch_listcomp_safe_decoder": (
+            "import codecs\n"
+            "\n"
+            "def decode_all(decoder, values, encodings):\n"
+            "    return [decoder(value, encoding, errors='strict')\n"
+            "            for value, encoding in zip(values, encodings)][0]\n"
+            "\n"
+            "def safe_decode(value, encoding, errors='strict'):\n"
+            "    return value.decode('utf-8')\n"
+            "\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "payloads = [text.encode('utf-8')]\n"
+            "encodings = ['gbk']\n"
+            "roundtrip = decode_all(safe_decode, payloads, encodings)\n"
+        ),
+        "qa_custom_batch_genexp_safe_decoder": (
+            "import codecs\n"
+            "\n"
+            "def decode_all(decoder, values, encodings):\n"
+            "    return next(decoder(value, encoding, errors='strict')\n"
+            "                for value, encoding in zip(values, encodings))\n"
+            "\n"
+            "def safe_decode(value, encoding, errors='strict'):\n"
+            "    return value.decode('utf-8')\n"
+            "\n"
+            "text = '中文字符保持原样：编码测试。'\n"
+            "payloads = [text.encode('utf-8')]\n"
+            "encodings = ['gbk']\n"
+            "roundtrip = decode_all(safe_decode, payloads, encodings)\n"
+        ),
+    }
+
+    for name, script in scripts.items():
+        work = new_workdir(name)
+        doc = Document()
+        doc.add_paragraph("Synthetic Thesis")
+        doc.add_paragraph("1 Introduction")
+        doc.add_paragraph(text)
+        doc.save(work / "out.docx")
+        write_json(work / "content.json", base_content([text]))
+        write_json(work / "format.json", base_format())
+        write_json(work / "build_manifest.json", {"schema_version": 1, "counts": {}})
+        write_json(work / "workflow_mode.json", {"mode": "user"})
+        (work / "build_generated.py").write_text(script, encoding="utf-8")
+
+        report = check_output(str(work), mode="user", output_docx_name="out.docx")
+        codes = [item["code"] for item in report["issues"]]
+        assert_true(
+            "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" not in codes,
+            f"QA falsely flagged a custom safe comprehension decoder {name} as unsafe: {report}",
+        )
 
 
 @case
