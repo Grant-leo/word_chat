@@ -17,13 +17,21 @@ def is_code_table_item(item):
     return isinstance(item, dict) and item.get('table_rows') and (item.get('role') == 'code' or rows_look_like_code(item.get('table_rows') or []))
 
 
+def looks_like_numbered_heading_text(text):
+    raw = clean_text_artifacts(text).strip()
+    return bool(re.match(r'^\d+(?:\.\d+)+(?:[.)\u3001\uff0e\u3002]\s*|\s+)\S', raw))
+
+
 def looks_like_table_title(text):
-    t = strip_heading_number(clean_text_artifacts(text))
+    raw = clean_text_artifacts(text)
+    if looks_like_numbered_heading_text(raw):
+        return False
+    t = strip_heading_number(raw)
     if not t or len(t) > 50:
         return False
     if re.match(r'^(图|表)\s*\d+', t) or re.match(r'^代码\s*\d+', t):
         return False
-    if re.search(r'[。！？；;=<>]|如下|所示', t):
+    if re.search(r'[。！？；;=<>]|[.!?]$|如下|所示', t):
         return False
     return True
 
@@ -206,6 +214,53 @@ def should_keep_table_together(rows):
     for row in rows:
         estimated_lines += estimate_table_row_lines(row)
     return estimated_lines <= 18
+
+
+def table_first_row_has_rich_cell_items(cell_items):
+    for entry in cell_items or []:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            row = int(entry.get('row') or 0)
+        except Exception:
+            continue
+        if row != 0:
+            continue
+        items = entry.get('items')
+        candidates = items if isinstance(items, list) else [entry]
+        for media in candidates:
+            if not isinstance(media, dict):
+                continue
+            if (
+                media.get('role') in {'image', 'figure', 'formula', 'rich_text', 'note_ref', 'missing_image'}
+                or media.get('type') == 'note_ref'
+                or media.get('image')
+                or media.get('filename')
+                or media.get('asset')
+                or media.get('latex')
+                or media.get('xml')
+                or media.get('math')
+                or media.get('table_rows')
+                or media.get('items')
+                or media.get('runs')
+            ):
+                return True
+    return False
+
+
+def should_default_repeat_first_row(rows, ncols=0, nested=False, max_width_twips=None, cell_items=None):
+    if nested or not rows or len(rows) <= 12:
+        return False
+    if ncols <= 1:
+        return False
+    if table_first_row_has_rich_cell_items(cell_items):
+        return False
+    first_row_lines = estimate_table_row_lines(rows[0])
+    if first_row_lines > 3:
+        return False
+    if safe_positive_int(max_width_twips):
+        return True
+    return True
 
 
 def keep_table_together(table):
@@ -718,12 +773,31 @@ def apply_table_merges(table, table_merges):
     return rendered
 
 
-def apply_row_grid_before(table, row_grid_before, rows=None, col_widths=None):
+def row_omission_zone_has_media(media_by_cell, row_idx, col_indexes):
+    if not media_by_cell:
+        return False
+    for col_idx in col_indexes:
+        if media_by_cell.get((row_idx, col_idx)):
+            return True
+    return False
+
+
+def row_omission_zone_has_text(source_row, col_indexes):
+    if not isinstance(source_row, (list, tuple)):
+        return False
+    for col_idx in col_indexes:
+        if col_idx < len(source_row) and str(source_row[col_idx] or '').strip():
+            return True
+    return False
+
+
+def apply_row_grid_before(table, row_grid_before, rows=None, col_widths=None, media_by_cell=None):
     if not row_grid_before:
         return 0
     rendered = 0
     rows = rows or []
     col_widths = col_widths or []
+    media_by_cell = media_by_cell or {}
     for row_idx, value in enumerate(row_grid_before or []):
         try:
             count = int(value or 0)
@@ -732,7 +806,11 @@ def apply_row_grid_before(table, row_grid_before, rows=None, col_widths=None):
         if count <= 0 or row_idx >= len(table.rows):
             continue
         source_row = rows[row_idx] if row_idx < len(rows) and isinstance(rows[row_idx], (list, tuple)) else []
-        if any(str(source_row[idx] or '').strip() for idx in range(min(count, len(source_row)))):
+        if row_omission_zone_has_text(source_row, range(min(count, len(source_row)))):
+            BUILD_STATS['content_table_grid_before_text_guard_rows_skipped'] = BUILD_STATS.get('content_table_grid_before_text_guard_rows_skipped', 0) + 1
+            continue
+        if row_omission_zone_has_media(media_by_cell, row_idx, range(count)):
+            BUILD_STATS['content_table_grid_before_media_guard_rows_skipped'] = BUILD_STATS.get('content_table_grid_before_media_guard_rows_skipped', 0) + 1
             continue
         tr = table.rows[row_idx]._tr
         tr_pr = tr.find(qn('w:trPr'))
@@ -766,6 +844,62 @@ def apply_row_grid_before(table, row_grid_before, rows=None, col_widths=None):
     return rendered
 
 
+def apply_row_grid_after(table, row_grid_after, rows=None, col_widths=None, media_by_cell=None):
+    if not row_grid_after:
+        return 0
+    rendered = 0
+    rows = rows or []
+    col_widths = col_widths or []
+    media_by_cell = media_by_cell or {}
+    for row_idx, value in enumerate(row_grid_after or []):
+        try:
+            count = int(value or 0)
+        except Exception:
+            count = 0
+        if count <= 0 or row_idx >= len(table.rows):
+            continue
+        source_row = rows[row_idx] if row_idx < len(rows) and isinstance(rows[row_idx], (list, tuple)) else []
+        if len(source_row) < count:
+            continue
+        tail_start = len(source_row) - count
+        if row_omission_zone_has_text(source_row, range(tail_start, len(source_row))):
+            BUILD_STATS['content_table_grid_after_text_guard_rows_skipped'] = BUILD_STATS.get('content_table_grid_after_text_guard_rows_skipped', 0) + 1
+            continue
+        if row_omission_zone_has_media(media_by_cell, row_idx, range(tail_start, len(source_row))):
+            BUILD_STATS['content_table_grid_after_media_guard_rows_skipped'] = BUILD_STATS.get('content_table_grid_after_media_guard_rows_skipped', 0) + 1
+            continue
+        tr = table.rows[row_idx]._tr
+        tr_pr = tr.find(qn('w:trPr'))
+        if tr_pr is None:
+            tr_pr = OxmlElement('w:trPr')
+            tr.insert(0, tr_pr)
+        grid_after = tr_pr.find(qn('w:gridAfter'))
+        if grid_after is None:
+            grid_after = OxmlElement('w:gridAfter')
+            tr_pr.append(grid_after)
+        grid_after.set(qn('w:val'), str(count))
+        width_after = sum(int(width or 0) for width in col_widths[-count:]) if col_widths else 0
+        if width_after > 0:
+            w_after = tr_pr.find(qn('w:wAfter'))
+            if w_after is None:
+                w_after = OxmlElement('w:wAfter')
+                tr_pr.append(w_after)
+            w_after.set(qn('w:w'), str(width_after))
+            w_after.set(qn('w:type'), 'dxa')
+        removed = 0
+        while removed < count:
+            tc_elems = tr.findall(qn('w:tc'))
+            if len(tc_elems) <= 1:
+                break
+            tr.remove(tc_elems[-1])
+            removed += 1
+        if removed:
+            rendered += 1
+    if rendered:
+        BUILD_STATS['content_table_grid_after_rows_rendered'] = BUILD_STATS.get('content_table_grid_after_rows_rendered', 0) + rendered
+    return rendered
+
+
 def media_after_paragraph_index(media):
     if not isinstance(media, dict) or 'after_paragraph_index' not in media:
         return None
@@ -784,24 +918,87 @@ def media_replace_paragraph_index(media):
         return None
 
 
-def render_table_cell_rich_text(cell, item, prof, force_new_paragraph=False):
+def media_should_replace_paragraph(media):
+    if not isinstance(media, dict):
+        return False
+    if media.get('role') != 'rich_text' and not media.get('math'):
+        return True
+    if str(media.get('text') or '').strip():
+        return True
+    for run in media.get('runs') or []:
+        if not isinstance(run, dict):
+            continue
+        kind = run.get('type') or ('math' if run.get('math') else 'text')
+        if kind == 'math' and run.get('math'):
+            return True
+        if kind == 'text' and str(run.get('text') or '').strip():
+            return True
+    return False
+
+
+def append_table_cell_inline_image_run(p, run, ncols=1, rendered_image_keys=None):
+    wrote = False
+    try:
+        image_items = _rich_text_image_items(run)
+    except Exception:
+        image_items = []
+    for image_item in image_items:
+        if not isinstance(image_item, dict):
+            continue
+        filename = image_item.get('image') or image_item.get('filename') or image_item.get('asset') or ''
+        if not filename:
+            continue
+        if rendered_image_keys is not None and filename in rendered_image_keys:
+            continue
+        path = content_image_path(filename)
+        if not path:
+            continue
+        try:
+            r = p.add_run()
+            width, height = fit_table_cell_picture_dimensions(path, ncols=ncols)
+            r.add_picture(path, width=width, height=height)
+            BUILD_STATS['content_images_rendered'] = BUILD_STATS.get('content_images_rendered', 0) + 1
+            if rendered_image_keys is not None:
+                rendered_image_keys.add(filename)
+            wrote = True
+        except Exception:
+            continue
+    return wrote
+
+
+def render_table_cell_rich_text(cell, item, prof, force_new_paragraph=False, ncols=1):
     if not isinstance(item, dict):
         return False
     runs = item.get('runs') or []
+    try:
+        has_item_images = bool(_rich_text_image_items(item))
+    except Exception:
+        has_item_images = False
+    try:
+        item_math_entries = _rich_text_item_math_entries(item)
+    except Exception:
+        item_math_entries = []
+    try:
+        item_note_entries = _rich_text_note_items(item)
+    except Exception:
+        item_note_entries = []
     if not runs and item.get('text'):
         runs = [{'type': 'text', 'text': item.get('text') or ''}]
-    if not runs:
+    if not runs and not has_item_images and not item_math_entries and not item_note_entries:
         return False
     p = cell.add_paragraph() if force_new_paragraph else (
         cell.paragraphs[0] if cell.paragraphs and not cell.paragraphs[0].text.strip() else cell.add_paragraph()
     )
     apply_paragraph_profile(p, prof, first_indent_override=0)
     wrote = False
+    rendered_image_keys = set()
     for run in runs:
         kind = run.get('type') or ('math' if run.get('math') else 'text')
         if kind == 'math':
             for m in run.get('math') or []:
                 wrote = append_inline_formula(p, m) or wrote
+        elif _rich_text_direct_image_item(run) or _rich_text_image_items(run):
+            wrote = append_table_cell_inline_image_run(p, run, ncols=ncols, rendered_image_keys=rendered_image_keys) or wrote
         elif kind == 'note_ref':
             wrote = append_note_reference(p, run) or wrote
         else:
@@ -809,14 +1006,41 @@ def render_table_cell_rich_text(cell, item, prof, force_new_paragraph=False):
             if text:
                 add_text_runs(p, text, prof, False)
                 wrote = True
+    if has_item_images:
+        wrote = append_table_cell_inline_image_run(p, item, ncols=ncols, rendered_image_keys=rendered_image_keys) or wrote
+    for m in item_math_entries:
+        wrote = append_inline_formula(p, m) or wrote
+    for note in item_note_entries:
+        wrote = append_note_reference(p, note) or wrote
     return wrote
 
 
 def render_table_cell_media_item(cell, media, ncols, prof, force_new_paragraph=False):
     if not isinstance(media, dict):
         return False
+    if media.get('role') == 'formula' or media.get('latex') or media.get('xml'):
+        p = cell.add_paragraph() if force_new_paragraph else (
+            cell.paragraphs[0] if cell.paragraphs and not cell.paragraphs[0].text.strip() else cell.add_paragraph()
+        )
+        apply_paragraph_profile(p, prof, first_indent_override=0)
+        return append_inline_formula(p, media)
+    if media.get('math') and media.get('role') != 'rich_text':
+        p = cell.add_paragraph() if force_new_paragraph else (
+            cell.paragraphs[0] if cell.paragraphs and not cell.paragraphs[0].text.strip() else cell.add_paragraph()
+        )
+        apply_paragraph_profile(p, prof, first_indent_override=0)
+        wrote = False
+        for m in _math_entries_from_item(media):
+            wrote = append_inline_formula(p, m) or wrote
+        return wrote
     if media.get('role') == 'rich_text' or media.get('math'):
-        return render_table_cell_rich_text(cell, media, prof, force_new_paragraph=force_new_paragraph)
+        return render_table_cell_rich_text(cell, media, prof, force_new_paragraph=force_new_paragraph, ncols=ncols)
+    if media.get('role') == 'note_ref' or media.get('type') == 'note_ref':
+        p = cell.add_paragraph() if force_new_paragraph else (
+            cell.paragraphs[0] if cell.paragraphs and not cell.paragraphs[0].text.strip() else cell.add_paragraph()
+        )
+        apply_paragraph_profile(p, prof, first_indent_override=0)
+        return append_note_reference(p, media)
     if media.get('role') == 'image' or media.get('image'):
         render_table_cell_image(
             cell,
@@ -832,6 +1056,7 @@ def render_table_cell_media_item(cell, media, ncols, prof, force_new_paragraph=F
             media.get('table_merges') or [],
             media.get('table_col_widths_twips') or [],
             media.get('table_row_grid_before') or [],
+            media.get('table_row_grid_after') or [],
             media.get('table_row_heights_twips') or [],
             media.get('table_repeat_header_rows'),
             media.get('table_cell_margins_twips') or {},
@@ -1058,6 +1283,7 @@ def render_table_from_item(item, container=None, nested=False):
         item.get('table_merges') or [],
         item.get('table_col_widths_twips') or [],
         item.get('table_row_grid_before') or [],
+        item.get('table_row_grid_after') or [],
         item.get('table_row_heights_twips') or [],
         item.get('table_repeat_header_rows'),
         item.get('table_cell_margins_twips') or {},
@@ -1077,7 +1303,7 @@ def render_table_item(item):
         end_table_source_section(started)
 
 
-def render_table(rows, cell_items=None, table_merges=None, table_col_widths_twips=None, table_row_grid_before=None, table_row_heights_twips=None, table_repeat_header_rows=None, table_cell_margins_twips=None, table_cell_overrides=None, table_borders=None, container=None, nested=False, max_width_twips=None):
+def render_table(rows, cell_items=None, table_merges=None, table_col_widths_twips=None, table_row_grid_before=None, table_row_grid_after=None, table_row_heights_twips=None, table_repeat_header_rows=None, table_cell_margins_twips=None, table_cell_overrides=None, table_borders=None, container=None, nested=False, max_width_twips=None):
     if not rows:
         return
     container = container or doc
@@ -1102,7 +1328,13 @@ def render_table(rows, cell_items=None, table_merges=None, table_col_widths_twip
         repeat_header_count = int(table_repeat_header_rows or 0)
     except Exception:
         repeat_header_count = 0
-    if table_repeat_header_rows is None and len(rows):
+    if table_repeat_header_rows is None and should_default_repeat_first_row(
+        rows,
+        ncols=ncols,
+        nested=nested,
+        max_width_twips=max_width_twips,
+        cell_items=cell_items,
+    ):
         repeat_header_count = 1
     repeat_header_count = max(0, min(repeat_header_count, len(rows)))
     for ri, row in enumerate(rows):
@@ -1123,7 +1355,10 @@ def render_table(rows, cell_items=None, table_merges=None, table_col_widths_twip
             for media in media_by_cell.get((ri, ci), []):
                 replace_idx = media_replace_paragraph_index(media)
                 if replace_idx is not None:
-                    replacement_media.setdefault(replace_idx, []).append(media)
+                    if media_should_replace_paragraph(media):
+                        replacement_media.setdefault(replace_idx, []).append(media)
+                    else:
+                        positioned_media.setdefault(replace_idx, []).append(media)
                     continue
                 idx = media_after_paragraph_index(media)
                 if idx is None:
@@ -1163,7 +1398,7 @@ def render_table(rows, cell_items=None, table_merges=None, table_col_widths_twip
             if not wrote_any:
                 p = cell.paragraphs[0] if cell.paragraphs else cell.add_paragraph()
                 apply_paragraph_profile(p, prof, first_indent_override=0)
-    apply_repeat_header_rows(table, table_repeat_header_rows)
+    apply_repeat_header_rows(table, repeat_header_count)
     apply_row_heights(table, table_row_heights_twips)
     apply_table_merges(table, table_merges)
     if explicit_borders:
@@ -1173,7 +1408,8 @@ def render_table(rows, cell_items=None, table_merges=None, table_col_widths_twip
     apply_cell_overrides(table, table_cell_overrides)
     if should_keep_table_together(rows):
         keep_table_together(table)
-    apply_row_grid_before(table, table_row_grid_before, rows=rows, col_widths=col_widths)
+    apply_row_grid_before(table, table_row_grid_before, rows=rows, col_widths=col_widths, media_by_cell=media_by_cell)
+    apply_row_grid_after(table, table_row_grid_after, rows=rows, col_widths=col_widths, media_by_cell=media_by_cell)
     return table
 
 

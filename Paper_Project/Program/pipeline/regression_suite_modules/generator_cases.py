@@ -67,6 +67,25 @@ def conformance_reference_labels_keep_template_cjk_font() -> None:
 
 
 @case
+def generated_script_preserves_chinese_and_literal_unicode_escape_text() -> None:
+    literal_escape = r"\u4e2d\u6587"
+    content = base_content(
+        [
+            "中文字符保持原样：编码测试，路径 C:\\用户\\资料。",
+            f"字面转义保留：{literal_escape} 不能被二次解码。",
+        ]
+    )
+    result = run_generated_case("generated_unicode_safety", content)
+    xml = result["xml"]
+    build_text = (result["work"] / "build_generated.py").read_text(encoding="utf-8")
+    assert_true("中文字符保持原样" in xml, f"generated DOCX lost Chinese text: {xml[:1000]}")
+    assert_true(literal_escape in xml, f"literal unicode escape text was decoded or dropped: {xml[:1000]}")
+    assert_true("字面转义保留：中文" not in xml, "literal unicode escape text was decoded into Chinese")
+    assert_true("codecs.decode" not in build_text and "unicode_escape" not in build_text,
+                "generated build script should not use unicode-escape string decoding")
+
+
+@case
 def conformance_checks_rich_text_and_duplicate_paragraphs() -> None:
     work = new_workdir("conformance_rich_duplicate_missing")
     content = base_content(
@@ -796,6 +815,77 @@ def script_generator_keeps_structured_caption_with_landscape_table_section() -> 
 
 
 @case
+def script_generator_keeps_section_heading_caption_with_landscape_table_section() -> None:
+    content = base_content(["Intro body before target table section."], meta_tables=1)
+    content["sections"].append(
+        {
+            "heading": "Table 1 Section-heading landscape table",
+            "level": 1,
+            "role": "body",
+            "paragraphs": [
+                {
+                    "role": "table",
+                    "table_rows": [
+                        [f"Heading wide header {idx}" for idx in range(1, 10)],
+                        [f"Heading wide body {idx}" for idx in range(1, 10)],
+                    ],
+                    "table_col_widths_twips": [1200] * 9,
+                    "source_section_page_setup": {
+                        "orientation": "landscape",
+                        "page_width_twips": 15840,
+                        "page_height_twips": 12240,
+                        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+                    },
+                },
+                "Portrait body after section-heading landscape table.",
+            ],
+            "images": [],
+        }
+    )
+    result = run_generated_case("section_heading_caption_landscape_table", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 1,
+        "section-heading landscape table should render one landscape section",
+    )
+    assert_true(
+        result["manifest"]["counts"].get("content_landscape_table_sections_rendered") == 1,
+        "source landscape section count missing for section-heading table",
+    )
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def has_sectpr(child: ET.Element) -> bool:
+        return child.tag == f"{W_NS}sectPr" or child.find(f".//{W_NS}sectPr") is not None
+
+    def has_landscape_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") == "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    table_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Heading wide header 1" in child_text(child)),
+        -1,
+    )
+    caption_idx = max(
+        (idx for idx, child in enumerate(children[:table_idx]) if "Section-heading landscape table" in child_text(child)),
+        default=-1,
+    )
+    after_idx = next((idx for idx, child in enumerate(children) if "Portrait body after section-heading landscape table." in child_text(child)), -1)
+    assert_true(caption_idx >= 0 and table_idx >= 0 and after_idx >= 0, "section heading caption/table/following body markers missing")
+
+    previous_section_break = max((idx for idx, child in enumerate(children[:table_idx]) if has_sectpr(child)), default=-1)
+    landscape_section_break = next((idx for idx, child in enumerate(children[table_idx + 1 :], start=table_idx + 1) if has_landscape_section(child)), -1)
+    assert_true(
+        previous_section_break < caption_idx < table_idx < landscape_section_break < after_idx,
+        "section heading table caption should be inside the same landscape section as the first wide table",
+    )
+
+
+@case
 def script_generator_auto_landscapes_plain_wide_tables() -> None:
     content = base_content(
         [
@@ -846,6 +936,225 @@ def script_generator_auto_landscapes_plain_wide_tables() -> None:
     assert_true(
         previous_section_break < caption_idx < table_idx < landscape_section_break < after_idx,
         "auto-landscaped table caption should stay with the table, and following body should return to portrait",
+    )
+
+
+@case
+def script_generator_repeats_first_row_for_auto_landscape_long_wide_tables() -> None:
+    rows = [[f"Long wide header {idx}" for idx in range(1, 10)]]
+    rows.extend([[f"Long wide row {row}-{col}" for col in range(1, 10)] for row in range(1, 34)])
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Long auto landscape table"},
+            {
+                "role": "table",
+                "table_rows": rows,
+                "table_col_widths_twips": [1200] * 9,
+            },
+            "Portrait body after long auto landscape table.",
+        ],
+        meta_tables=1,
+    )
+    result = run_generated_case("auto_landscape_long_wide_table_header", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 1,
+        "long overwide table should still be auto-landscaped",
+    )
+    assert_true(
+        len(re.findall(r"<w:tblHeader\b", result["xml"])) == 1,
+        "long auto-landscaped tables should repeat the first row when crossing pages",
+    )
+    counts = result["manifest"]["counts"]
+    assert_true(
+        counts.get("content_table_repeat_header_rows_rendered") == 1,
+        f"default repeat-header count missing for long auto-landscaped table: {counts}",
+    )
+
+
+@case
+def script_generator_does_not_repeat_tall_first_row_for_auto_landscape_tables() -> None:
+    tall_intro_cell = (
+        "This first row is an explanatory data cell rather than a table header. "
+        "It contains long narrative text that would occupy many wrapped lines in Word, "
+        "so repeating it as a header on every page would make the generated paper hard "
+        "to read and would look like duplicated body content. "
+    ) * 4
+    rows = [[tall_intro_cell] + [f"Intro value {idx}" for idx in range(2, 10)]]
+    rows.extend([[f"Measurement row {row}-{col}" for col in range(1, 10)] for row in range(1, 34)])
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Long auto landscape table with tall first row"},
+            {
+                "role": "table",
+                "table_rows": rows,
+                "table_col_widths_twips": [1200] * 9,
+            },
+            "Portrait body after tall-first-row landscape table.",
+        ],
+        meta_tables=1,
+    )
+    result = run_generated_case("auto_landscape_tall_first_row_no_header", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 1,
+        "tall-first-row overwide table should still be auto-landscaped",
+    )
+    assert_true(
+        "<w:tblHeader" not in result["xml"],
+        "tall first rows should not be repeated as default table headers",
+    )
+    counts = result["manifest"]["counts"]
+    assert_true(
+        counts.get("content_table_repeat_header_rows_rendered", 0) == 0,
+        f"tall first rows should not increment default repeat-header count: {counts}",
+    )
+
+
+@case
+def script_generator_does_not_repeat_media_first_row_for_auto_landscape_tables() -> None:
+    img_src = new_workdir("auto_landscape_media_first_row_src")
+    write_sample_png(img_src / "first_row_image.png", width=160, height=96)
+    rows = [[f"Visual first row {idx}" for idx in range(1, 10)]]
+    rows.extend([[f"Measurement row {row}-{col}" for col in range(1, 10)] for row in range(1, 34)])
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Long auto landscape table with visual first row"},
+            {
+                "role": "table",
+                "table_rows": rows,
+                "table_col_widths_twips": [1200] * 9,
+                "table_cell_items": [
+                    {
+                        "row": 0,
+                        "col": 0,
+                        "items": [
+                            {
+                                "role": "image",
+                                "image": "first_row_image.png",
+                                "location": "table_cell",
+                                "after_paragraph_index": 0,
+                            }
+                        ],
+                    }
+                ],
+            },
+            "Portrait body after media-first-row landscape table.",
+        ],
+        meta_tables=1,
+    )
+    fmt = base_format()
+    content["_meta"]["images_dir"] = str(img_src)
+    result = run_generated_case("auto_landscape_media_first_row_no_header", content, fmt)
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 1,
+        "media-first-row overwide table should still be auto-landscaped",
+    )
+    assert_true("<w:drawing>" in result["xml"], "first-row media should render inside the table")
+    assert_true(
+        "<w:tblHeader" not in result["xml"],
+        "media-bearing first rows should not be repeated as default table headers",
+    )
+    counts = result["manifest"]["counts"]
+    assert_true(
+        counts.get("content_table_repeat_header_rows_rendered", 0) == 0,
+        f"media first rows should not increment default repeat-header count: {counts}",
+    )
+
+
+@case
+def script_generator_does_not_default_repeat_header_for_short_tables() -> None:
+    content = base_content(
+        [
+            {
+                "role": "table",
+                "table_rows": [["Header A", "Header B"], ["Body A", "Body B"]],
+            },
+            {
+                "role": "table",
+                "table_rows": [["Explicit off A", "Explicit off B"], ["Body A", "Body B"]],
+                "table_repeat_header_rows": 0,
+            },
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("short_tables_no_default_repeat_header", content, base_format())
+    assert_true(
+        "<w:tblHeader" not in result["xml"],
+        "short tables or explicit repeat-header=0 tables should not gain default repeated headers",
+    )
+    counts = result["manifest"]["counts"]
+    assert_true(
+        counts.get("content_table_repeat_header_rows_rendered", 0) == 0,
+        f"short/default-off tables should not increment repeat-header count: {counts}",
+    )
+
+
+@case
+def script_generator_groups_adjacent_landscape_tables_without_bridge_note() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Consecutive first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Consecutive first header {idx}" for idx in range(1, 10)],
+                    [f"Consecutive first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            {"role": "table_caption", "text": "表 2 Consecutive second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Consecutive second header {idx}" for idx in range(1, 10)],
+                    [f"Consecutive second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after consecutive landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("adjacent_landscape_tables_without_bridge", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 1,
+        "consecutive compatible landscape tables should share one landscape section",
+    )
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def has_sectpr(child: ET.Element) -> bool:
+        return child.tag == f"{W_NS}sectPr" or child.find(f".//{W_NS}sectPr") is not None
+
+    def has_landscape_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") == "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    table1_idx = next((idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Consecutive first header 1" in child_text(child)), -1)
+    table2_idx = next((idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Consecutive second header 1" in child_text(child)), -1)
+    after_idx = next((idx for idx, child in enumerate(children) if "Portrait body after consecutive landscape tables." in child_text(child)), -1)
+    caption1_idx = max((idx for idx, child in enumerate(children[:table1_idx]) if "Consecutive first landscape table" in child_text(child)), default=-1)
+    caption2_idx = max((idx for idx, child in enumerate(children[:table2_idx]) if "Consecutive second landscape table" in child_text(child)), default=-1)
+    assert_true(min(caption1_idx, table1_idx, caption2_idx, table2_idx, after_idx) >= 0, "consecutive landscape markers missing")
+
+    previous_section_break = max((idx for idx, child in enumerate(children[:table1_idx]) if has_sectpr(child)), default=-1)
+    landscape_section_break = next((idx for idx, child in enumerate(children[table2_idx + 1 :], start=table2_idx + 1) if has_landscape_section(child)), -1)
+    intermediate_section_breaks = [idx for idx, child in enumerate(children[table1_idx + 1 : table2_idx], start=table1_idx + 1) if has_sectpr(child)]
+    assert_true(not intermediate_section_breaks, f"consecutive landscape tables were split by section breaks: {intermediate_section_breaks}")
+    assert_true(
+        previous_section_break < caption1_idx < table1_idx < caption2_idx < table2_idx < landscape_section_break < after_idx,
+        "consecutive landscape tables should stay in one landscape section before portrait body resumes",
     )
 
 
@@ -998,6 +1307,2144 @@ def script_generator_groups_adjacent_landscape_tables_with_rich_bridge_notes() -
     assert_true(
         table1_idx < rich_note_idx < second_note_idx < table2_idx < landscape_section_break < after_idx,
         "bounded rich bridge notes should stay between adjacent landscape tables before portrait body resumes",
+    )
+
+
+@case
+def script_generator_groups_adjacent_landscape_tables_with_run_only_note_ref_bridge() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    note_text = "Run-only bridge footnote text."
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Run-only bridge first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Run-only first header {idx}" for idx in range(1, 10)],
+                    [f"Run-only first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            {
+                "role": "rich_text",
+                "runs": [
+                    {"type": "text", "text": "Note: run-only bridge keeps its native footnote"},
+                    {"type": "note_ref", "note_type": "footnote", "source_id": "run-only-1", "text": note_text},
+                    {"type": "text", "text": " inside the landscape table group."},
+                ],
+                "notes": [{"type": "footnote", "source_id": "run-only-1", "text": note_text}],
+            },
+            {"role": "table_caption", "text": "表 2 Run-only bridge second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Run-only second header {idx}" for idx in range(1, 10)],
+                    [f"Run-only second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after run-only note-ref bridge landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    content["_meta"]["footnote_references_extracted"] = 1
+    content["_meta"]["footnote_definitions_extracted"] = 1
+    result = run_generated_case("adjacent_landscape_tables_run_only_note_ref_bridge", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 1,
+        "run-only note-ref bridge should not split compatible adjacent landscape tables",
+    )
+    assert_true("<w:footnoteReference" in result["xml"], "run-only bridge footnote reference was not rendered")
+    with zipfile.ZipFile(result["work"] / "out.docx") as zf:
+        footnotes_xml = zf.read("word/footnotes.xml").decode("utf-8", errors="replace")
+    assert_true(note_text in footnotes_xml, "run-only bridge footnote definition missing")
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def has_sectpr(child: ET.Element) -> bool:
+        return child.tag == f"{W_NS}sectPr" or child.find(f".//{W_NS}sectPr") is not None
+
+    def has_landscape_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") == "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    table1_idx = next((idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Run-only first header 1" in child_text(child)), -1)
+    note_idx = next((idx for idx, child in enumerate(children) if "run-only bridge keeps its native footnote" in child_text(child)), -1)
+    table2_idx = next((idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Run-only second header 1" in child_text(child)), -1)
+    after_idx = next((idx for idx, child in enumerate(children) if "Portrait body after run-only note-ref bridge landscape tables." in child_text(child)), -1)
+    assert_true(min(table1_idx, note_idx, table2_idx, after_idx) >= 0, "run-only bridge landscape group markers missing")
+
+    landscape_section_break = next((idx for idx, child in enumerate(children[table2_idx + 1 :], start=table2_idx + 1) if has_landscape_section(child)), -1)
+    intermediate_section_breaks = [idx for idx, child in enumerate(children[table1_idx + 1 : table2_idx], start=table1_idx + 1) if has_sectpr(child)]
+    assert_true(not intermediate_section_breaks, f"run-only note-ref bridge split the landscape group: {intermediate_section_breaks}")
+    assert_true(
+        table1_idx < note_idx < table2_idx < landscape_section_break < after_idx,
+        "run-only note-ref bridge should stay between adjacent landscape tables before portrait body resumes",
+    )
+
+
+@case
+def script_generator_splits_landscape_tables_around_long_explanatory_bridge() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    bridge_one = (
+        "This explanatory bridge paragraph discusses the experimental context between two wide tables, "
+        "and it belongs to the portrait body flow rather than a compact table note."
+    )
+    bridge_two = (
+        "It also records assumptions and interpretation details before the next table begins, "
+        "so keeping it on the landscape page would silently misplace ordinary prose."
+    )
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Long explanatory bridge first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Long bridge first header {idx}" for idx in range(1, 10)],
+                    [f"Long bridge first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            bridge_one,
+            bridge_two,
+            {"role": "table_caption", "text": "表 2 Long explanatory bridge second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Long bridge second header {idx}" for idx in range(1, 10)],
+                    [f"Long bridge second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after long explanatory bridge landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("landscape_tables_long_explanatory_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "long explanatory bridge body should split adjacent landscape tables into separate landscape sections",
+    )
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def has_landscape_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") == "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    def has_portrait_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") != "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    table1_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Long bridge first header 1" in child_text(child)),
+        -1,
+    )
+    bridge1_idx = next((idx for idx, child in enumerate(children) if "experimental context between two wide tables" in child_text(child)), -1)
+    bridge2_idx = next((idx for idx, child in enumerate(children) if "interpretation details before the next table begins" in child_text(child)), -1)
+    table2_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Long bridge second header 1" in child_text(child)),
+        -1,
+    )
+    after_idx = next(
+        (idx for idx, child in enumerate(children) if "Portrait body after long explanatory bridge landscape tables." in child_text(child)),
+        -1,
+    )
+    assert_true(min(table1_idx, bridge1_idx, bridge2_idx, table2_idx, after_idx) >= 0, "long explanatory bridge markers missing")
+
+    first_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table1_idx + 1 : bridge1_idx], start=table1_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    portrait_bridge_section_break = next(
+        (idx for idx, child in enumerate(children[bridge2_idx + 1 : table2_idx], start=bridge2_idx + 1) if has_portrait_section(child)),
+        -1,
+    )
+    second_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table2_idx + 1 : after_idx], start=table2_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    assert_true(
+        table1_idx < first_landscape_section_break < bridge1_idx < bridge2_idx < portrait_bridge_section_break < table2_idx < second_landscape_section_break < after_idx,
+        "long explanatory bridge should be closed as portrait body between the two landscape table sections",
+    )
+
+
+@case
+def script_generator_splits_landscape_tables_around_display_math_bridge() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Display bridge first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Display first header {idx}" for idx in range(1, 10)],
+                    [f"Display first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            {
+                "role": "rich_text",
+                "text": "Displayed equation bridge should resume portrait flow.",
+                "runs": [
+                    {"type": "text", "text": "Displayed equation bridge should resume portrait flow: "},
+                    {"type": "math", "text": r"E=mc^2", "math": {"type": "display", "text": r"E=mc^2", "latex": r"E=mc^2"}},
+                ],
+                "math": {"type": "display", "text": r"E=mc^2", "latex": r"E=mc^2"},
+            },
+            {"role": "table_caption", "text": "表 2 Display bridge second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Display second header {idx}" for idx in range(1, 10)],
+                    [f"Display second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after display bridge landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("landscape_tables_display_math_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "display-formula bridge content should split adjacent landscape tables into separate landscape sections",
+    )
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def has_landscape_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") == "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    def has_portrait_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") != "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    table1_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Display first header 1" in child_text(child)),
+        -1,
+    )
+    formula_idx = next(
+        (idx for idx, child in enumerate(children) if "Displayed equation bridge should resume portrait flow" in child_text(child)),
+        -1,
+    )
+    table2_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Display second header 1" in child_text(child)),
+        -1,
+    )
+    after_idx = next(
+        (idx for idx, child in enumerate(children) if "Portrait body after display bridge landscape tables." in child_text(child)),
+        -1,
+    )
+    assert_true(min(table1_idx, formula_idx, table2_idx, after_idx) >= 0, "display-math bridge landscape markers missing")
+
+    first_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table1_idx + 1 : formula_idx], start=table1_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    second_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table2_idx + 1 : after_idx], start=table2_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    portrait_bridge_section_break = next(
+        (idx for idx, child in enumerate(children[formula_idx + 1 : table2_idx], start=formula_idx + 1) if has_portrait_section(child)),
+        -1,
+    )
+    assert_true(
+        table1_idx < first_landscape_section_break < formula_idx < portrait_bridge_section_break < table2_idx < second_landscape_section_break < after_idx,
+        "display-formula bridge should be closed as a portrait section between the two landscape table sections",
+    )
+
+
+@case
+def script_generator_splits_landscape_tables_around_rich_item_display_math_bridge() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Rich item formula bridge first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich item formula first header {idx}" for idx in range(1, 10)],
+                    [f"Rich item formula first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            {
+                "role": "rich_text",
+                "text": "Displayed item equation bridge should resume portrait flow.",
+                "items": [
+                    {
+                        "role": "formula",
+                        "text": r"E=mc^2",
+                        "math": {"type": "display", "text": r"E=mc^2", "latex": r"E=mc^2"},
+                    }
+                ],
+            },
+            {"role": "table_caption", "text": "表 2 Rich item formula bridge second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich item formula second header {idx}" for idx in range(1, 10)],
+                    [f"Rich item formula second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after rich item formula bridge landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("landscape_tables_rich_item_display_math_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "rich_text.items display formula bridge should split adjacent landscape tables into separate landscape sections",
+    )
+    assert_true("<m:oMath" in result["xml"], "rich_text.items display formula bridge should render as native OMML")
+    counts = result["manifest"]["counts"]
+    assert_true(counts.get("content_formulas_rendered", 0) >= 1, f"rich_text.items formula not counted: {counts}")
+
+
+@case
+def script_generator_splits_landscape_tables_around_rich_item_legacy_latex_bridge() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Legacy latex bridge first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Legacy latex first header {idx}" for idx in range(1, 10)],
+                    [f"Legacy latex first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            {
+                "role": "rich_text",
+                "text": "Legacy latex item bridge should resume portrait flow.",
+                "items": [
+                    {
+                        "role": "formula",
+                        "source": "latex",
+                        "text": r"PV=nRT",
+                        "latex": r"PV=nRT",
+                        "numbered": False,
+                    }
+                ],
+            },
+            {"role": "table_caption", "text": "表 2 Legacy latex bridge second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Legacy latex second header {idx}" for idx in range(1, 10)],
+                    [f"Legacy latex second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after legacy latex bridge landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("landscape_tables_rich_item_legacy_latex_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "rich_text.items legacy latex formula bridge should split adjacent landscape tables into separate landscape sections",
+    )
+    assert_true("<m:oMath" in result["xml"], "rich_text.items legacy latex bridge should render as native OMML")
+    counts = result["manifest"]["counts"]
+    assert_true(counts.get("content_formulas_rendered", 0) >= 1, f"rich_text.items legacy latex formula not counted: {counts}")
+
+
+@case
+def script_generator_splits_landscape_tables_around_rich_image_bridge() -> None:
+    img_src = new_workdir("landscape_rich_image_bridge_src")
+    write_sample_png(img_src / "bridge.png", width=180, height=120)
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Rich image bridge first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich image first header {idx}" for idx in range(1, 10)],
+                    [f"Rich image first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            {
+                "role": "rich_text",
+                "text": "Inline image bridge should resume portrait flow.",
+                "runs": [
+                    {"type": "text", "text": "Inline image bridge should resume portrait flow: "},
+                    {"type": "image", "image": "bridge.png"},
+                    {"type": "text", "text": " after image."},
+                ],
+            },
+            {"role": "table_caption", "text": "表 2 Rich image bridge second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich image second header {idx}" for idx in range(1, 10)],
+                    [f"Rich image second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after rich image bridge landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    content["_meta"]["images_dir"] = str(img_src)
+    content["_meta"]["images_extracted"] = 1
+    content["sections"][0]["images"] = ["bridge.png"]
+    result = run_generated_case("landscape_tables_rich_image_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "rich image bridge content should split adjacent landscape tables into separate landscape sections",
+    )
+    assert_true("<w:drawing>" in result["xml"], "rich image bridge run should render as a Word drawing")
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def has_landscape_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") == "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    def has_portrait_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") != "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    table1_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Rich image first header 1" in child_text(child)),
+        -1,
+    )
+    bridge_idx = next(
+        (idx for idx, child in enumerate(children) if "Inline image bridge should resume portrait flow" in child_text(child)),
+        -1,
+    )
+    table2_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Rich image second header 1" in child_text(child)),
+        -1,
+    )
+    after_idx = next(
+        (idx for idx, child in enumerate(children) if "Portrait body after rich image bridge landscape tables." in child_text(child)),
+        -1,
+    )
+    assert_true(min(table1_idx, bridge_idx, table2_idx, after_idx) >= 0, "rich image bridge landscape markers missing")
+
+    first_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table1_idx + 1 : bridge_idx], start=table1_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    portrait_bridge_section_break = next(
+        (idx for idx, child in enumerate(children[bridge_idx + 1 : table2_idx], start=bridge_idx + 1) if has_portrait_section(child)),
+        -1,
+    )
+    second_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table2_idx + 1 : after_idx], start=table2_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    assert_true(
+        table1_idx < first_landscape_section_break < bridge_idx < portrait_bridge_section_break < table2_idx < second_landscape_section_break < after_idx,
+        "rich image bridge should be closed as a portrait section between the two landscape table sections",
+    )
+
+
+@case
+def script_generator_splits_landscape_tables_around_rich_item_image_bridge() -> None:
+    img_src = new_workdir("landscape_rich_item_image_bridge_src")
+    write_sample_png(img_src / "bridge.png", width=180, height=120)
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Rich item image bridge first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich item image first header {idx}" for idx in range(1, 10)],
+                    [f"Rich item image first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            {
+                "role": "rich_text",
+                "text": "Inline image bridge should resume portrait flow.",
+                "items": [{"role": "image", "image": "bridge.png"}],
+            },
+            {"role": "table_caption", "text": "表 2 Rich item image bridge second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich item image second header {idx}" for idx in range(1, 10)],
+                    [f"Rich item image second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after rich item image bridge landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    content["_meta"]["images_dir"] = str(img_src)
+    content["_meta"]["images_extracted"] = 1
+    content["sections"][0]["images"] = ["bridge.png"]
+    result = run_generated_case("landscape_tables_rich_item_image_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "rich_text.items image bridge should split adjacent landscape tables into separate landscape sections",
+    )
+    assert_true("<w:drawing>" in result["xml"], "rich_text.items image bridge should render as a Word drawing")
+
+
+@case
+def script_generator_splits_landscape_tables_around_rich_item_table_bridge() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Rich item table bridge first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich item table first header {idx}" for idx in range(1, 10)],
+                    [f"Rich item table first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            {
+                "role": "rich_text",
+                "text": "Inline table bridge should resume portrait flow.",
+                "items": [
+                    {
+                        "role": "table",
+                        "table_rows": [["Bridge metric", "Bridge value"], ["Delta", "0.42"]],
+                    }
+                ],
+            },
+            {"role": "table_caption", "text": "表 2 Rich item table bridge second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich item table second header {idx}" for idx in range(1, 10)],
+                    [f"Rich item table second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after rich item table bridge landscape tables.",
+        ],
+        meta_tables=3,
+    )
+    result = run_generated_case("landscape_tables_rich_item_table_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "rich_text.items table bridge should split adjacent landscape tables into separate landscape sections",
+    )
+    assert_true("Bridge metric" in result["xml"], "rich_text.items table bridge should render the nested table content")
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def has_landscape_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") == "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    def has_portrait_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") != "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    table1_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Rich item table first header 1" in child_text(child)),
+        -1,
+    )
+    bridge_text_idx = next(
+        (idx for idx, child in enumerate(children) if "Inline table bridge should resume portrait flow" in child_text(child)),
+        -1,
+    )
+    bridge_table_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Bridge metric" in child_text(child)),
+        -1,
+    )
+    table2_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Rich item table second header 1" in child_text(child)),
+        -1,
+    )
+    after_idx = next(
+        (idx for idx, child in enumerate(children) if "Portrait body after rich item table bridge landscape tables." in child_text(child)),
+        -1,
+    )
+    assert_true(min(table1_idx, bridge_text_idx, bridge_table_idx, table2_idx, after_idx) >= 0, "rich item table bridge markers missing")
+
+    first_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table1_idx + 1 : bridge_text_idx], start=table1_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    portrait_bridge_section_break = next(
+        (idx for idx, child in enumerate(children[bridge_table_idx + 1 : table2_idx], start=bridge_table_idx + 1) if has_portrait_section(child)),
+        -1,
+    )
+    second_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table2_idx + 1 : after_idx], start=table2_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    assert_true(
+        table1_idx < first_landscape_section_break < bridge_text_idx < bridge_table_idx < portrait_bridge_section_break < table2_idx < second_landscape_section_break < after_idx,
+        "rich_text.items table bridge should be closed as portrait content between separate landscape table sections",
+    )
+
+
+@case
+def script_generator_splits_landscape_tables_around_rich_item_code_bridge() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Rich item code bridge first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich item code first header {idx}" for idx in range(1, 10)],
+                    [f"Rich item code first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            {
+                "role": "rich_text",
+                "text": "Inline code bridge should resume portrait flow.",
+                "items": [
+                    {
+                        "role": "code",
+                        "code": "for epoch in range(2):\n    loss += epoch",
+                    }
+                ],
+            },
+            {"role": "table_caption", "text": "表 2 Rich item code bridge second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich item code second header {idx}" for idx in range(1, 10)],
+                    [f"Rich item code second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after rich item code bridge landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("landscape_tables_rich_item_code_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "rich_text.items code bridge should split adjacent landscape tables into separate landscape sections",
+    )
+    assert_true("loss += epoch" in result["xml"], "rich_text.items code bridge should render the nested code block")
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def has_landscape_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") == "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    def has_portrait_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") != "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    table1_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Rich item code first header 1" in child_text(child)),
+        -1,
+    )
+    bridge_text_idx = next(
+        (idx for idx, child in enumerate(children) if "Inline code bridge should resume portrait flow" in child_text(child)),
+        -1,
+    )
+    code_idx = next(
+        (idx for idx, child in enumerate(children) if "loss += epoch" in child_text(child)),
+        -1,
+    )
+    table2_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Rich item code second header 1" in child_text(child)),
+        -1,
+    )
+    after_idx = next(
+        (idx for idx, child in enumerate(children) if "Portrait body after rich item code bridge landscape tables." in child_text(child)),
+        -1,
+    )
+    assert_true(min(table1_idx, bridge_text_idx, code_idx, table2_idx, after_idx) >= 0, "rich item code bridge markers missing")
+
+    first_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table1_idx + 1 : bridge_text_idx], start=table1_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    portrait_bridge_section_break = next(
+        (idx for idx, child in enumerate(children[code_idx + 1 : table2_idx], start=code_idx + 1) if has_portrait_section(child)),
+        -1,
+    )
+    second_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table2_idx + 1 : after_idx], start=table2_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    assert_true(
+        table1_idx < first_landscape_section_break < bridge_text_idx < code_idx < portrait_bridge_section_break < table2_idx < second_landscape_section_break < after_idx,
+        "rich_text.items code bridge should be closed as portrait content between separate landscape table sections",
+    )
+
+
+@case
+def script_generator_splits_landscape_tables_around_rich_item_caption_bridge() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Rich item caption bridge first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich item caption first header {idx}" for idx in range(1, 10)],
+                    [f"Rich item caption first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            {
+                "role": "rich_text",
+                "text": "Inline caption bridge should resume portrait flow.",
+                "items": [
+                    {
+                        "role": "figure_caption",
+                        "text": "Figure 9 Nested bridge figure caption",
+                    }
+                ],
+            },
+            {"role": "table_caption", "text": "表 2 Rich item caption bridge second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich item caption second header {idx}" for idx in range(1, 10)],
+                    [f"Rich item caption second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after rich item caption bridge landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("landscape_tables_rich_item_caption_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "rich_text.items caption bridge should split adjacent landscape tables into separate landscape sections",
+    )
+    assert_true(
+        "Fig. 9 Nested bridge figure caption" in result["xml"],
+        "rich_text.items caption bridge should render the nested caption text",
+    )
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def has_landscape_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") == "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    def has_portrait_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") != "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    table1_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Rich item caption first header 1" in child_text(child)),
+        -1,
+    )
+    bridge_text_idx = next(
+        (idx for idx, child in enumerate(children) if "Inline caption bridge should resume portrait flow" in child_text(child)),
+        -1,
+    )
+    caption_idx = next(
+        (idx for idx, child in enumerate(children) if "Fig. 9 Nested bridge figure caption" in child_text(child)),
+        -1,
+    )
+    table2_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Rich item caption second header 1" in child_text(child)),
+        -1,
+    )
+    after_idx = next(
+        (idx for idx, child in enumerate(children) if "Portrait body after rich item caption bridge landscape tables." in child_text(child)),
+        -1,
+    )
+    assert_true(min(table1_idx, bridge_text_idx, caption_idx, table2_idx, after_idx) >= 0, "rich item caption bridge markers missing")
+
+    first_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table1_idx + 1 : bridge_text_idx], start=table1_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    portrait_bridge_section_break = next(
+        (idx for idx, child in enumerate(children[caption_idx + 1 : table2_idx], start=caption_idx + 1) if has_portrait_section(child)),
+        -1,
+    )
+    second_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table2_idx + 1 : after_idx], start=table2_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    assert_true(
+        table1_idx < first_landscape_section_break < bridge_text_idx < caption_idx < portrait_bridge_section_break < table2_idx < second_landscape_section_break < after_idx,
+        "rich_text.items caption bridge should be closed as portrait content between separate landscape table sections",
+    )
+
+
+@case
+def script_generator_preserves_rich_item_block_order_in_landscape_tables_bridge() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Rich item ordered bridge first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich item ordered first header {idx}" for idx in range(1, 10)],
+                    [f"Rich item ordered first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            {
+                "role": "rich_text",
+                "text": "Ordered block bridge should keep source order.",
+                "items": [
+                    {
+                        "role": "code",
+                        "code": "ordered_code_marker = 7",
+                    },
+                    {
+                        "role": "figure_caption",
+                        "text": "Figure 10 Ordered bridge caption",
+                    },
+                    {
+                        "role": "table",
+                        "table_rows": [["Ordered bridge metric", "Ordered bridge value"]],
+                    },
+                ],
+            },
+            {"role": "table_caption", "text": "表 2 Rich item ordered bridge second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich item ordered second header {idx}" for idx in range(1, 10)],
+                    [f"Rich item ordered second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after rich item ordered bridge landscape tables.",
+        ],
+        meta_tables=3,
+    )
+    result = run_generated_case("landscape_tables_rich_item_ordered_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "rich_text.items ordered block bridge should split adjacent landscape tables into separate landscape sections",
+    )
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    bridge_text_idx = next(
+        (idx for idx, child in enumerate(children) if "Ordered block bridge should keep source order." in child_text(child)),
+        -1,
+    )
+    code_idx = next(
+        (idx for idx, child in enumerate(children) if "ordered_code_marker = 7" in child_text(child)),
+        -1,
+    )
+    caption_idx = next(
+        (idx for idx, child in enumerate(children) if "Fig. 10 Ordered bridge caption" in child_text(child)),
+        -1,
+    )
+    bridge_table_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Ordered bridge metric" in child_text(child)),
+        -1,
+    )
+    assert_true(min(bridge_text_idx, code_idx, caption_idx, bridge_table_idx) >= 0, "rich item ordered bridge markers missing")
+    assert_true(
+        bridge_text_idx < code_idx < caption_idx < bridge_table_idx,
+        "rich_text.items block children should render in source order after the bridge text",
+    )
+
+
+@case
+def script_generator_preserves_rich_item_media_order_in_landscape_tables_bridge() -> None:
+    img_src = new_workdir("landscape_rich_item_media_order_src")
+    write_sample_png(img_src / "ordered_media_bridge.png", width=180, height=120)
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Rich item media ordered bridge first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich item media ordered first header {idx}" for idx in range(1, 10)],
+                    [f"Rich item media ordered first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            {
+                "role": "rich_text",
+                "text": "Ordered media bridge should keep source order.",
+                "items": [
+                    {
+                        "role": "code",
+                        "code": "media_order_code_marker = 11",
+                    },
+                    {
+                        "role": "image",
+                        "image": "ordered_media_bridge.png",
+                    },
+                    {
+                        "role": "figure_caption",
+                        "text": "Figure 11 Ordered media bridge caption",
+                    },
+                    {
+                        "role": "table",
+                        "table_rows": [["Ordered media bridge metric", "Ordered media bridge value"]],
+                    },
+                ],
+            },
+            {"role": "table_caption", "text": "表 2 Rich item media ordered bridge second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich item media ordered second header {idx}" for idx in range(1, 10)],
+                    [f"Rich item media ordered second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after rich item media ordered bridge landscape tables.",
+        ],
+        meta_tables=3,
+    )
+    content["_meta"]["images_dir"] = str(img_src)
+    content["_meta"]["images_extracted"] = 1
+    content["sections"][0]["images"] = ["ordered_media_bridge.png"]
+    result = run_generated_case("landscape_tables_rich_item_media_ordered_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "rich_text.items ordered media bridge should split adjacent landscape tables into separate landscape sections",
+    )
+    assert_true("<w:drawing>" in result["xml"], "rich_text.items ordered media bridge should render the nested image")
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def child_has_drawing(child: ET.Element) -> bool:
+        return any(node.tag == f"{W_NS}drawing" for node in child.iter())
+
+    bridge_text_idx = next(
+        (idx for idx, child in enumerate(children) if "Ordered media bridge should keep source order." in child_text(child)),
+        -1,
+    )
+    code_idx = next(
+        (idx for idx, child in enumerate(children) if "media_order_code_marker = 11" in child_text(child)),
+        -1,
+    )
+    image_idx = next((idx for idx, child in enumerate(children) if child_has_drawing(child)), -1)
+    caption_idx = next(
+        (idx for idx, child in enumerate(children) if "Fig. 11 Ordered media bridge caption" in child_text(child)),
+        -1,
+    )
+    bridge_table_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Ordered media bridge metric" in child_text(child)),
+        -1,
+    )
+    assert_true(min(bridge_text_idx, code_idx, image_idx, caption_idx, bridge_table_idx) >= 0, "rich item ordered media bridge markers missing")
+    assert_true(
+        bridge_text_idx < code_idx < image_idx < caption_idx < bridge_table_idx,
+        "rich_text.items media and block children should render in source order after the bridge text",
+    )
+
+
+@case
+def script_generator_preserves_rich_item_inline_formula_shape_in_landscape_tables_bridge() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Rich item inline formula first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich item inline formula first header {idx}" for idx in range(1, 10)],
+                    [f"Rich item inline formula first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            {
+                "role": "rich_text",
+                "text": "Inline item formula bridge should keep source order.",
+                "items": [
+                    {
+                        "role": "code",
+                        "code": "inline_formula_order_code = 13",
+                    },
+                    {
+                        "role": "formula",
+                        "text": r"a+b=c",
+                        "math": {"type": "inline", "text": r"a+b=c", "latex": r"a+b=c"},
+                    },
+                    {
+                        "role": "figure_caption",
+                        "text": "Figure 12 Inline formula bridge caption",
+                    },
+                    {
+                        "role": "table",
+                        "table_rows": [["Inline formula bridge metric", "Inline formula bridge value"]],
+                    },
+                ],
+            },
+            {"role": "table_caption", "text": "表 2 Rich item inline formula second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich item inline formula second header {idx}" for idx in range(1, 10)],
+                    [f"Rich item inline formula second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after rich item inline formula landscape tables.",
+        ],
+        meta_tables=3,
+    )
+    result = run_generated_case("landscape_tables_rich_item_inline_formula_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "rich_text.items inline formula bridge should split adjacent landscape tables into separate landscape sections",
+    )
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+    m_ns = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def child_has_inline_math(child: ET.Element) -> bool:
+        return any(node.tag == f"{m_ns}oMath" for node in child.iter())
+
+    def child_has_display_math(child: ET.Element) -> bool:
+        return any(node.tag == f"{m_ns}oMathPara" for node in child.iter())
+
+    bridge_text_idx = next(
+        (idx for idx, child in enumerate(children) if "Inline item formula bridge should keep source order." in child_text(child)),
+        -1,
+    )
+    code_idx = next(
+        (idx for idx, child in enumerate(children) if "inline_formula_order_code = 13" in child_text(child)),
+        -1,
+    )
+    formula_idx = next((idx for idx, child in enumerate(children) if child_has_inline_math(child) or child_has_display_math(child)), -1)
+    caption_idx = next(
+        (idx for idx, child in enumerate(children) if "Fig. 12 Inline formula bridge caption" in child_text(child)),
+        -1,
+    )
+    bridge_table_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Inline formula bridge metric" in child_text(child)),
+        -1,
+    )
+    assert_true(
+        min(bridge_text_idx, code_idx, formula_idx, caption_idx, bridge_table_idx) >= 0,
+        "rich item inline formula bridge markers missing",
+    )
+    assert_true(
+        bridge_text_idx < code_idx < formula_idx < caption_idx < bridge_table_idx,
+        "rich_text.items inline formula should remain in source order among block children",
+    )
+    assert_true(child_has_inline_math(children[formula_idx]), "inline formula item should render as inline OMML math")
+    assert_true(not child_has_display_math(children[formula_idx]), "inline formula item should not render as display OMML math")
+
+
+@case
+def script_generator_preserves_rich_run_display_formula_shape_in_landscape_tables_bridge() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Rich run display formula first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich run display formula first header {idx}" for idx in range(1, 10)],
+                    [f"Rich run display formula first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            {
+                "role": "rich_text",
+                "text": "Run display formula bridge should keep display shape.",
+                "runs": [
+                    {"type": "text", "text": "Run display formula bridge before block math."},
+                    {
+                        "type": "math",
+                        "text": r"F=ma",
+                        "math": [{"type": "display", "text": r"F=ma", "latex": r"F=ma"}],
+                    },
+                    {"type": "text", "text": "Run display formula bridge after block math."},
+                ],
+                "math": [{"type": "display", "text": r"F=ma", "latex": r"F=ma"}],
+            },
+            {"role": "table_caption", "text": "表 2 Rich run display formula second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich run display formula second header {idx}" for idx in range(1, 10)],
+                    [f"Rich run display formula second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after rich run display formula landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("landscape_tables_rich_run_display_formula_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "rich_text run display formula bridge should split adjacent landscape tables into separate landscape sections",
+    )
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+    m_ns = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def child_has_loose_inline_math(child: ET.Element) -> bool:
+        parents = {id(desc): parent for parent in child.iter() for desc in parent}
+        return any(
+            node.tag == f"{m_ns}oMath" and parents.get(id(node)) is not None and parents[id(node)].tag != f"{m_ns}oMathPara"
+            for node in child.iter()
+        )
+
+    def child_has_display_math(child: ET.Element) -> bool:
+        return any(node.tag == f"{m_ns}oMathPara" for node in child.iter())
+
+    before_idx = next(
+        (idx for idx, child in enumerate(children) if "Run display formula bridge before block math." in child_text(child)),
+        -1,
+    )
+    formula_idx = next((idx for idx, child in enumerate(children) if child_has_display_math(child) or child_has_loose_inline_math(child)), -1)
+    after_idx = next(
+        (idx for idx, child in enumerate(children) if "Run display formula bridge after block math." in child_text(child)),
+        -1,
+    )
+    assert_true(min(before_idx, formula_idx, after_idx) >= 0, "rich run display formula bridge markers missing")
+    assert_true(
+        before_idx < formula_idx < after_idx,
+        "rich_text run display formula should stay in source order between surrounding text runs",
+    )
+    assert_true(child_has_display_math(children[formula_idx]), "display formula run should render as display OMML math")
+    assert_true(not child_has_loose_inline_math(children[formula_idx]), "display formula run should not be collapsed into inline OMML math")
+    counts = result["manifest"]["counts"]
+    assert_true(counts.get("content_formulas_rendered", 0) >= 1, f"rich_text run display formula not counted: {counts}")
+
+
+@case
+def script_generator_preserves_rich_run_item_block_order_in_landscape_tables_bridge() -> None:
+    img_src = new_workdir("landscape_rich_run_item_block_order_src")
+    write_sample_png(img_src / "run_item_order_bridge.png", width=180, height=120)
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Rich run item ordered bridge first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich run item ordered first header {idx}" for idx in range(1, 10)],
+                    [f"Rich run item ordered first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            {
+                "role": "rich_text",
+                "text": "Run item bridge should keep nested block order.",
+                "runs": [
+                    {"type": "text", "text": "Run item bridge before nested items."},
+                    {
+                        "type": "text",
+                        "text": "Run item bridge anchor text.",
+                        "items": [
+                            {
+                                "role": "code",
+                                "code": "run_item_code_marker = 17",
+                            },
+                            {
+                                "role": "image",
+                                "image": "run_item_order_bridge.png",
+                            },
+                            {
+                                "role": "figure_caption",
+                                "text": "Figure 13 Run item nested bridge caption",
+                            },
+                            {
+                                "role": "table",
+                                "table_rows": [["Run item bridge metric", "Run item bridge value"]],
+                            },
+                        ],
+                    },
+                    {"type": "text", "text": "Run item bridge after nested items."},
+                ],
+            },
+            {"role": "table_caption", "text": "表 2 Rich run item ordered bridge second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich run item ordered second header {idx}" for idx in range(1, 10)],
+                    [f"Rich run item ordered second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after rich run item ordered bridge landscape tables.",
+        ],
+        meta_tables=3,
+    )
+    content["_meta"]["images_dir"] = str(img_src)
+    content["_meta"]["images_extracted"] = 1
+    content["sections"][0]["images"] = ["run_item_order_bridge.png"]
+    result = run_generated_case("landscape_tables_rich_run_item_ordered_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "rich_text.runs[].items bridge should split adjacent landscape tables into separate landscape sections",
+    )
+    assert_true("<w:drawing>" in result["xml"], "rich_text.runs[].items bridge should render the nested image")
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def child_has_drawing(child: ET.Element) -> bool:
+        return any(node.tag == f"{W_NS}drawing" for node in child.iter())
+
+    before_idx = next(
+        (idx for idx, child in enumerate(children) if "Run item bridge before nested items." in child_text(child)),
+        -1,
+    )
+    code_idx = next(
+        (idx for idx, child in enumerate(children) if "run_item_code_marker = 17" in child_text(child)),
+        -1,
+    )
+    image_idx = next((idx for idx, child in enumerate(children) if child_has_drawing(child)), -1)
+    caption_idx = next(
+        (idx for idx, child in enumerate(children) if "Fig. 13 Run item nested bridge caption" in child_text(child)),
+        -1,
+    )
+    bridge_table_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Run item bridge metric" in child_text(child)),
+        -1,
+    )
+    after_idx = next(
+        (idx for idx, child in enumerate(children) if "Run item bridge after nested items." in child_text(child)),
+        -1,
+    )
+    assert_true(
+        min(before_idx, code_idx, image_idx, caption_idx, bridge_table_idx, after_idx) >= 0,
+        "rich run item ordered bridge markers missing",
+    )
+    assert_true(
+        before_idx < code_idx < image_idx < caption_idx < bridge_table_idx < after_idx,
+        "rich_text.runs[].items media/block children should render between surrounding text runs in source order",
+    )
+
+
+@case
+def script_generator_preserves_rich_run_table_cell_items_order_in_landscape_tables_bridge() -> None:
+    img_src = new_workdir("landscape_rich_run_table_cell_items_src")
+    write_sample_png(img_src / "run_cell_item_order_bridge.png", width=180, height=120)
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Rich run cell-item bridge first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich run cell-item first header {idx}" for idx in range(1, 10)],
+                    [f"Rich run cell-item first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            {
+                "role": "rich_text",
+                "text": "Run table-cell item bridge should keep nested block order.",
+                "runs": [
+                    {"type": "text", "text": "Run table-cell item bridge before nested items."},
+                    {
+                        "type": "text",
+                        "text": "Run table-cell item bridge anchor text.",
+                        "table_cell_items": [
+                            {
+                                "items": [
+                                    {
+                                        "role": "code",
+                                        "code": "run_cell_item_code_marker = 19",
+                                    },
+                                    {
+                                        "role": "image",
+                                        "image": "run_cell_item_order_bridge.png",
+                                    },
+                                    {
+                                        "role": "figure_caption",
+                                        "text": "Figure 14 Run table-cell item nested bridge caption",
+                                    },
+                                    {
+                                        "role": "table",
+                                        "table_rows": [["Run table-cell item bridge metric", "Run table-cell item bridge value"]],
+                                    },
+                                ]
+                            }
+                        ],
+                    },
+                    {"type": "text", "text": "Run table-cell item bridge after nested items."},
+                ],
+            },
+            {"role": "table_caption", "text": "表 2 Rich run cell-item bridge second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Rich run cell-item second header {idx}" for idx in range(1, 10)],
+                    [f"Rich run cell-item second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after rich run table-cell item bridge landscape tables.",
+        ],
+        meta_tables=3,
+    )
+    content["_meta"]["images_dir"] = str(img_src)
+    content["_meta"]["images_extracted"] = 1
+    content["sections"][0]["images"] = ["run_cell_item_order_bridge.png"]
+    result = run_generated_case("landscape_tables_rich_run_table_cell_item_ordered_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "rich_text.runs[].table_cell_items bridge should split adjacent landscape tables into separate landscape sections",
+    )
+    assert_true("<w:drawing>" in result["xml"], "rich_text.runs[].table_cell_items bridge should render the nested image")
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def child_has_drawing(child: ET.Element) -> bool:
+        return any(node.tag == f"{W_NS}drawing" for node in child.iter())
+
+    before_idx = next(
+        (idx for idx, child in enumerate(children) if "Run table-cell item bridge before nested items." in child_text(child)),
+        -1,
+    )
+    code_idx = next(
+        (idx for idx, child in enumerate(children) if "run_cell_item_code_marker = 19" in child_text(child)),
+        -1,
+    )
+    image_idx = next((idx for idx, child in enumerate(children) if child_has_drawing(child)), -1)
+    caption_idx = next(
+        (idx for idx, child in enumerate(children) if "Fig. 14 Run table-cell item nested bridge caption" in child_text(child)),
+        -1,
+    )
+    bridge_table_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Run table-cell item bridge metric" in child_text(child)),
+        -1,
+    )
+    after_idx = next(
+        (idx for idx, child in enumerate(children) if "Run table-cell item bridge after nested items." in child_text(child)),
+        -1,
+    )
+    assert_true(
+        min(before_idx, code_idx, image_idx, caption_idx, bridge_table_idx, after_idx) >= 0,
+        "rich run table-cell item ordered bridge markers missing",
+    )
+    assert_true(
+        before_idx < code_idx < image_idx < caption_idx < bridge_table_idx < after_idx,
+        "rich_text.runs[].table_cell_items media/block children should render between surrounding text runs in source order",
+    )
+
+
+@case
+def script_generator_does_not_promote_landscape_numbered_heading_bridge_to_table_caption() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    heading_bridge = "2.2 Experimental setup"
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Numbered heading first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Numbered heading first header {idx}" for idx in range(1, 10)],
+                    [f"Numbered heading first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            heading_bridge,
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Numbered heading second header {idx}" for idx in range(1, 10)],
+                    [f"Numbered heading second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after numbered heading bridge landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("landscape_tables_numbered_heading_bridge", content, base_format())
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def has_landscape_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") == "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    def has_portrait_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") != "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    all_text = "\n".join(child_text(child) for child in children)
+    assert_true(heading_bridge in all_text, f"numbered heading bridge was not preserved as body text: {all_text}")
+    assert_true(
+        "Experimental setup" not in "".join(text for text in all_text.splitlines() if text.startswith(("表", "Table"))),
+        "numbered heading bridge should not be promoted to a generated table caption",
+    )
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "numbered heading bridge should split adjacent landscape tables into separate landscape sections",
+    )
+
+    table1_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Numbered heading first header 1" in child_text(child)),
+        -1,
+    )
+    heading_idx = next((idx for idx, child in enumerate(children) if heading_bridge in child_text(child)), -1)
+    table2_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Numbered heading second header 1" in child_text(child)),
+        -1,
+    )
+    after_idx = next(
+        (idx for idx, child in enumerate(children) if "Portrait body after numbered heading bridge landscape tables." in child_text(child)),
+        -1,
+    )
+    assert_true(min(table1_idx, heading_idx, table2_idx, after_idx) >= 0, "numbered heading bridge landscape markers missing")
+
+    first_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table1_idx + 1 : heading_idx], start=table1_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    portrait_bridge_section_break = next(
+        (idx for idx, child in enumerate(children[heading_idx + 1 : table2_idx], start=heading_idx + 1) if has_portrait_section(child)),
+        -1,
+    )
+    second_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table2_idx + 1 : after_idx], start=table2_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    assert_true(
+        table1_idx < first_landscape_section_break < heading_idx < portrait_bridge_section_break < table2_idx < second_landscape_section_break < after_idx,
+        "numbered heading bridge should be closed as portrait body between the two landscape table sections",
+    )
+
+
+@case
+def script_generator_does_not_promote_landscape_trailing_dot_numbered_heading_bridge_to_table_caption() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    heading_bridge = "2.2. Experimental setup"
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Trailing-dot numbered heading first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Trailing-dot first header {idx}" for idx in range(1, 10)],
+                    [f"Trailing-dot first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            heading_bridge,
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Trailing-dot second header {idx}" for idx in range(1, 10)],
+                    [f"Trailing-dot second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after trailing-dot numbered heading bridge landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("landscape_tables_trailing_dot_numbered_heading_bridge", content, base_format())
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    all_text = "\n".join(child_text(child) for child in children)
+    caption_text = "\n".join(text for text in all_text.splitlines() if text.startswith(("表", "Table")))
+    assert_true(heading_bridge in all_text, f"trailing-dot numbered heading bridge was not preserved as body text: {all_text}")
+    assert_true(
+        "Experimental setup" not in caption_text,
+        f"trailing-dot numbered heading bridge should not be promoted to a generated table caption: {caption_text}",
+    )
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "trailing-dot numbered heading bridge should split adjacent landscape tables into separate landscape sections",
+    )
+
+
+@case
+def script_generator_groups_adjacent_landscape_tables_with_short_sentence_note() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Short sentence first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Short sentence first header {idx}" for idx in range(1, 10)],
+                    [f"Short sentence first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Short bridge note.",
+            {"role": "table_caption", "text": "表 2 Short sentence second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Short sentence second header {idx}" for idx in range(1, 10)],
+                    [f"Short sentence second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after short sentence bridge landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("adjacent_landscape_tables_short_sentence_note", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 1,
+        "adjacent landscape tables separated by a short sentence note should share one landscape section",
+    )
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def has_sectpr(child: ET.Element) -> bool:
+        return child.tag == f"{W_NS}sectPr" or child.find(f".//{W_NS}sectPr") is not None
+
+    table1_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Short sentence first header 1" in child_text(child)),
+        -1,
+    )
+    note_idx = next((idx for idx, child in enumerate(children) if "Short bridge note." in child_text(child)), -1)
+    table2_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Short sentence second header 1" in child_text(child)),
+        -1,
+    )
+    after_idx = next(
+        (idx for idx, child in enumerate(children) if "Portrait body after short sentence bridge landscape tables." in child_text(child)),
+        -1,
+    )
+    assert_true(min(table1_idx, note_idx, table2_idx, after_idx) >= 0, "short sentence bridge landscape markers missing")
+    intermediate_section_breaks = [idx for idx, child in enumerate(children[table1_idx + 1 : table2_idx], start=table1_idx + 1) if has_sectpr(child)]
+    landscape_section_break = next(
+        (
+            idx
+            for idx, child in enumerate(children[table2_idx + 1 :], start=table2_idx + 1)
+            if any(page_size.attrib.get(f"{W_NS}orient") == "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+        ),
+        -1,
+    )
+    assert_true(not intermediate_section_breaks, f"short sentence landscape group was split by intermediate section breaks: {intermediate_section_breaks}")
+    assert_true(
+        table1_idx < note_idx < table2_idx < landscape_section_break < after_idx,
+        "short sentence note should stay between adjacent landscape tables before portrait body resumes",
+    )
+
+
+@case
+def script_generator_splits_landscape_tables_around_list_bridge() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    bullet_bridge = "- Review item: this checklist paragraph is body flow between wide tables and must not be folded into the surrounding landscape section."
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 List bridge first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"List first header {idx}" for idx in range(1, 10)],
+                    [f"List first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            bullet_bridge,
+            {"role": "table_caption", "text": "表 2 List bridge second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"List second header {idx}" for idx in range(1, 10)],
+                    [f"List second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after list bridge landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("landscape_tables_list_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "list-like bridge content should split adjacent landscape tables into separate landscape sections",
+    )
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def has_landscape_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") == "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    def has_portrait_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") != "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    table1_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "List first header 1" in child_text(child)),
+        -1,
+    )
+    bullet_idx = next((idx for idx, child in enumerate(children) if "Review item: this checklist paragraph" in child_text(child)), -1)
+    table2_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "List second header 1" in child_text(child)),
+        -1,
+    )
+    after_idx = next(
+        (idx for idx, child in enumerate(children) if "Portrait body after list bridge landscape tables." in child_text(child)),
+        -1,
+    )
+    assert_true(min(table1_idx, bullet_idx, table2_idx, after_idx) >= 0, "list bridge landscape markers missing")
+
+    first_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table1_idx + 1 : bullet_idx], start=table1_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    portrait_bridge_section_break = next(
+        (idx for idx, child in enumerate(children[bullet_idx + 1 : table2_idx], start=bullet_idx + 1) if has_portrait_section(child)),
+        -1,
+    )
+    second_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table2_idx + 1 : after_idx], start=table2_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    assert_true(
+        table1_idx < first_landscape_section_break < bullet_idx < portrait_bridge_section_break < table2_idx < second_landscape_section_break < after_idx,
+        "list-like bridge content should be closed as a portrait section between the two landscape table sections",
+    )
+
+
+@case
+def script_generator_splits_landscape_tables_around_chinese_numbered_bridge() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    chinese_numbered_bridge = "（1）这是两个宽表之间的正文编号说明，应当回到纵向正文流。"
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Chinese list bridge first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Chinese list first header {idx}" for idx in range(1, 10)],
+                    [f"Chinese list first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            chinese_numbered_bridge,
+            {"role": "table_caption", "text": "表 2 Chinese list bridge second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Chinese list second header {idx}" for idx in range(1, 10)],
+                    [f"Chinese list second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after Chinese numbered bridge landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("landscape_tables_chinese_numbered_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "Chinese-numbered bridge content should split adjacent landscape tables into separate landscape sections",
+    )
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def has_landscape_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") == "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    def has_portrait_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") != "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    table1_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Chinese list first header 1" in child_text(child)),
+        -1,
+    )
+    bridge_idx = next((idx for idx, child in enumerate(children) if "两个宽表之间的正文编号说明" in child_text(child)), -1)
+    table2_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Chinese list second header 1" in child_text(child)),
+        -1,
+    )
+    after_idx = next(
+        (idx for idx, child in enumerate(children) if "Portrait body after Chinese numbered bridge landscape tables." in child_text(child)),
+        -1,
+    )
+    assert_true(min(table1_idx, bridge_idx, table2_idx, after_idx) >= 0, "Chinese numbered bridge landscape markers missing")
+
+    first_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table1_idx + 1 : bridge_idx], start=table1_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    portrait_bridge_section_break = next(
+        (idx for idx, child in enumerate(children[bridge_idx + 1 : table2_idx], start=bridge_idx + 1) if has_portrait_section(child)),
+        -1,
+    )
+    second_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table2_idx + 1 : after_idx], start=table2_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    assert_true(
+        table1_idx < first_landscape_section_break < bridge_idx < portrait_bridge_section_break < table2_idx < second_landscape_section_break < after_idx,
+        "Chinese-numbered bridge content should be closed as a portrait section between the two landscape table sections",
+    )
+
+
+@case
+def script_generator_splits_landscape_tables_around_bracketed_number_bridge() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    bracketed_bridge = "[1] This numbered body item belongs to the portrait flow between two wide tables."
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Bracketed list bridge first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Bracketed list first header {idx}" for idx in range(1, 10)],
+                    [f"Bracketed list first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            bracketed_bridge,
+            {"role": "table_caption", "text": "表 2 Bracketed list bridge second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Bracketed list second header {idx}" for idx in range(1, 10)],
+                    [f"Bracketed list second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after bracketed numbered bridge landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("landscape_tables_bracketed_number_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "bracketed-number bridge content should split adjacent landscape tables into separate landscape sections",
+    )
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def has_landscape_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") == "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    def has_portrait_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") != "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    table1_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Bracketed list first header 1" in child_text(child)),
+        -1,
+    )
+    bridge_idx = next((idx for idx, child in enumerate(children) if "numbered body item belongs to the portrait flow" in child_text(child)), -1)
+    table2_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Bracketed list second header 1" in child_text(child)),
+        -1,
+    )
+    after_idx = next(
+        (idx for idx, child in enumerate(children) if "Portrait body after bracketed numbered bridge landscape tables." in child_text(child)),
+        -1,
+    )
+    assert_true(min(table1_idx, bridge_idx, table2_idx, after_idx) >= 0, "bracketed numbered bridge landscape markers missing")
+
+    first_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table1_idx + 1 : bridge_idx], start=table1_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    portrait_bridge_section_break = next(
+        (idx for idx, child in enumerate(children[bridge_idx + 1 : table2_idx], start=bridge_idx + 1) if has_portrait_section(child)),
+        -1,
+    )
+    second_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table2_idx + 1 : after_idx], start=table2_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    assert_true(
+        table1_idx < first_landscape_section_break < bridge_idx < portrait_bridge_section_break < table2_idx < second_landscape_section_break < after_idx,
+        "bracketed-number bridge content should be closed as a portrait section between the two landscape table sections",
+    )
+
+
+@case
+def script_generator_splits_landscape_tables_around_roman_number_bridge() -> None:
+    landscape_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    roman_bridge = "(iv) This roman-numbered body item belongs to the portrait flow between two wide tables."
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 Roman list bridge first landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Roman list first header {idx}" for idx in range(1, 10)],
+                    [f"Roman list first body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            roman_bridge,
+            {"role": "table_caption", "text": "表 2 Roman list bridge second landscape table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Roman list second header {idx}" for idx in range(1, 10)],
+                    [f"Roman list second body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": landscape_setup,
+            },
+            "Portrait body after roman numbered bridge landscape tables.",
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("landscape_tables_roman_number_bridge_split", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "roman-number bridge content should split adjacent landscape tables into separate landscape sections",
+    )
+
+    root = ET.fromstring(result["xml"].encode("utf-8"))
+    body = root.find(f".//{W_NS}body")
+    assert_true(body is not None, "generated document body missing")
+    children = list(body)
+
+    def child_text(child: ET.Element) -> str:
+        return "".join(node.text or "" for node in child.iter(f"{W_NS}t"))
+
+    def has_landscape_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") == "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    def has_portrait_section(child: ET.Element) -> bool:
+        return any(page_size.attrib.get(f"{W_NS}orient") != "landscape" for page_size in child.iter(f"{W_NS}pgSz"))
+
+    table1_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Roman list first header 1" in child_text(child)),
+        -1,
+    )
+    bridge_idx = next((idx for idx, child in enumerate(children) if "roman-numbered body item belongs to the portrait flow" in child_text(child)), -1)
+    table2_idx = next(
+        (idx for idx, child in enumerate(children) if child.tag == f"{W_NS}tbl" and "Roman list second header 1" in child_text(child)),
+        -1,
+    )
+    after_idx = next(
+        (idx for idx, child in enumerate(children) if "Portrait body after roman numbered bridge landscape tables." in child_text(child)),
+        -1,
+    )
+    assert_true(min(table1_idx, bridge_idx, table2_idx, after_idx) >= 0, "roman numbered bridge landscape markers missing")
+
+    first_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table1_idx + 1 : bridge_idx], start=table1_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    portrait_bridge_section_break = next(
+        (idx for idx, child in enumerate(children[bridge_idx + 1 : table2_idx], start=bridge_idx + 1) if has_portrait_section(child)),
+        -1,
+    )
+    second_landscape_section_break = next(
+        (idx for idx, child in enumerate(children[table2_idx + 1 : after_idx], start=table2_idx + 1) if has_landscape_section(child)),
+        -1,
+    )
+    assert_true(
+        table1_idx < first_landscape_section_break < bridge_idx < portrait_bridge_section_break < table2_idx < second_landscape_section_break < after_idx,
+        "roman-number bridge content should be closed as a portrait section between the two landscape table sections",
+    )
+
+
+@case
+def script_generator_does_not_group_landscape_tables_with_different_page_setups() -> None:
+    first_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 15840,
+        "page_height_twips": 12240,
+        "margins_twips": {"left": 1440, "right": 1440, "top": 1440, "bottom": 1440},
+    }
+    second_setup = {
+        "orientation": "landscape",
+        "page_width_twips": 16840,
+        "page_height_twips": 11900,
+        "margins_twips": {"left": 900, "right": 900, "top": 1200, "bottom": 1200},
+    }
+    content = base_content(
+        [
+            {"role": "table_caption", "text": "表 1 First source-section table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"First setup header {idx}" for idx in range(1, 10)],
+                    [f"First setup body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1200] * 9,
+                "source_section_page_setup": first_setup,
+            },
+            "Short note between source sections should not force incompatible page setups together.",
+            {"role": "table_caption", "text": "表 2 Second source-section table"},
+            {
+                "role": "table",
+                "table_rows": [
+                    [f"Second setup header {idx}" for idx in range(1, 10)],
+                    [f"Second setup body {idx}" for idx in range(1, 10)],
+                ],
+                "table_col_widths_twips": [1300] * 9,
+                "source_section_page_setup": second_setup,
+            },
+            "Portrait body after different source-section tables.",
+        ],
+        meta_tables=2,
+    )
+    result = run_generated_case("different_landscape_page_setups", content, base_format())
+    assert_true(
+        result["xml"].count('w:orient="landscape"') == 2,
+        "landscape tables with different source page setups should keep separate landscape sections",
     )
 
 

@@ -2095,6 +2095,23 @@ def pipeline_execution_runs_generated_script_with_utf8_output() -> None:
 
 
 @case
+def pipeline_execution_blocks_unsafe_unicode_decode_before_subprocess() -> None:
+    work = new_workdir("pipeline_execution_unsafe_unicode_preflight")
+    script = work / "build_generated.py"
+    script.write_text(
+        "import codecs\n"
+        "from pathlib import Path\n"
+        "Path('executed.txt').write_text('ran', encoding='utf-8')\n"
+        "text = codecs.decode('中文字符保持原样：编码测试。', 'unicode_escape')\n",
+        encoding="utf-8",
+    )
+    result = run_generated_script(str(script), str(work), python_executable=sys.executable)
+    assert_true(result.returncode != 0, "unsafe generated script should not be executed")
+    assert_true("GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" in result.stderr, f"unsafe script stderr should name issue code: {result}")
+    assert_true(not (work / "executed.txt").exists(), "unsafe generated script side effect proves execution preflight ran too late")
+
+
+@case
 def pipeline_build_phase_generates_and_blocks_on_failure() -> None:
     work = new_workdir("pipeline_build_phase")
     steps: List[str] = []
@@ -2149,6 +2166,52 @@ def pipeline_build_phase_generates_and_blocks_on_failure() -> None:
         step=fake_step,
     )
     assert_true(failed is False, "build phase should block when generated script fails")
+
+
+@case
+def pipeline_build_phase_blocks_unsafe_unicode_decode_before_execution() -> None:
+    work = new_workdir("pipeline_build_phase_unsafe_unicode_preflight")
+    calls: List[str] = []
+
+    def fake_step(label):
+        calls.append(f"step:{label}")
+
+    def fake_generate(fmt_json_path, cnt_json_path, out_dir, output_docx_name):
+        Path(out_dir, "build_generated.py").write_text(
+            "import codecs\n"
+            "from pathlib import Path\n"
+            "Path('executed.txt').write_text('ran', encoding='utf-8')\n"
+            "text = codecs.decode('中文字符保持原样：编码测试。', 'unicode_escape')\n",
+            encoding="utf-8",
+        )
+        return 180
+
+    def fake_run(gen_py_path, out_dir, python_executable):
+        calls.append("run")
+        Path(out_dir, "executed.txt").write_text("ran", encoding="utf-8")
+        return ScriptExecutionResult(returncode=0, stdout="built\n", stderr="")
+
+    ok = generate_and_build_docx_phase(
+        "format.json",
+        "content.json",
+        str(work),
+        "folder",
+        output_docx_name="out.docx",
+        generate_script=fake_generate,
+        run_generated_script=fake_run,
+        python_executable="python",
+        step=fake_step,
+        mode="user",
+        project_root=str(REPO_ROOT),
+    )
+
+    assert_true(ok is False, "unsafe generated script should block the build phase")
+    assert_true("run" not in calls, f"unsafe generated script was executed before the guard blocked it: {calls}")
+    assert_true(not (work / "executed.txt").exists(), "unsafe generated script side effect proves preflight ran too late")
+    report = json.loads((work / "qa_report.json").read_text(encoding="utf-8"))
+    codes = [item.get("code") for item in report.get("issues") or []]
+    assert_true("GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE" in codes, f"unsafe decode report used wrong issue code: {report}")
+    assert_true("build_generated.py" in str(report.get("next_action") or ""), f"next action should route to build_generated.py: {report}")
 
 
 @case
@@ -2928,6 +2991,26 @@ def pipeline_visual_report_markdown_lists_diagnostic_artifacts() -> None:
     assert_true("rendered.pdf" in markdown and "rendered_wps.pdf" in markdown, f"visual report should name PDF artifacts: {markdown}")
     assert_true("rendered_word.txt" in markdown and "rendered_wps.txt" in markdown, f"visual report should name text diagnostics: {markdown}")
     assert_true("visual_qa/samples/" in markdown and "visual_qa/wps/samples/" in markdown, f"visual report should name both sample directories: {markdown}")
+
+
+@case
+def pipeline_visual_report_markdown_lists_all_bounded_sample_artifacts() -> None:
+    from qa_visual_modules.reports import report_to_markdown as visual_report_markdown
+
+    samples = [f"<PROJECT>/Outputs/demo/visual_qa/samples/page_{idx:03d}-01.png" for idx in range(1, 9)]
+    wps_samples = [f"<PROJECT>/Outputs/demo/visual_qa/wps/samples/page_{idx:03d}-01.png" for idx in range(1, 9)]
+    report = {
+        "passed": True,
+        "output_dir_name": "demo",
+        "next_action": "视觉 QA 已通过，打开样张核对。",
+        "counts": {"sample_images": 8, "wps_sample_images": 8},
+        "issues": [],
+        "artifacts": {"samples": samples, "wps_samples": wps_samples},
+    }
+    markdown = visual_report_markdown(report)
+    assert_true("page_008-01.png" in markdown, f"visual report should list every bounded Word sample path: {markdown}")
+    assert_true("visual_qa/wps/samples/page_008-01.png" in markdown, f"visual report should list every bounded WPS sample path: {markdown}")
+    assert_true("另有" not in markdown, f"bounded sample evidence should not be hidden behind overflow text: {markdown}")
 
 
 @case

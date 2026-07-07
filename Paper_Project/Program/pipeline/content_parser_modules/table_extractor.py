@@ -66,6 +66,86 @@ def _cell_vmerge_kind(tc_elem: Any) -> str:
     return (vmerge.get(f"{{{W_NS}}}val") or "continue").lower()
 
 
+def _cell_hmerge_kind(tc_elem: Any) -> str:
+    tc_pr = tc_elem.find(f"{{{W_NS}}}tcPr")
+    hmerge = tc_pr.find(f"{{{W_NS}}}hMerge") if tc_pr is not None else None
+    if hmerge is None:
+        return ""
+    return (hmerge.get(f"{{{W_NS}}}val") or "continue").lower()
+
+
+def _merge_int(merge: Dict[str, int], key: str, default: int = 1) -> int:
+    try:
+        return max(default, int(merge.get(key) or default))
+    except Exception:
+        return default
+
+
+def _coalesce_legacy_hmerge_vmerge_merges(merges: List[Dict[str, int]]) -> List[Dict[str, int]]:
+    horizontal_by_start: Dict[tuple, tuple] = {}
+    verticals: List[tuple] = []
+    for idx, merge in enumerate(merges):
+        row = _merge_int(merge, "row", 0)
+        col = _merge_int(merge, "col", 0)
+        rowspan = _merge_int(merge, "rowspan", 1)
+        colspan = _merge_int(merge, "colspan", 1)
+        if rowspan == 1 and colspan > 1:
+            horizontal_by_start.setdefault((row, col), (idx, colspan))
+        if rowspan > 1:
+            verticals.append((idx, row, col, rowspan, colspan))
+
+    consumed = set()
+    for idx, row, col, rowspan, colspan in verticals:
+        if idx in consumed:
+            continue
+        start_horizontal = horizontal_by_start.get((row, col))
+        if not start_horizontal:
+            continue
+        _, width = start_horizontal
+        if width < colspan:
+            continue
+        row_horizontal_indices = []
+        for row_offset in range(rowspan):
+            horizontal = horizontal_by_start.get((row + row_offset, col))
+            if not horizontal or horizontal[1] != width:
+                row_horizontal_indices = []
+                break
+            row_horizontal_indices.append(horizontal[0])
+        if not row_horizontal_indices:
+            continue
+        merge = merges[idx]
+        if width > colspan:
+            merge["colspan"] = width
+        consumed.update(row_horizontal_indices)
+        for other_idx, other_row, other_col, other_rowspan, _ in verticals:
+            if (
+                other_idx != idx
+                and other_row == row
+                and other_rowspan == rowspan
+                and col < other_col < col + width
+            ):
+                consumed.add(other_idx)
+
+    return [merge for idx, merge in enumerate(merges) if idx not in consumed]
+
+
+def _dedupe_exact_merges(merges: List[Dict[str, int]]) -> List[Dict[str, int]]:
+    deduped: List[Dict[str, int]] = []
+    seen = set()
+    for merge in merges:
+        key = (
+            _merge_int(merge, "row", 0),
+            _merge_int(merge, "col", 0),
+            _merge_int(merge, "rowspan", 1),
+            _merge_int(merge, "colspan", 1),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(merge)
+    return deduped
+
+
 def _row_height_twips(tr_elem: Any) -> Dict[str, Any]:
     tr_pr = tr_elem.find(f"{{{W_NS}}}trPr")
     tr_height = tr_pr.find(f"{{{W_NS}}}trHeight") if tr_pr is not None else None
@@ -165,6 +245,12 @@ def _row_grid_before(tr_elem: Any) -> int:
     return _int_attr(grid_before, "val", 0)
 
 
+def _row_grid_after(tr_elem: Any) -> int:
+    tr_pr = tr_elem.find(f"{{{W_NS}}}trPr")
+    grid_after = tr_pr.find(f"{{{W_NS}}}gridAfter") if tr_pr is not None else None
+    return _int_attr(grid_after, "val", 0)
+
+
 def _fallback_row_widths_twips(tbl_elem: Any, ncols: int) -> List[int]:
     best: List[int] = []
     best_positive = 0
@@ -178,6 +264,7 @@ def _fallback_row_widths_twips(tbl_elem: Any, ncols: int) -> List[int]:
                 widths.extend([per_col] * colspan)
             else:
                 widths.extend([width] + ([0] * (colspan - 1)))
+        widths.extend([0] * _row_grid_after(tr))
         positive = sum(1 for value in widths if value > 0)
         if positive > best_positive:
             best = widths
@@ -291,6 +378,91 @@ def _iter_table_cell_elements(row_elem: Any) -> List[Any]:
         elif local_name in _DELETED_REVISION_CONTAINERS:
             continue
     return cells
+
+
+def _flatten_over_depth_table_content_into(
+    tbl_elem: Any,
+    text_parts: List[str],
+    nested_items: List[Dict[str, Any]],
+    clean_text_func: Optional[Callable[..., str]] = None,
+    image_rels: Any = None,
+    image_registry: Any = None,
+    image_items_func: Optional[Callable[..., List[Dict[str, Any]]]] = None,
+    image_run_items_func: Optional[Callable[..., List[Dict[str, Any]]]] = None,
+    notes: Optional[Dict[str, Dict[str, str]]] = None,
+) -> None:
+    """Fail open for nested tables deeper than the structured-table limit."""
+
+    def consume_child(child: Any) -> None:
+        local_name = _local_name(child)
+        if local_name == "p":
+            nested_items.extend(
+                _extract_ordered_paragraph_text_and_media(
+                    child,
+                    text_parts,
+                    clean_text_func=clean_text_func,
+                    image_rels=image_rels,
+                    image_registry=image_registry,
+                    image_items_func=image_items_func,
+                    image_run_items_func=image_run_items_func,
+                    notes=notes,
+                )
+            )
+        elif local_name == "tbl":
+            _flatten_over_depth_table_content_into(
+                child,
+                text_parts,
+                nested_items,
+                clean_text_func=clean_text_func,
+                image_rels=image_rels,
+                image_registry=image_registry,
+                image_items_func=image_items_func,
+                image_run_items_func=image_run_items_func,
+                notes=notes,
+            )
+        elif local_name == "sdt":
+            for nested in _sdt_content_children(child):
+                consume_child(nested)
+        elif local_name in _TRANSPARENT_CONTENT_CONTAINERS or local_name in _ACCEPTED_REVISION_CONTAINERS:
+            for nested in list(child):
+                consume_child(nested)
+        elif local_name in _DELETED_REVISION_CONTAINERS:
+            return
+
+    for row in _iter_table_row_elements(tbl_elem):
+        for cell in _iter_table_cell_elements(row):
+            for child in list(cell):
+                consume_child(child)
+
+
+def _row_hmerge_spans(row_elem: Any, grid_before: int = 0) -> Dict[int, int]:
+    spans: Dict[int, int] = {}
+    active_start: Optional[int] = None
+    active_width = 0
+    gridspan_backed_remaining = 0
+    col_idx = grid_before
+    for tc in _iter_table_cell_elements(row_elem):
+        colspan = _cell_grid_span(tc)
+        hmerge_kind = _cell_hmerge_kind(tc)
+        advance = colspan
+        if hmerge_kind == "restart":
+            active_start = col_idx
+            active_width = colspan
+            gridspan_backed_remaining = max(0, colspan - 1)
+            spans[active_start] = active_width
+        elif hmerge_kind == "continue" and active_start is not None:
+            if gridspan_backed_remaining > 0:
+                gridspan_backed_remaining = max(0, gridspan_backed_remaining - colspan)
+                advance = 0
+            else:
+                active_width += colspan
+                spans[active_start] = active_width
+        else:
+            active_start = None
+            active_width = 0
+            gridspan_backed_remaining = 0
+        col_idx += advance
+    return spans
 
 
 def _paragraph_has_structured_runs(p_elem: Any) -> bool:
@@ -903,7 +1075,7 @@ def _cell_text_and_nested_items_from_ooxml(
     tc_elem: Any,
     clean_text_func: Optional[Callable[..., str]] = None,
     nested_depth: int = 0,
-    max_nested_depth: int = 4,
+    max_nested_depth: int = 6,
     image_rels: Any = None,
     image_registry: Any = None,
     image_items_func: Optional[Callable[..., List[Dict[str, Any]]]] = None,
@@ -928,26 +1100,39 @@ def _cell_text_and_nested_items_from_ooxml(
                     notes=notes,
                 )
             )
-        elif local_name == "tbl" and nested_depth < max_nested_depth:
-            nested_data = extract_table_from_ooxml(
-                child,
-                clean_text_func=clean_text_func,
-                nested_depth=nested_depth + 1,
-                max_nested_depth=max_nested_depth,
-                image_rels=image_rels,
-                image_registry=image_registry,
-                image_items_func=image_items_func,
-                image_run_items_func=image_run_items_func,
-                notes=notes,
-            )
-            if nested_data.get("table_rows"):
-                nested_item: Dict[str, Any] = {
-                    "role": "table",
-                    "location": "nested_table_cell",
-                    "after_paragraph_index": len(text_parts),
-                }
-                nested_item.update(nested_data)
-                nested_items.append(nested_item)
+        elif local_name == "tbl":
+            if nested_depth < max_nested_depth:
+                nested_data = extract_table_from_ooxml(
+                    child,
+                    clean_text_func=clean_text_func,
+                    nested_depth=nested_depth + 1,
+                    max_nested_depth=max_nested_depth,
+                    image_rels=image_rels,
+                    image_registry=image_registry,
+                    image_items_func=image_items_func,
+                    image_run_items_func=image_run_items_func,
+                    notes=notes,
+                )
+                if nested_data.get("table_rows"):
+                    nested_item: Dict[str, Any] = {
+                        "role": "table",
+                        "location": "nested_table_cell",
+                        "after_paragraph_index": len(text_parts),
+                    }
+                    nested_item.update(nested_data)
+                    nested_items.append(nested_item)
+            else:
+                _flatten_over_depth_table_content_into(
+                    child,
+                    text_parts,
+                    nested_items,
+                    clean_text_func=clean_text_func,
+                    image_rels=image_rels,
+                    image_registry=image_registry,
+                    image_items_func=image_items_func,
+                    image_run_items_func=image_run_items_func,
+                    notes=notes,
+                )
         elif local_name == "sdt":
             for sdt_child in _sdt_content_children(child):
                 consume_cell_child(sdt_child)
@@ -969,7 +1154,7 @@ def extract_table_from_ooxml(
     tbl_elem: Any,
     clean_text_func: Optional[Callable[..., str]] = None,
     nested_depth: int = 0,
-    max_nested_depth: int = 4,
+    max_nested_depth: int = 6,
     image_rels: Any = None,
     image_registry: Any = None,
     image_items_func: Optional[Callable[..., List[Dict[str, Any]]]] = None,
@@ -982,6 +1167,7 @@ def extract_table_from_ooxml(
     row_heights: List[Dict[str, Any]] = []
     header_flags: List[bool] = []
     row_grid_before: List[int] = []
+    row_grid_after: List[int] = []
     cell_overrides: List[Dict[str, Any]] = []
     table_cell_items: List[Dict[str, Any]] = []
     active_vmerges: Dict[int, Dict[str, int]] = {}
@@ -992,28 +1178,144 @@ def extract_table_from_ooxml(
     for tr in _iter_table_row_elements(tbl_elem):
         row_idx = len(rows)
         grid_before = _row_grid_before(tr)
+        grid_after = _row_grid_after(tr)
         row_grid_before.append(grid_before)
+        row_grid_after.append(grid_after)
+        row_hmerge_spans = _row_hmerge_spans(tr, grid_before)
         cells: List[str] = [""] * grid_before
         seen_vmerge_cols = set()
         continued_records = set()
+        current_hmerge_record: Optional[Dict[str, int]] = None
+        hmerge_gridspan_remaining = 0
         row_heights.append(_row_height_twips(tr))
         header_flags.append(_row_repeats_header(tr))
-        for tc in _iter_table_cell_elements(tr):
+        row_cells = _iter_table_cell_elements(tr)
+        cell_pos = 0
+        while cell_pos < len(row_cells):
+            tc = row_cells[cell_pos]
             col_idx = len(cells)
             colspan = _cell_grid_span(tc)
             vmerge_kind = _cell_vmerge_kind(tc)
+            hmerge_kind = _cell_hmerge_kind(tc)
             vmerge_record = active_vmerges.get(col_idx) if vmerge_kind == "continue" else None
             vmerge_record_colspan = int((vmerge_record or {}).get("colspan") or 1)
+            required_hmerge_width = int((vmerge_record or {}).get("hmerge_colspan") or 1)
+            current_hmerge_width = row_hmerge_spans.get(col_idx, colspan)
             is_vmerge_continue = (
                 vmerge_kind == "continue"
                 and vmerge_record is not None
                 and vmerge_record_colspan == colspan
+                and (required_hmerge_width <= 1 or current_hmerge_width == required_hmerge_width)
                 and id(vmerge_record) not in continued_records
                 and all(active_vmerges.get(col_idx + offset) is vmerge_record for offset in range(colspan))
             )
+            is_gridspan_duplicate_hmerge = (
+                hmerge_kind == "continue"
+                and current_hmerge_record is not None
+                and hmerge_gridspan_remaining > 0
+            )
+            duplicate_probe_text: Optional[str] = None
+            duplicate_probe_nested_items: Optional[List[Dict[str, Any]]] = None
+            vmerge_probe_text: Optional[str] = None
+            vmerge_probe_nested_items: Optional[List[Dict[str, Any]]] = None
+            split_vmerge_continue_end: Optional[int] = None
+            if (
+                vmerge_kind == "continue"
+                and vmerge_record is not None
+                and vmerge_record_colspan > colspan
+                and id(vmerge_record) not in continued_records
+                and all(active_vmerges.get(col_idx + offset) is vmerge_record for offset in range(vmerge_record_colspan))
+            ):
+                probe_pos = cell_pos
+                probe_col = col_idx
+                covered = 0
+                split_ok = True
+                while covered < vmerge_record_colspan and probe_pos < len(row_cells):
+                    probe_tc = row_cells[probe_pos]
+                    probe_span = _cell_grid_span(probe_tc)
+                    probe_vmerge_kind = _cell_vmerge_kind(probe_tc)
+                    if (
+                        probe_vmerge_kind != "continue"
+                        or covered + probe_span > vmerge_record_colspan
+                        or any(active_vmerges.get(probe_col + offset) is not vmerge_record for offset in range(probe_span))
+                    ):
+                        split_ok = False
+                        break
+                    probe_text, probe_nested_items = _cell_text_and_nested_items_from_ooxml(
+                        probe_tc,
+                        clean_text_func=clean_text_func,
+                        nested_depth=nested_depth,
+                        max_nested_depth=max_nested_depth,
+                        image_rels=image_rels,
+                        image_registry=image_registry,
+                        image_items_func=image_items_func,
+                        image_run_items_func=image_run_items_func,
+                        notes=notes,
+                    )
+                    if probe_text or probe_nested_items:
+                        split_ok = False
+                        break
+                    covered += probe_span
+                    probe_col += probe_span
+                    probe_pos += 1
+                if split_ok and covered == vmerge_record_colspan:
+                    split_vmerge_continue_end = probe_pos
+            if split_vmerge_continue_end is not None:
+                cells.extend([""] * vmerge_record_colspan)
+                record_id = id(vmerge_record)
+                vmerge_record["rowspan"] = int(vmerge_record.get("rowspan") or 1) + 1
+                continued_records.add(record_id)
+                for offset in range(vmerge_record_colspan):
+                    seen_vmerge_cols.add(col_idx + offset)
+                current_hmerge_record = None
+                hmerge_gridspan_remaining = 0
+                cell_pos = split_vmerge_continue_end
+                continue
+            if is_gridspan_duplicate_hmerge:
+                duplicate_probe_text, duplicate_probe_nested_items = _cell_text_and_nested_items_from_ooxml(
+                    tc,
+                    clean_text_func=clean_text_func,
+                    nested_depth=nested_depth,
+                    max_nested_depth=max_nested_depth,
+                    image_rels=image_rels,
+                    image_registry=image_registry,
+                    image_items_func=image_items_func,
+                    image_run_items_func=image_run_items_func,
+                    notes=notes,
+                )
+                if not duplicate_probe_text and not duplicate_probe_nested_items:
+                    hmerge_gridspan_remaining = max(0, hmerge_gridspan_remaining - colspan)
+                    cell_pos += 1
+                    continue
+                is_vmerge_continue = False
             if is_vmerge_continue:
+                vmerge_probe_text, vmerge_probe_nested_items = _cell_text_and_nested_items_from_ooxml(
+                    tc,
+                    clean_text_func=clean_text_func,
+                    nested_depth=nested_depth,
+                    max_nested_depth=max_nested_depth,
+                    image_rels=image_rels,
+                    image_registry=image_registry,
+                    image_items_func=image_items_func,
+                    image_run_items_func=image_run_items_func,
+                    notes=notes,
+                )
+                if vmerge_probe_text or vmerge_probe_nested_items:
+                    is_vmerge_continue = False
+            is_hmerge_continue = (
+                hmerge_kind == "continue"
+                and current_hmerge_record is not None
+                and hmerge_gridspan_remaining <= 0
+            )
+            if is_vmerge_continue or is_hmerge_continue:
                 text = ""
                 nested_items = []
+            elif duplicate_probe_text is not None:
+                text = duplicate_probe_text
+                nested_items = duplicate_probe_nested_items or []
+            elif vmerge_probe_text is not None:
+                text = vmerge_probe_text
+                nested_items = vmerge_probe_nested_items or []
             else:
                 text, nested_items = _cell_text_and_nested_items_from_ooxml(
                     tc,
@@ -1048,6 +1350,9 @@ def extract_table_from_ooxml(
 
             if vmerge_kind == "restart":
                 record = {"row": row_idx, "col": col_idx, "rowspan": 1, "colspan": colspan}
+                hmerge_width = row_hmerge_spans.get(col_idx, colspan)
+                if hmerge_width > colspan:
+                    record["hmerge_colspan"] = hmerge_width
                 merges.append(record)
                 for offset in range(colspan):
                     active_vmerges[col_idx + offset] = record
@@ -1058,14 +1363,37 @@ def extract_table_from_ooxml(
                 continued_records.add(record_id)
                 for offset in range(vmerge_record_colspan):
                     seen_vmerge_cols.add(col_idx + offset)
-            elif colspan > 1:
-                merges.append({"row": row_idx, "col": col_idx, "rowspan": 1, "colspan": colspan})
 
+            if hmerge_kind == "restart":
+                current_hmerge_record = {"row": row_idx, "col": col_idx, "rowspan": 1, "colspan": colspan}
+                hmerge_gridspan_remaining = max(0, colspan - 1)
+                merges.append(current_hmerge_record)
+            elif is_hmerge_continue:
+                current_hmerge_record["colspan"] = int(current_hmerge_record.get("colspan") or 1) + colspan
+                hmerge_gridspan_remaining = 0
+            elif hmerge_kind == "continue":
+                current_hmerge_record = None
+                hmerge_gridspan_remaining = 0
+            elif colspan > 1 and vmerge_kind != "restart" and not is_vmerge_continue:
+                merges.append({"row": row_idx, "col": col_idx, "rowspan": 1, "colspan": colspan})
+                current_hmerge_record = None
+                hmerge_gridspan_remaining = 0
+            else:
+                current_hmerge_record = None
+                hmerge_gridspan_remaining = 0
+            cell_pos += 1
+
+        if grid_after > 0:
+            cells.extend([""] * grid_after)
         rows.append(cells)
         for col in list(active_vmerges):
             if col not in seen_vmerge_cols:
                 active_vmerges.pop(col, None)
 
+    merges = _coalesce_legacy_hmerge_vmerge_merges(merges)
+    for merge in merges:
+        merge.pop("hmerge_colspan", None)
+    merges = _dedupe_exact_merges(merges)
     merges = [
         merge
         for merge in merges
@@ -1076,6 +1404,8 @@ def extract_table_from_ooxml(
     table_data: Dict[str, Any] = {"table_rows": rows, "table_merges": merges}
     if any(row_grid_before):
         table_data["table_row_grid_before"] = row_grid_before
+    if any(row_grid_after):
+        table_data["table_row_grid_after"] = row_grid_after
     if widths:
         table_data["table_col_widths_twips"] = widths
     if table_borders:

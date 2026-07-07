@@ -14,7 +14,8 @@ from xml.etree import ElementTree as ET
 from docx import Document
 from privacy import sanitize_value
 from qa_checker import check_output
-from regression_suite_modules.harness import assert_true, base_content, base_format, case, new_workdir, write_json
+from qa_checker_modules.unicode_decode_guard import unsafe_unicode_decode_calls_from_text
+from regression_suite_modules.harness import assert_true, base_content, base_format, case, new_workdir, write_json, write_sample_png
 
 PIPELINE_DIR = Path(__file__).resolve().parents[1]
 W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -49,6 +50,38 @@ def privacy_sanitizes_absolute_paths() -> None:
 
 
 @case
+def production_code_avoids_unicode_escape_string_decoding() -> None:
+    def read_source(path: Path) -> str:
+        data = path.read_bytes()
+        last_error: UnicodeDecodeError | None = None
+        for encoding in ("utf-8-sig", "gb18030"):
+            try:
+                return data.decode(encoding)
+            except UnicodeDecodeError as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+        return ""
+
+    offenders = []
+    for path in PIPELINE_DIR.rglob("*.py"):
+        rel = path.relative_to(PIPELINE_DIR).as_posix()
+        if rel.startswith("regression_suite_modules/"):
+            continue
+        text = read_source(path)
+        try:
+            calls = unsafe_unicode_decode_calls_from_text(text, filename=str(path))
+        except SyntaxError:
+            offenders.append(f"{rel}: syntax error while scanning unicode decode safety")
+            continue
+        offenders.extend(f"{rel}: {call}" for call in calls)
+    assert_true(
+        not offenders,
+        "production code must not call unsafe generated-script text decoders: " + ", ".join(offenders),
+    )
+
+
+@case
 def private_corpus_inventory_classifies_realdata_without_content_leakage() -> None:
     from private_corpus_audit import audit_corpus
 
@@ -59,6 +92,36 @@ def private_corpus_inventory_classifies_realdata_without_content_leakage() -> No
     doc.add_paragraph("1 Introduction")
     doc.add_paragraph("Synthetic body text for inventory classification.")
     doc.save(corpus / "paper.docx")
+    hmerge_doc = Document()
+    hmerge_table = hmerge_doc.add_table(rows=1, cols=3)
+    hmerge_table.cell(0, 0).text = "Legacy merged header"
+    hmerge_table.cell(0, 1).text = ""
+    hmerge_table.cell(0, 2).text = "Score"
+    hmerge_path = corpus / "legacy_hmerge.docx"
+    hmerge_doc.save(hmerge_path)
+
+    def inject_legacy_hmerge(xml: str) -> str:
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + W_NS + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        row = table_el.find(W_NS + "tr")
+        assert_true(row is not None, "test row missing")
+        cells = row.findall(W_NS + "tc")
+        assert_true(len(cells) == 3, "test cells missing")
+
+        def ensure_tc_pr(cell):
+            tc_pr = cell.find(W_NS + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(W_NS + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        restart = ET.SubElement(ensure_tc_pr(cells[0]), W_NS + "hMerge")
+        restart.set(W_NS + "val", "restart")
+        ET.SubElement(ensure_tc_pr(cells[1]), W_NS + "hMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(hmerge_path, "word/document.xml", inject_legacy_hmerge)
     (corpus / "legacy.doc").write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1legacy")
     (corpus / "archive.rar").write_bytes(b"Rar!\x1a\x07\x00")
 
@@ -67,6 +130,8 @@ def private_corpus_inventory_classifies_realdata_without_content_leakage() -> No
     assert_true(categories["paper.docx"] in {"content_candidate", "reference_candidate", "template_candidate"}, "valid DOCX was not classified as a document candidate")
     assert_true(categories["legacy.doc"] == "unsupported_or_conversion_needed", "legacy .doc should be isolated")
     assert_true(categories["archive.rar"] == "attachment_or_nonpaper", "archive should not enter document matrix")
+    hmerge_item = next(item for item in result["items"] if item["relative_path"] == "legacy_hmerge.docx")
+    assert_true(hmerge_item["features"].get("merged_cell_count") == 2, f"legacy hMerge was not counted in private inventory: {hmerge_item}")
     assert_true((work / "audit" / "inventory.json").exists(), "inventory.json was not written")
     assert_true((work / "audit" / "inventory.md").exists(), "inventory.md was not written")
     assert_true((work / "audit" / "review_queue.json").exists(), "review_queue.json was not written")
@@ -140,7 +205,346 @@ def complex_table_and_image_format_boundaries_are_structural_qa_visible() -> Non
 
 
 @case
-def source_audit_allows_four_level_nested_tables_and_flags_deeper_nesting() -> None:
+def source_audit_counts_legacy_hmerge_as_merged_cells() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_legacy_hmerge")
+    path = work / "legacy_hmerge.docx"
+    doc = Document()
+    table = doc.add_table(rows=1, cols=3)
+    table.cell(0, 0).text = "Legacy merged header"
+    table.cell(0, 1).text = ""
+    table.cell(0, 2).text = "Score"
+    doc.save(path)
+
+    def inject_legacy_hmerge(xml: str) -> str:
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + W_NS + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        row = table_el.find(W_NS + "tr")
+        assert_true(row is not None, "test row missing")
+        cells = row.findall(W_NS + "tc")
+        assert_true(len(cells) == 3, "test cells missing")
+
+        def ensure_tc_pr(cell):
+            tc_pr = cell.find(W_NS + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(W_NS + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        restart = ET.SubElement(ensure_tc_pr(cells[0]), W_NS + "hMerge")
+        restart.set(W_NS + "val", "restart")
+        ET.SubElement(ensure_tc_pr(cells[1]), W_NS + "hMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(path, "word/document.xml", inject_legacy_hmerge)
+
+    audit = audit_docx_source(str(path))
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert_true(audit["counts"].get("hmerge_count") == 2, f"legacy hMerge count missing: {audit}")
+    assert_true(audit["counts"].get("merged_cell_count") == 2, f"legacy hMerge was not included in merged cell count: {audit}")
+    assert_true("TABLE_MERGE_UNSUPPORTED" in codes, f"legacy hMerge should surface merged-table review guidance: {audit}")
+
+
+@case
+def source_audit_flags_mixed_gridspan_hmerge_as_irregular_table() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_mixed_gridspan_hmerge")
+    path = work / "mixed_gridspan_hmerge.docx"
+    doc = Document()
+    table = doc.add_table(rows=1, cols=4)
+    table.cell(0, 0).text = "Mixed encoded header"
+    table.cell(0, 1).text = ""
+    table.cell(0, 2).text = "Score"
+    table.cell(0, 3).text = "Note"
+    doc.save(path)
+
+    def inject_mixed_gridspan_hmerge(xml: str) -> str:
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + W_NS + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        row = table_el.find(W_NS + "tr")
+        assert_true(row is not None, "test row missing")
+        cells = row.findall(W_NS + "tc")
+        assert_true(len(cells) == 4, "test cells missing")
+
+        def ensure_tc_pr(cell: ET.Element) -> ET.Element:
+            tc_pr = cell.find(W_NS + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(W_NS + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        first_pr = ensure_tc_pr(cells[0])
+        grid_span = first_pr.find(W_NS + "gridSpan")
+        if grid_span is None:
+            grid_span = ET.SubElement(first_pr, W_NS + "gridSpan")
+        grid_span.set(W_NS + "val", "2")
+        hmerge = ET.SubElement(first_pr, W_NS + "hMerge")
+        hmerge.set(W_NS + "val", "restart")
+        ET.SubElement(ensure_tc_pr(cells[1]), W_NS + "hMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(path, "word/document.xml", inject_mixed_gridspan_hmerge)
+
+    audit = audit_docx_source(str(path))
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert_true("TABLE_MERGE_UNSUPPORTED" in codes, f"mixed gridSpan/hMerge should still report merged-table review: {audit}")
+    assert_true("COMPLEX_TABLE_UNSUPPORTED" in codes, f"mixed gridSpan/hMerge ambiguity was not reported: {audit}")
+    assert_true(audit["counts"].get("max_table_columns") == 4, f"mixed gridSpan/hMerge should not double-count table width: {audit}")
+    assert_true(audit["counts"].get("irregular_table_count") == 1, f"irregular table count missing: {audit}")
+    assert_true(audit["counts"].get("irregular_hmerge_count") == 1, f"irregular hMerge count missing: {audit}")
+    assert_true(audit["counts"].get("irregular_grid_span_count") == 0, f"mixed gridSpan/hMerge should not be mislabeled as gridSpan overflow: {audit}")
+    detail = " ".join(str(issue.get("detail") or "") for issue in audit["issues"] if issue.get("code") == "COMPLEX_TABLE_UNSUPPORTED")
+    assert_true("irregular_hmerges=1" in detail, f"complex table detail did not name irregular hMerge count: {audit}")
+
+
+@case
+def source_audit_flags_mixed_gridspan_hmerge_vmerge_without_gridspan_noise() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_mixed_gridspan_hmerge_vmerge")
+    path = work / "mixed_gridspan_hmerge_vmerge.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=4)
+    table.cell(0, 0).text = "Mixed 2D block"
+    table.cell(0, 1).text = ""
+    table.cell(0, 2).text = "Score"
+    table.cell(0, 3).text = "Note"
+    table.cell(1, 0).text = ""
+    table.cell(1, 1).text = ""
+    table.cell(1, 2).text = "1"
+    table.cell(1, 3).text = "Keep"
+    doc.save(path)
+
+    def inject_mixed_gridspan_hmerge_vmerge(xml: str) -> str:
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + W_NS + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(W_NS + "tr")
+        assert_true(len(rows) == 2, "test rows missing")
+
+        def ensure_tc_pr(cell: ET.Element) -> ET.Element:
+            tc_pr = cell.find(W_NS + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(W_NS + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        for row_idx in (0, 1):
+            cells = rows[row_idx].findall(W_NS + "tc")
+            assert_true(len(cells) == 4, "test row cells missing")
+            first_pr = ensure_tc_pr(cells[0])
+            grid_span = first_pr.find(W_NS + "gridSpan")
+            if grid_span is None:
+                grid_span = ET.SubElement(first_pr, W_NS + "gridSpan")
+            grid_span.set(W_NS + "val", "2")
+            hmerge = ET.SubElement(first_pr, W_NS + "hMerge")
+            hmerge.set(W_NS + "val", "restart")
+            vmerge = ET.SubElement(first_pr, W_NS + "vMerge")
+            if row_idx == 0:
+                vmerge.set(W_NS + "val", "restart")
+
+            second_pr = ensure_tc_pr(cells[1])
+            ET.SubElement(second_pr, W_NS + "hMerge")
+            second_vmerge = ET.SubElement(second_pr, W_NS + "vMerge")
+            if row_idx == 0:
+                second_vmerge.set(W_NS + "val", "restart")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(path, "word/document.xml", inject_mixed_gridspan_hmerge_vmerge)
+
+    audit = audit_docx_source(str(path))
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert_true("TABLE_MERGE_UNSUPPORTED" in codes, f"mixed gridSpan/hMerge/vMerge should report merged-table review: {audit}")
+    assert_true("COMPLEX_TABLE_UNSUPPORTED" in codes, f"mixed gridSpan/hMerge/vMerge ambiguity was not reported: {audit}")
+    assert_true(audit["counts"].get("max_table_columns") == 4, f"mixed gridSpan/hMerge/vMerge should not double-count table width: {audit}")
+    assert_true(audit["counts"].get("irregular_table_count") == 1, f"irregular table count missing: {audit}")
+    assert_true(audit["counts"].get("irregular_hmerge_count") == 2, f"irregular hMerge count missing: {audit}")
+    assert_true(audit["counts"].get("irregular_grid_span_count") == 0, f"mixed 2D merge should not be mislabeled as gridSpan overflow: {audit}")
+    detail = " ".join(str(issue.get("detail") or "") for issue in audit["issues"] if issue.get("code") == "COMPLEX_TABLE_UNSUPPORTED")
+    assert_true("irregular_hmerges=2" in detail, f"complex table detail did not name mixed 2D hMerge count: {audit}")
+
+
+@case
+def source_audit_counts_visible_mixed_hmerge_continuations_without_content_leakage() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_visible_mixed_hmerge_continuations")
+    image = work / "continuation.png"
+    write_sample_png(image, width=96, height=72)
+    path = work / "visible_mixed_hmerge_continuations.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=4)
+    table.cell(0, 0).text = "Mixed 2D block"
+    table.cell(0, 1).text = "Synthetic duplicate text"
+    table.cell(0, 2).text = "Score"
+    table.cell(0, 3).text = "Note"
+    table.cell(1, 0).text = ""
+    table.cell(1, 1).paragraphs[0].add_run().add_picture(str(image))
+    table.cell(1, 2).text = "1"
+    table.cell(1, 3).text = "Keep"
+    doc.save(path)
+
+    def inject_mixed_gridspan_hmerge_vmerge(xml: str) -> str:
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + W_NS + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(W_NS + "tr")
+        assert_true(len(rows) == 2, "test rows missing")
+
+        def ensure_tc_pr(cell: ET.Element) -> ET.Element:
+            tc_pr = cell.find(W_NS + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(W_NS + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        for row_idx in (0, 1):
+            cells = rows[row_idx].findall(W_NS + "tc")
+            assert_true(len(cells) == 4, "test row cells missing")
+            first_pr = ensure_tc_pr(cells[0])
+            grid_span = first_pr.find(W_NS + "gridSpan")
+            if grid_span is None:
+                grid_span = ET.SubElement(first_pr, W_NS + "gridSpan")
+            grid_span.set(W_NS + "val", "2")
+            hmerge = ET.SubElement(first_pr, W_NS + "hMerge")
+            hmerge.set(W_NS + "val", "restart")
+            vmerge = ET.SubElement(first_pr, W_NS + "vMerge")
+            if row_idx == 0:
+                vmerge.set(W_NS + "val", "restart")
+
+            second_pr = ensure_tc_pr(cells[1])
+            ET.SubElement(second_pr, W_NS + "hMerge")
+            second_vmerge = ET.SubElement(second_pr, W_NS + "vMerge")
+            if row_idx == 0:
+                second_vmerge.set(W_NS + "val", "restart")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(path, "word/document.xml", inject_mixed_gridspan_hmerge_vmerge)
+
+    audit = audit_docx_source(str(path))
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert_true("COMPLEX_TABLE_UNSUPPORTED" in codes, f"visible mixed continuation ambiguity was not reported: {audit}")
+    assert_true(audit["counts"].get("visible_hmerge_continuation_count") == 2, f"visible continuation count missing: {audit}")
+    assert_true(
+        "Synthetic duplicate text" not in str(audit),
+        f"source audit leaked visible duplicate continuation text: {audit}",
+    )
+    detail = " ".join(str(issue.get("detail") or "") for issue in audit["issues"] if issue.get("code") == "COMPLEX_TABLE_UNSUPPORTED")
+    assert_true("visible_hmerge_continuations=2" in detail, f"complex table detail did not name visible continuation count: {audit}")
+
+
+@case
+def source_audit_counts_visible_vmerge_continuations_without_content_leakage() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_visible_vmerge_continuation")
+    image = work / "vmerge_continuation.png"
+    write_sample_png(image, width=96, height=72)
+    path = work / "visible_vmerge_continuation.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Vertical start"
+    table.cell(0, 1).text = "Top right"
+    table.cell(1, 0).text = "Sensitive continuation text"
+    table.cell(1, 0).paragraphs[0].add_run().add_picture(str(image))
+    table.cell(1, 1).text = "Bottom right"
+    doc.save(path)
+
+    def inject_visible_vmerge_continue(xml: str) -> str:
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + W_NS + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(W_NS + "tr")
+        assert_true(len(rows) == 2, "test rows missing")
+
+        def ensure_tc_pr(cell: ET.Element) -> ET.Element:
+            tc_pr = cell.find(W_NS + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(W_NS + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        first_row_cells = rows[0].findall(W_NS + "tc")
+        second_row_cells = rows[1].findall(W_NS + "tc")
+        assert_true(len(first_row_cells) == 2 and len(second_row_cells) == 2, "test row cells missing")
+        restart = ET.SubElement(ensure_tc_pr(first_row_cells[0]), W_NS + "vMerge")
+        restart.set(W_NS + "val", "restart")
+        ET.SubElement(ensure_tc_pr(second_row_cells[0]), W_NS + "vMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(path, "word/document.xml", inject_visible_vmerge_continue)
+
+    audit = audit_docx_source(str(path))
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert_true("COMPLEX_TABLE_UNSUPPORTED" in codes, f"visible vMerge continuation ambiguity was not reported: {audit}")
+    assert_true(audit["counts"].get("visible_vmerge_continuation_count") == 1, f"visible vMerge continuation count missing: {audit}")
+    assert_true(
+        "Sensitive continuation text" not in str(audit),
+        f"source audit leaked visible vMerge continuation text: {audit}",
+    )
+    detail = " ".join(str(issue.get("detail") or "") for issue in audit["issues"] if issue.get("code") == "COMPLEX_TABLE_UNSUPPORTED")
+    assert_true("visible_vmerge_continuations=1" in detail, f"complex table detail did not name visible vMerge continuation count: {audit}")
+
+
+@case
+def source_audit_counts_plain_vmerge_continuation_text_without_content_leakage() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_plain_vmerge_continuation")
+    path = work / "plain_vmerge_continuation.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Vertical start"
+    table.cell(0, 1).text = "Top right"
+    table.cell(1, 0).text = "Sensitive plain continuation text"
+    table.cell(1, 1).text = "Bottom right"
+    doc.save(path)
+
+    def inject_visible_vmerge_continue(xml: str) -> str:
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + W_NS + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(W_NS + "tr")
+        assert_true(len(rows) == 2, "test rows missing")
+        first_row_cells = rows[0].findall(W_NS + "tc")
+        second_row_cells = rows[1].findall(W_NS + "tc")
+        assert_true(len(first_row_cells) == 2 and len(second_row_cells) == 2, "test row cells missing")
+
+        def ensure_tc_pr(cell: ET.Element) -> ET.Element:
+            tc_pr = cell.find(W_NS + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(W_NS + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        restart = ET.SubElement(ensure_tc_pr(first_row_cells[0]), W_NS + "vMerge")
+        restart.set(W_NS + "val", "restart")
+        ET.SubElement(ensure_tc_pr(second_row_cells[0]), W_NS + "vMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(path, "word/document.xml", inject_visible_vmerge_continue)
+
+    audit = audit_docx_source(str(path))
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert_true("COMPLEX_TABLE_UNSUPPORTED" in codes, f"plain vMerge continuation ambiguity was not reported: {audit}")
+    assert_true(
+        audit["counts"].get("visible_vmerge_continuation_count") == 1,
+        f"plain vMerge continuation count missing: {audit}",
+    )
+    assert_true(
+        "Sensitive plain continuation text" not in str(audit),
+        f"source audit leaked plain vMerge continuation text: {audit}",
+    )
+    detail = " ".join(str(issue.get("detail") or "") for issue in audit["issues"] if issue.get("code") == "COMPLEX_TABLE_UNSUPPORTED")
+    assert_true("visible_vmerge_continuations=1" in detail, f"complex table detail did not name plain vMerge count: {audit}")
+
+
+@case
+def source_audit_allows_six_level_nested_tables_and_flags_deeper_nesting() -> None:
     from content_parser_modules.source_audit import audit_docx_source
 
     work = new_workdir("source_audit_nested_tables")
@@ -219,8 +623,47 @@ def source_audit_allows_four_level_nested_tables_and_flags_deeper_nesting() -> N
     doc.save(five_level)
     five_audit = audit_docx_source(str(five_level))
     five_codes = {issue["code"] for issue in five_audit["issues"]}
-    assert_true("COMPLEX_TABLE_UNSUPPORTED" in five_codes, f"five-level nested table was not reported: {five_audit}")
+    assert_true(
+        "COMPLEX_TABLE_UNSUPPORTED" not in five_codes,
+        f"five-level nested table should be handled by the engine, not blocked as complex: {five_audit}",
+    )
     assert_true(five_audit["counts"].get("nested_table_max_depth") == 5, f"five-level nested depth missing: {five_audit}")
+
+    six_level = work / "six_level_nested.docx"
+    doc = Document()
+    outer = doc.add_table(rows=1, cols=1)
+    nested = outer.cell(0, 0).add_table(rows=1, cols=1)
+    deeper = nested.cell(0, 0).add_table(rows=1, cols=1)
+    deepest = deeper.cell(0, 0).add_table(rows=1, cols=1)
+    too_deep = deepest.cell(0, 0).add_table(rows=1, cols=1)
+    beyond_limit = too_deep.cell(0, 0).add_table(rows=1, cols=1)
+    supported_deep = beyond_limit.cell(0, 0).add_table(rows=1, cols=1)
+    supported_deep.cell(0, 0).text = "Six levels are supported"
+    doc.save(six_level)
+    six_audit = audit_docx_source(str(six_level))
+    six_codes = {issue["code"] for issue in six_audit["issues"]}
+    assert_true(
+        "COMPLEX_TABLE_UNSUPPORTED" not in six_codes,
+        f"six-level nested table should be handled by the engine, not blocked as complex: {six_audit}",
+    )
+    assert_true(six_audit["counts"].get("nested_table_max_depth") == 6, f"six-level nested depth missing: {six_audit}")
+
+    seven_level = work / "seven_level_nested.docx"
+    doc = Document()
+    outer = doc.add_table(rows=1, cols=1)
+    nested = outer.cell(0, 0).add_table(rows=1, cols=1)
+    deeper = nested.cell(0, 0).add_table(rows=1, cols=1)
+    deepest = deeper.cell(0, 0).add_table(rows=1, cols=1)
+    too_deep = deepest.cell(0, 0).add_table(rows=1, cols=1)
+    beyond_limit = too_deep.cell(0, 0).add_table(rows=1, cols=1)
+    still_supported = beyond_limit.cell(0, 0).add_table(rows=1, cols=1)
+    still_deeper = still_supported.cell(0, 0).add_table(rows=1, cols=1)
+    still_deeper.cell(0, 0).text = "Still needs review"
+    doc.save(seven_level)
+    seven_audit = audit_docx_source(str(seven_level))
+    seven_codes = {issue["code"] for issue in seven_audit["issues"]}
+    assert_true("COMPLEX_TABLE_UNSUPPORTED" in seven_codes, f"seven-level nested table was not reported: {seven_audit}")
+    assert_true(seven_audit["counts"].get("nested_table_max_depth") == 7, f"seven-level nested depth missing: {seven_audit}")
 
 
 @case
@@ -257,6 +700,59 @@ def source_audit_flags_irregular_table_merge_grid() -> None:
 
 
 @case
+def source_audit_flags_nonrectangular_legacy_hmerge_vmerge() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_nonrectangular_hmerge_vmerge")
+    path = work / "nonrectangular_hmerge_vmerge.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=3)
+    table.cell(0, 0).text = "Wide top"
+    table.cell(0, 1).text = ""
+    table.cell(0, 2).text = "Score"
+    table.cell(1, 0).text = "Continuation should require review"
+    table.cell(1, 1).text = "Beta"
+    table.cell(1, 2).text = "1"
+    doc.save(path)
+
+    def inject_nonrectangular_hmerge_vmerge(xml: str) -> str:
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + W_NS + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(W_NS + "tr")
+        assert_true(len(rows) == 2, "test rows missing")
+        first_row_cells = rows[0].findall(W_NS + "tc")
+        second_row_cells = rows[1].findall(W_NS + "tc")
+        assert_true(len(first_row_cells) == 3 and len(second_row_cells) == 3, "test row cells missing")
+
+        def ensure_tc_pr(cell: ET.Element) -> ET.Element:
+            tc_pr = cell.find(W_NS + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(W_NS + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        first_pr = ensure_tc_pr(first_row_cells[0])
+        hmerge = ET.SubElement(first_pr, W_NS + "hMerge")
+        hmerge.set(W_NS + "val", "restart")
+        vmerge = ET.SubElement(first_pr, W_NS + "vMerge")
+        vmerge.set(W_NS + "val", "restart")
+        ET.SubElement(ensure_tc_pr(first_row_cells[1]), W_NS + "hMerge")
+        ET.SubElement(ensure_tc_pr(second_row_cells[0]), W_NS + "vMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(path, "word/document.xml", inject_nonrectangular_hmerge_vmerge)
+
+    audit = audit_docx_source(str(path))
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert_true("COMPLEX_TABLE_UNSUPPORTED" in codes, f"nonrectangular hMerge/vMerge was not reported: {audit}")
+    assert_true(audit["counts"].get("irregular_table_count") == 1, f"nonrectangular table count missing: {audit}")
+    assert_true(audit["counts"].get("irregular_vmerge_count") == 1, f"nonrectangular vMerge count missing: {audit}")
+    detail = " ".join(str(issue.get("detail") or "") for issue in audit["issues"] if issue.get("code") == "COMPLEX_TABLE_UNSUPPORTED")
+    assert_true("irregular_vmerges=1" in detail, f"complex table detail did not name irregular vMerge count: {audit}")
+
+
+@case
 def source_audit_flags_landscape_wide_table_risk() -> None:
     from content_parser_modules.source_audit import audit_docx_source
 
@@ -285,6 +781,293 @@ def source_audit_flags_landscape_wide_table_risk() -> None:
     assert_true(audit["counts"].get("landscape_wide_table_risk_count") == 1, f"landscape wide table risk missing: {audit}")
     detail = " ".join(str(issue.get("detail") or "") for issue in audit["issues"] if issue.get("code") == "COMPLEX_TABLE_UNSUPPORTED")
     assert_true("wide_tables=1" in detail and "landscape_wide_tables=1" in detail, f"wide table detail incomplete: {audit}")
+
+
+@case
+def source_audit_counts_wrapped_landscape_section_wide_table_risk() -> None:
+    from docx.enum.section import WD_ORIENT, WD_SECTION
+
+    from content_parser_modules.source_audit import audit_docx_source
+
+    def wrap_landscape_section_break(xml: str, wrapper_name: str) -> str:
+        root = ET.fromstring(xml.encode("utf-8"))
+        body = root.find(W_NS + "body")
+        assert_true(body is not None, "document body missing")
+        break_paragraph = None
+        for para in body.findall(W_NS + "p"):
+            p_pr = para.find(W_NS + "pPr")
+            sect_pr = p_pr.find(W_NS + "sectPr") if p_pr is not None else None
+            pg_sz = sect_pr.find(W_NS + "pgSz") if sect_pr is not None else None
+            if pg_sz is not None and str(pg_sz.attrib.get(W_NS + "orient") or "").lower() == "landscape":
+                break_paragraph = para
+                break
+        assert_true(break_paragraph is not None, "landscape section break paragraph missing")
+        index = list(body).index(break_paragraph)
+        body.remove(break_paragraph)
+
+        if wrapper_name == "sdt":
+            wrapper = ET.Element(W_NS + "sdt")
+            sdt_pr = ET.SubElement(wrapper, W_NS + "sdtPr")
+            tag = ET.SubElement(sdt_pr, W_NS + "tag")
+            tag.set(W_NS + "val", "wrapped-landscape-break")
+            content = ET.SubElement(wrapper, W_NS + "sdtContent")
+            content.append(break_paragraph)
+        elif wrapper_name == "customXml":
+            wrapper = ET.Element(W_NS + "customXml")
+            wrapper.set(W_NS + "element", "wrappedLandscapeBreak")
+            wrapper.set(W_NS + "uri", "urn:synthetic")
+            wrapper.append(break_paragraph)
+        else:
+            wrapper = ET.Element(W_NS + "ins")
+            wrapper.set(W_NS + "id", "42")
+            wrapper.set(W_NS + "author", "Regression")
+            wrapper.set(W_NS + "date", "2026-01-01T00:00:00Z")
+            wrapper.append(break_paragraph)
+
+        body.insert(index, wrapper)
+        return ET.tostring(root, encoding="unicode")
+
+    for wrapper_name in ("sdt", "customXml", "ins"):
+        work = new_workdir(f"source_audit_wrapped_landscape_wide_table_{wrapper_name}")
+        path = work / f"wrapped_landscape_wide_table_{wrapper_name}.docx"
+        doc = Document()
+        doc.add_paragraph("Before wrapped landscape section")
+        landscape = doc.add_section(WD_SECTION.NEW_PAGE)
+        landscape.orientation = WD_ORIENT.LANDSCAPE
+        landscape.page_width, landscape.page_height = landscape.page_height, landscape.page_width
+        table = doc.add_table(rows=1, cols=9)
+        for idx, cell in enumerate(table.rows[0].cells):
+            cell.text = f"L{idx + 1}"
+        portrait = doc.add_section(WD_SECTION.NEW_PAGE)
+        portrait.orientation = WD_ORIENT.PORTRAIT
+        if portrait.page_width > portrait.page_height:
+            portrait.page_width, portrait.page_height = portrait.page_height, portrait.page_width
+        doc.add_paragraph("Back to portrait section")
+        doc.save(path)
+
+        _rewrite_docx_part(path, "word/document.xml", lambda xml, name=wrapper_name: wrap_landscape_section_break(xml, name))
+
+        audit = audit_docx_source(str(path))
+        codes = {issue["code"] for issue in audit["issues"]}
+        assert_true("SOURCE_LANDSCAPE_SECTION_UNSUPPORTED" in codes, f"{wrapper_name} landscape section was not reported: {audit}")
+        if wrapper_name == "ins":
+            assert_true("TRACKED_CHANGES_PRESENT" in codes, f"{wrapper_name} revision wrapper should remain visible in audit: {audit}")
+        assert_true("COMPLEX_TABLE_UNSUPPORTED" in codes, f"{wrapper_name} wide table was not reported as complex: {audit}")
+        assert_true(audit["counts"].get("wide_table_count") == 1, f"{wrapper_name} wide table count missing: {audit}")
+        assert_true(
+            audit["counts"].get("landscape_wide_table_risk_count") == 1,
+            f"{wrapper_name} landscape wide table risk missing: {audit}",
+        )
+        detail = " ".join(str(issue.get("detail") or "") for issue in audit["issues"] if issue.get("code") == "COMPLEX_TABLE_UNSUPPORTED")
+        assert_true("wide_tables=1" in detail and "landscape_wide_tables=1" in detail, f"{wrapper_name} wide table detail incomplete: {audit}")
+
+
+@case
+def source_audit_counts_grid_after_row_omissions_as_columns() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_grid_after_wide_table")
+    path = work / "grid_after_wide_table.docx"
+    doc = Document()
+    table = doc.add_table(rows=1, cols=1)
+    table.cell(0, 0).text = "Visible first cell"
+    doc.save(path)
+
+    def inject_grid_after(xml: str) -> str:
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + W_NS + "tbl")
+        assert_true(table_el is not None, "table missing")
+        old_grid = table_el.find(W_NS + "tblGrid")
+        if old_grid is not None:
+            table_el.remove(old_grid)
+        tbl_grid = ET.Element(W_NS + "tblGrid")
+        for _ in range(9):
+            col = ET.SubElement(tbl_grid, W_NS + "gridCol")
+            col.set(W_NS + "w", "900")
+        table_el.insert(1, tbl_grid)
+        row = table_el.find(W_NS + "tr")
+        assert_true(row is not None, "row missing")
+        tr_pr = row.find(W_NS + "trPr")
+        if tr_pr is None:
+            tr_pr = ET.Element(W_NS + "trPr")
+            row.insert(0, tr_pr)
+        grid_after = ET.SubElement(tr_pr, W_NS + "gridAfter")
+        grid_after.set(W_NS + "val", "8")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(path, "word/document.xml", inject_grid_after)
+
+    audit = audit_docx_source(str(path))
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert_true(audit["counts"].get("max_table_columns") == 9, f"gridAfter columns were not counted: {audit}")
+    assert_true(audit["counts"].get("wide_table_count") == 1, f"gridAfter wide table was not counted: {audit}")
+    assert_true("COMPLEX_TABLE_UNSUPPORTED" in codes, f"gridAfter wide table should require review: {audit}")
+    detail = " ".join(str(issue.get("detail") or "") for issue in audit["issues"] if issue.get("code") == "COMPLEX_TABLE_UNSUPPORTED")
+    assert_true("wide_tables=1" in detail, f"gridAfter wide table detail incomplete: {audit}")
+
+
+@case
+def source_audit_counts_visible_vmerge_content_in_grid_after_mismatched_2d_merge() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_grid_after_mismatched_visible_vmerge")
+    path = work / "grid_after_mismatched_visible_vmerge.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=3)
+    table.cell(0, 0).text = "Left header"
+    table.cell(0, 1).text = "Merged header"
+    table.cell(0, 2).text = "Header continuation"
+    table.cell(1, 0).text = "Left body"
+    table.cell(1, 1).text = "Sensitive continuation text"
+    table.cell(1, 2).text = "Omitted tail"
+    doc.save(path)
+
+    def inject_grid_after_mismatched_2d(xml: str) -> str:
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + W_NS + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(W_NS + "tr")
+        assert_true(len(rows) == 2, "test rows missing")
+        first_cells = rows[0].findall(W_NS + "tc")
+        second_cells = rows[1].findall(W_NS + "tc")
+        assert_true(len(first_cells) == 3 and len(second_cells) == 3, "test cell grid changed")
+
+        def ensure_tc_pr(cell: ET.Element) -> ET.Element:
+            tc_pr = cell.find(W_NS + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(W_NS + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        first_pr = ensure_tc_pr(first_cells[1])
+        grid_span = first_pr.find(W_NS + "gridSpan")
+        if grid_span is None:
+            grid_span = ET.SubElement(first_pr, W_NS + "gridSpan")
+        grid_span.set(W_NS + "val", "2")
+        hmerge = ET.SubElement(first_pr, W_NS + "hMerge")
+        hmerge.set(W_NS + "val", "restart")
+        vmerge = ET.SubElement(first_pr, W_NS + "vMerge")
+        vmerge.set(W_NS + "val", "restart")
+        rows[0].remove(first_cells[2])
+
+        rows[1].remove(second_cells[2])
+        tr_pr = rows[1].find(W_NS + "trPr")
+        if tr_pr is None:
+            tr_pr = ET.Element(W_NS + "trPr")
+            rows[1].insert(0, tr_pr)
+        grid_after = ET.SubElement(tr_pr, W_NS + "gridAfter")
+        grid_after.set(W_NS + "val", "1")
+        ET.SubElement(ensure_tc_pr(second_cells[1]), W_NS + "vMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(path, "word/document.xml", inject_grid_after_mismatched_2d)
+
+    audit = audit_docx_source(str(path))
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert_true("COMPLEX_TABLE_UNSUPPORTED" in codes, f"mismatched gridAfter vMerge should require review: {audit}")
+    assert_true(audit["counts"].get("irregular_vmerge_count") == 1, f"mismatched vMerge count missing: {audit}")
+    assert_true(
+        audit["counts"].get("visible_vmerge_continuation_count") == 1,
+        f"visible mismatched vMerge continuation count missing: {audit}",
+    )
+    assert_true(
+        "Sensitive continuation text" not in str(audit),
+        f"source audit leaked visible mismatched vMerge continuation text: {audit}",
+    )
+    detail = " ".join(str(issue.get("detail") or "") for issue in audit["issues"] if issue.get("code") == "COMPLEX_TABLE_UNSUPPORTED")
+    assert_true(
+        "visible_vmerge_continuations=1" in detail,
+        f"complex table detail did not name visible mismatched vMerge continuation count: {audit}",
+    )
+
+
+@case
+def source_audit_counts_revision_wrapped_table_rows_as_visible_width() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_revision_wrapped_wide_table")
+    path = work / "revision_wrapped_wide_table.docx"
+    doc = Document()
+    table = doc.add_table(rows=1, cols=9)
+    for idx, cell in enumerate(table.rows[0].cells):
+        cell.text = f"Wide {idx + 1}"
+    doc.save(path)
+
+    def wrap_row_in_revision(xml: str) -> str:
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + W_NS + "tbl")
+        assert_true(table_el is not None, "table missing")
+        row = table_el.find(W_NS + "tr")
+        assert_true(row is not None, "row missing")
+        row_index = list(table_el).index(row)
+        table_el.remove(row)
+        ins = ET.Element(W_NS + "ins")
+        ins.set(W_NS + "id", "1")
+        ins.set(W_NS + "author", "Regression")
+        ins.append(row)
+        table_el.insert(row_index, ins)
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(path, "word/document.xml", wrap_row_in_revision)
+
+    audit = audit_docx_source(str(path))
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert_true("TRACKED_CHANGES_PRESENT" in codes, f"revision wrapper should remain visible in audit: {audit}")
+    assert_true(audit["counts"].get("max_table_columns") == 9, f"revision-wrapped row width was not counted: {audit}")
+    assert_true(audit["counts"].get("wide_table_count") == 1, f"revision-wrapped wide row was not counted: {audit}")
+    assert_true("COMPLEX_TABLE_UNSUPPORTED" in codes, f"revision-wrapped wide table should require review: {audit}")
+    detail = " ".join(str(issue.get("detail") or "") for issue in audit["issues"] if issue.get("code") == "COMPLEX_TABLE_UNSUPPORTED")
+    assert_true("wide_tables=1" in detail, f"revision-wrapped wide table detail incomplete: {audit}")
+
+
+@case
+def source_audit_ignores_deleted_revision_tables_for_table_risk() -> None:
+    from content_parser_modules.source_audit import audit_docx_source
+
+    work = new_workdir("source_audit_deleted_revision_table_risk")
+    path = work / "deleted_revision_table_risk.docx"
+    doc = Document()
+    doc.add_paragraph("Visible body text.")
+    doc.save(path)
+
+    def inject_deleted_wide_table(xml: str) -> str:
+        root = ET.fromstring(xml.encode("utf-8"))
+        body = root.find(W_NS + "body")
+        assert_true(body is not None, "document body missing")
+        table_el = ET.Element(W_NS + "tbl")
+        tbl_grid = ET.SubElement(table_el, W_NS + "tblGrid")
+        for _ in range(9):
+            col = ET.SubElement(tbl_grid, W_NS + "gridCol")
+            col.set(W_NS + "w", "900")
+        row = ET.SubElement(table_el, W_NS + "tr")
+        for idx in range(9):
+            cell = ET.SubElement(row, W_NS + "tc")
+            tc_pr = ET.SubElement(cell, W_NS + "tcPr")
+            tc_w = ET.SubElement(tc_pr, W_NS + "tcW")
+            tc_w.set(W_NS + "type", "dxa")
+            tc_w.set(W_NS + "w", "900")
+            para = ET.SubElement(cell, W_NS + "p")
+            run = ET.SubElement(para, W_NS + "r")
+            text = ET.SubElement(run, W_NS + "t")
+            text.text = f"Deleted {idx + 1}"
+        move_from = ET.Element(W_NS + "moveFrom")
+        move_from.set(W_NS + "id", "1")
+        move_from.set(W_NS + "author", "Regression")
+        move_from.append(table_el)
+        sect_pr = body.find(W_NS + "sectPr")
+        insert_at = list(body).index(sect_pr) if sect_pr is not None else len(list(body))
+        body.insert(insert_at, move_from)
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(path, "word/document.xml", inject_deleted_wide_table)
+
+    audit = audit_docx_source(str(path))
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert_true("TRACKED_CHANGES_PRESENT" in codes, f"deleted revision wrapper should remain visible in audit: {audit}")
+    assert_true(audit["counts"].get("table_count") == 0, f"deleted revision table should not count as a visible table: {audit}")
+    assert_true(audit["counts"].get("max_table_columns") == 0, f"deleted revision table should not affect visible max columns: {audit}")
+    assert_true(audit["counts"].get("wide_table_count") == 0, f"deleted revision table should not count as a visible wide table: {audit}")
+    assert_true("COMPLEX_TABLE_UNSUPPORTED" not in codes, f"deleted revision table created a false complex-table warning: {audit}")
 
 
 @case
@@ -367,7 +1150,7 @@ def source_audit_respects_grid_before_for_vmerge_columns() -> None:
     table = doc.add_table(rows=2, cols=2)
     table.cell(0, 0).text = "Left"
     table.cell(0, 1).text = "Vertical start"
-    table.cell(1, 1).text = "Vertical continue"
+    table.cell(1, 1).text = ""
     doc.save(path)
 
     def inject_grid_before_vmerge(xml: str) -> str:
@@ -506,7 +1289,7 @@ def visual_sample_pages_prioritize_late_risk_content_pages() -> None:
         "appendix",
     ]
     samples = qa_visual._sample_pages(14, pages)
-    assert_true(len(samples) <= 6, f"sample page selection should stay bounded: {samples}")
+    assert_true(len(samples) <= 8, f"sample page selection should stay bounded: {samples}")
     assert_true(
         1 in samples and 2 in samples and 4 in samples,
         f"sample page selection lost cover/TOC/body anchors: {samples}",
@@ -515,6 +1298,212 @@ def visual_sample_pages_prioritize_late_risk_content_pages() -> None:
         9 in samples and 10 in samples and 11 in samples,
         f"sample page selection missed late figure/table/formula risk pages: {samples}",
     )
+
+
+@case
+def visual_sample_pages_prioritize_formula_before_table_continuation_when_bounded() -> None:
+    import qa_visual
+
+    pages = [
+        "cover",
+        "contents",
+        "preface",
+        "1. Introduction",
+        "background prose",
+        "method prose",
+        "middle prose",
+        "body prose",
+        "图 2 模型结构",
+        "Table 3 Ablation Results",
+        "Table 3 continued row 30 row 31 row 32",
+        "公式 (3.1) E = mc^2",
+        "discussion",
+        "references",
+    ]
+    samples = qa_visual._sample_pages(14, pages)
+    assert_true(len(samples) <= 8, f"sample page selection should stay bounded: {samples}")
+    assert_true(
+        9 in samples and 10 in samples and 12 in samples,
+        f"sample page selection should keep figure/table/formula risk pages before auxiliary continuation pages: {samples}",
+    )
+    assert_true(11 in samples, f"sample page selection should keep long-table continuation evidence: {samples}")
+
+
+@case
+def visual_sample_pages_keep_table_continuation_in_complex_long_document() -> None:
+    import qa_visual
+
+    pages = [
+        "cover with title",
+        "contents",
+        "preface",
+        "1. Introduction",
+        "background prose",
+        "method prose",
+        "middle prose",
+        "图 2 模型结构",
+        "Table 3 Long Wide Measurements",
+        "LongWideHeader1 LongWideHeader2 LongWideRow030 LongWideRow031",
+        "公式 (3.1) E = mc^2",
+        "discussion",
+        "references",
+        "appendix",
+    ]
+    samples = qa_visual._sample_pages(14, pages)
+    assert_true(len(samples) <= 8, f"sample page selection should stay bounded: {samples}")
+    assert_true(
+        8 in samples and 9 in samples and 10 in samples and 11 in samples,
+        f"complex long-document visual QA should sample figure, table, continuation, and formula pages: {samples}",
+    )
+
+
+@case
+def visual_sample_pages_keep_later_table_continuation_across_sections() -> None:
+    import qa_visual
+
+    pages = [
+        "cover with title",
+        "contents",
+        "1. Introduction",
+        "Table 1 First Section Wide Measurements",
+        "FirstWideHeader1 FirstWideHeader2 FirstWideRow030 FirstWideRow031",
+        "图 2 模型结构",
+        "method prose",
+        "公式 (3.1) E = mc^2",
+        "discussion prose",
+        "Table 2 Second Section Wide Measurements",
+        "SecondWideHeader1 SecondWideHeader2 SecondWideRow030 SecondWideRow031",
+        "more discussion",
+        "body",
+        "body",
+        "references",
+        "appendix",
+    ]
+    samples = qa_visual._sample_pages(16, pages)
+    assert_true(len(samples) <= 8, f"sample page selection should stay bounded: {samples}")
+    assert_true(
+        4 in samples and 5 in samples,
+        f"sample page selection should keep the first wide-table start and continuation pages: {samples}",
+    )
+    assert_true(
+        6 in samples and 8 in samples,
+        f"sample page selection should still keep figure/formula risk pages before auxiliary later-table evidence: {samples}",
+    )
+    assert_true(
+        11 in samples,
+        f"multi-section visual QA should keep the later wide-table continuation page before generic end-page samples: {samples}",
+    )
+
+
+@case
+def visual_sample_pages_include_table_continuation_page() -> None:
+    import qa_visual
+
+    pages = [
+        "cover",
+        "contents",
+        "preface",
+        "1. Introduction",
+        "background prose",
+        "method prose",
+        "middle prose",
+        "Table 5 Long Wide Measurements",
+        "Column A Column B Column C row 30 row 31 row 32",
+        "Column A Column B Column C row 60 row 61 row 62",
+        "discussion",
+        "body",
+        "body",
+        "references",
+        "appendix",
+    ]
+    samples = qa_visual._sample_pages(15, pages)
+    assert_true(len(samples) <= 8, f"sample page selection should stay bounded: {samples}")
+    assert_true(8 in samples, f"sample page selection missed the long table start page: {samples}")
+    assert_true(9 in samples, f"sample page selection missed the long table continuation page: {samples}")
+
+
+@case
+def visual_sample_pages_ignore_table_list_for_real_table_pages() -> None:
+    import qa_visual
+
+    pages = [
+        "cover",
+        "contents",
+        "List of Figures Figure 1 Architecture ........ II",
+        "List of Tables Table 5 Long Wide Measurements ........ III",
+        "1. Introduction",
+        "Table 5 Long Wide Measurements LongWideHeader1 LongWideHeader2 LongWideRow001",
+        "LongWideHeader1 LongWideHeader2 LongWideRow030 LongWideRow031",
+        "LongWideHeader1 LongWideHeader2 LongWideRow060 LongWideRow061",
+        "discussion",
+        "body",
+        "body",
+        "body",
+        "references",
+        "appendix",
+        "appendix notes",
+    ]
+    samples = qa_visual._sample_pages(15, pages)
+    assert_true(len(samples) <= 8, f"sample page selection should stay bounded: {samples}")
+    assert_true(6 in samples, f"sample page selection picked table-list page instead of real table start: {samples}")
+    assert_true(7 in samples, f"sample page selection missed real table continuation page: {samples}")
+
+
+@case
+def visual_pdfinfo_skips_broken_path_shim() -> None:
+    from qa_visual_modules import pdf_tools
+
+    work = new_workdir("visual_pdfinfo_path_fallback")
+    bad = work / "bad"
+    good = work / "good"
+    bad.mkdir()
+    good.mkdir()
+    (bad / "pdfinfo.cmd").write_text(
+        "@echo off\r\necho The system cannot find the path specified. 1>&2\r\nexit /b 3\r\n",
+        encoding="utf-8",
+    )
+    (good / "pdfinfo.cmd").write_text(
+        "@echo off\r\necho Pages:          7\r\necho Page size:      595 x 842 pts\r\nexit /b 0\r\n",
+        encoding="utf-8",
+    )
+    old_path = os.environ.get("PATH", "")
+    os.environ["PATH"] = str(bad) + os.pathsep + str(good) + os.pathsep + old_path
+    try:
+        info = pdf_tools._pdfinfo(str(work / "synthetic.pdf"))
+    finally:
+        os.environ["PATH"] = old_path
+    assert_true(info.get("pages") == 7, f"pdfinfo should skip broken shim candidates: {info}")
+    assert_true(info.get("page_width_pt") == 595.0, f"pdfinfo should parse fallback page size: {info}")
+
+
+@case
+def visual_poppler_runner_continues_after_candidate_exception() -> None:
+    import subprocess
+
+    from qa_visual_modules import pdf_tools
+
+    original_candidates = pdf_tools._tool_candidates
+    original_run = pdf_tools._run
+
+    def fake_candidates(_name: str):
+        return ["missing_pdfinfo", "good_pdfinfo"]
+
+    def fake_run(cmd, timeout=120):
+        if cmd[0] == "missing_pdfinfo":
+            raise FileNotFoundError("missing_pdfinfo")
+        return subprocess.CompletedProcess(cmd, 0, stdout="Pages:          3\n", stderr="")
+
+    pdf_tools._tool_candidates = fake_candidates
+    pdf_tools._run = fake_run
+    try:
+        result, exe, failures = pdf_tools._run_tool("pdfinfo", ["synthetic.pdf"], timeout=10)
+    finally:
+        pdf_tools._tool_candidates = original_candidates
+        pdf_tools._run = original_run
+
+    assert_true(result is not None and result.returncode == 0, f"runner should continue after exceptions: {result}")
+    assert_true(exe == "good_pdfinfo", f"runner should use the later good candidate: {exe}")
+    assert_true(failures, "runner should preserve the skipped exception detail for diagnostics")
 
 
 @case

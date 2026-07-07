@@ -17,6 +17,7 @@ try:
         _content_toc_pollution_samples,
         _count_content_formulas,
         _count_content_images,
+        _count_content_note_refs,
         _count_content_tables,
         _formula_number_conflict_samples,
         _fragmented_formula_samples,
@@ -30,6 +31,7 @@ except ImportError:  # pragma: no cover - package-style imports
         _content_toc_pollution_samples,
         _count_content_formulas,
         _count_content_images,
+        _count_content_note_refs,
         _count_content_tables,
         _formula_number_conflict_samples,
         _fragmented_formula_samples,
@@ -134,8 +136,9 @@ def run_content_checks(out_dir: str, paths: Dict[str, str], counts: Dict[str, An
                     "内容中存在疑似图表/公式碎片的低分辨率图片；已按原始尺寸保留，避免放大。" if contained else "内容中存在疑似图表/公式碎片的低分辨率图片，可能形成模糊文字图。",
                     " / ".join(low_res_fragments),
                 )
-            footnote_refs = int(meta.get("footnote_references_extracted") or 0)
-            endnote_refs = int(meta.get("endnote_references_extracted") or 0)
+            recursive_note_refs = _count_content_note_refs(content)
+            footnote_refs = max(int(meta.get("footnote_references_extracted") or 0), int(recursive_note_refs.get("footnote") or 0))
+            endnote_refs = max(int(meta.get("endnote_references_extracted") or 0), int(recursive_note_refs.get("endnote") or 0))
             rendered_footnotes = int(manifest_counts.get("footnote_references_rendered") or 0)
             rendered_endnotes = int(manifest_counts.get("endnote_references_rendered") or 0)
             counts["footnote_references_extracted"] = footnote_refs

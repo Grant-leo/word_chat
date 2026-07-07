@@ -5,8 +5,20 @@ BODY_RUNTIME = r'''
 def paragraph_item_has_image(item):
     if not isinstance(item, dict):
         return False
-    if item.get('role') in ('image', 'figure') or item.get('image'):
+    role = str(item.get('role') or '').strip()
+    kind = str(item.get('type') or '').strip()
+    if role in ('image', 'figure') or kind in ('image', 'figure') or item.get('image') or item.get('filename') or item.get('asset'):
         return True
+    for run in item.get('runs') or []:
+        if paragraph_item_has_image(run):
+            return True
+        if isinstance(run, dict):
+            for nested in run.get('items') or []:
+                if paragraph_item_has_image(nested):
+                    return True
+    for nested in item.get('items') or []:
+        if paragraph_item_has_image(nested):
+            return True
     for cell in item.get('table_cell_items') or []:
         for nested in cell.get('items') or []:
             if paragraph_item_has_image(nested):
@@ -14,9 +26,322 @@ def paragraph_item_has_image(item):
     return False
 
 
+def paragraph_item_is_image_item(item):
+    if not isinstance(item, dict):
+        return False
+    role = str(item.get('role') or '').strip()
+    kind = str(item.get('type') or '').strip()
+    return role in ('image', 'figure') or kind in ('image', 'figure') or bool(item.get('image') or item.get('filename') or item.get('asset'))
+
+
+def paragraph_item_has_display_math(item):
+    if not isinstance(item, dict):
+        return False
+
+    def iter_math_entries(value):
+        if isinstance(value, dict):
+            return [value]
+        if isinstance(value, list):
+            return value
+        return []
+
+    def math_entry_is_display(entry):
+        if not isinstance(entry, dict):
+            return False
+        kind = str(entry.get('type') or '').strip().lower()
+        return kind in ('display', 'block') or bool(entry.get('display') or entry.get('block'))
+
+    for math_entry in iter_math_entries(item.get('math')):
+        if math_entry_is_display(math_entry):
+            return True
+    for run in item.get('runs') or []:
+        if not isinstance(run, dict):
+            continue
+        for math_entry in iter_math_entries(run.get('math')):
+            if math_entry_is_display(math_entry):
+                return True
+        for nested in run.get('items') or []:
+            if paragraph_item_has_display_math(nested):
+                return True
+    for nested in item.get('items') or []:
+        if paragraph_item_has_display_math(nested):
+            return True
+    for cell in item.get('table_cell_items') or []:
+        for nested in cell.get('items') or []:
+            if paragraph_item_has_display_math(nested):
+                return True
+    return False
+
+
+def paragraph_item_nested_table_items(item):
+    if not isinstance(item, dict):
+        return []
+    if is_table_item(item):
+        return [item]
+    table_items = []
+    for nested in item.get('runs') or []:
+        table_items.extend(paragraph_item_nested_table_items(nested))
+    for nested in item.get('items') or []:
+        table_items.extend(paragraph_item_nested_table_items(nested))
+    for cell in item.get('table_cell_items') or []:
+        for nested in cell.get('items') or []:
+            table_items.extend(paragraph_item_nested_table_items(nested))
+    return table_items
+
+
+def paragraph_item_has_table(item):
+    return bool(paragraph_item_nested_table_items(item))
+
+
+def paragraph_item_is_code(item):
+    if not isinstance(item, dict):
+        return False
+    role = str(item.get('role') or '').strip()
+    kind = str(item.get('type') or '').strip()
+    return role == 'code' or kind == 'code' or bool(item.get('code'))
+
+
+def paragraph_item_nested_code_items(item):
+    if not isinstance(item, dict):
+        return []
+    if paragraph_item_is_code(item):
+        return [item]
+    code_items = []
+    for nested in item.get('runs') or []:
+        code_items.extend(paragraph_item_nested_code_items(nested))
+    for nested in item.get('items') or []:
+        code_items.extend(paragraph_item_nested_code_items(nested))
+    for cell in item.get('table_cell_items') or []:
+        for nested in cell.get('items') or []:
+            code_items.extend(paragraph_item_nested_code_items(nested))
+    return code_items
+
+
+def paragraph_item_has_code(item):
+    return bool(paragraph_item_nested_code_items(item))
+
+
+def paragraph_item_is_caption(item):
+    if not isinstance(item, dict):
+        return False
+    role = str(item.get('role') or '').strip()
+    return role in ('table_caption', 'figure_caption')
+
+
+def paragraph_item_nested_caption_items(item):
+    if not isinstance(item, dict):
+        return []
+    if paragraph_item_is_caption(item):
+        return [item]
+    caption_items = []
+    for nested in item.get('runs') or []:
+        caption_items.extend(paragraph_item_nested_caption_items(nested))
+    for nested in item.get('items') or []:
+        caption_items.extend(paragraph_item_nested_caption_items(nested))
+    for cell in item.get('table_cell_items') or []:
+        for nested in cell.get('items') or []:
+            caption_items.extend(paragraph_item_nested_caption_items(nested))
+    return caption_items
+
+
+def paragraph_item_has_caption(item):
+    return bool(paragraph_item_nested_caption_items(item))
+
+
+def paragraph_item_is_formula_item(item):
+    if not isinstance(item, dict):
+        return False
+    role = str(item.get('role') or '').strip()
+    kind = str(item.get('type') or '').strip()
+    if role == 'rich_text':
+        return False
+    return role == 'formula' or kind in ('formula', 'math') or bool(item.get('latex') or item.get('xml') or item.get('math'))
+
+
+def paragraph_item_has_block_formula_item(item):
+    if not isinstance(item, dict):
+        return False
+
+    def nested_has_formula(nested):
+        return paragraph_item_is_formula_item(nested) or paragraph_item_has_block_formula_item(nested)
+
+    for nested in item.get('items') or []:
+        if nested_has_formula(nested):
+            return True
+    for run in item.get('runs') or []:
+        if not isinstance(run, dict):
+            continue
+        for nested in run.get('items') or []:
+            if nested_has_formula(nested):
+                return True
+        for cell in run.get('table_cell_items') or []:
+            for nested in cell.get('items') or []:
+                if nested_has_formula(nested):
+                    return True
+    for cell in item.get('table_cell_items') or []:
+        for nested in cell.get('items') or []:
+            if nested_has_formula(nested):
+                return True
+    return False
+
+
+def math_entry_requests_display(entry, default_display=True):
+    if not isinstance(entry, dict):
+        return default_display
+    kind = str(entry.get('type') or '').strip().lower()
+    if kind in ('display', 'block'):
+        return True
+    if kind == 'inline' or entry.get('inline'):
+        return False
+    if entry.get('display') or entry.get('block'):
+        return True
+    return default_display
+
+
+def render_inline_ordered_math(entry):
+    if not isinstance(entry, dict):
+        return False
+    run = {'type': 'math', 'text': entry.get('text') or entry.get('latex') or '', 'math': [entry]}
+    return add_rich_text_runs({'runs': [run]}, role='body', first_indent=True) is not None
+
+
+def paragraph_item_has_direct_display_math(item):
+    if not isinstance(item, dict):
+        return False
+    for math_entry in _math_entry_list(item.get('math')):
+        if math_entry_requests_display(math_entry, default_display=False):
+            return True
+    if (item.get('latex') or item.get('xml')) and math_entry_requests_display(item, default_display=False):
+        return True
+    return False
+
+
+def render_ordered_math_item(item, chapter=None):
+    if item.get('math') and not item.get('latex') and not item.get('xml'):
+        rendered = False
+        for math_entry in _math_entry_list(item.get('math')):
+            sub_item = dict(item)
+            sub_item['math'] = [math_entry]
+            sub_item['text'] = clean_formula_text(math_entry.get('text') or item.get('text') or '')
+            if math_entry_requests_display(math_entry, default_display=True):
+                render_formula(sub_item, chapter)
+            else:
+                render_inline_ordered_math(math_entry)
+            rendered = True
+        return rendered
+    if not math_entry_requests_display(item, default_display=True):
+        return render_inline_ordered_math(item)
+    render_formula(item, chapter)
+    return True
+
+
+def render_rich_text_block_items_in_order(item, chapter=None, render_media=True, include_runs=True):
+    if not isinstance(item, dict):
+        return False
+    if render_media and paragraph_item_is_image_item(item):
+        render_image(item.get('image') or item.get('filename') or item.get('asset') or '', item.get('caption') or '')
+        return True
+    if render_media and paragraph_item_is_formula_item(item):
+        return render_ordered_math_item(item, chapter=chapter)
+    if paragraph_item_is_caption(item):
+        caption_role = 'figure_caption' if item.get('role') == 'figure_caption' else 'table_caption'
+        add_caption(item.get('text') or '', caption_role)
+        return True
+    if paragraph_item_is_code(item):
+        add_code_block(item.get('code') or item.get('text') or code_text_from_rows(item.get('table_rows') or []))
+        return True
+    if is_table_item(item):
+        render_table_item(item)
+        return True
+    rendered = False
+    if include_runs:
+        for nested in item.get('runs') or []:
+            rendered = render_rich_text_block_items_in_order(nested, chapter=chapter, render_media=False) or rendered
+    for nested in item.get('items') or []:
+        rendered = render_rich_text_block_items_in_order(nested, chapter=chapter, render_media=True) or rendered
+    for cell in item.get('table_cell_items') or []:
+        for nested in cell.get('items') or []:
+            rendered = render_rich_text_block_items_in_order(nested, chapter=chapter, render_media=True) or rendered
+    return rendered
+
+
+def rich_text_needs_run_stream_breaks(item):
+    if not isinstance(item, dict):
+        return False
+    for run in item.get('runs') or []:
+        if paragraph_item_has_display_math(run):
+            return True
+        if isinstance(run, dict) and (run.get('items') or run.get('table_cell_items')):
+            return True
+    return False
+
+
+def render_rich_text_runs_with_block_breaks(item, chapter=None):
+    if not isinstance(item, dict):
+        return False
+    runs = item.get('runs') or []
+    if not runs:
+        return add_rich_text_runs(item, role='body', first_indent=True, render_item_media=False) is not None
+
+    rendered = False
+    pending_runs = []
+
+    def flush_pending_runs():
+        nonlocal rendered, pending_runs
+        if not pending_runs:
+            return
+        if add_rich_text_runs({'runs': list(pending_runs)}, role='body', first_indent=True, render_item_media=False) is not None:
+            rendered = True
+        pending_runs = []
+
+    for run in runs:
+        if isinstance(run, dict) and paragraph_item_has_direct_display_math(run):
+            flush_pending_runs()
+            rendered = render_ordered_math_item(run, chapter=chapter) or rendered
+        else:
+            pending_runs.append(run)
+        if isinstance(run, dict) and run.get('items'):
+            flush_pending_runs()
+            for nested in run.get('items') or []:
+                rendered = render_rich_text_block_items_in_order(nested, chapter=chapter, render_media=True) or rendered
+        if isinstance(run, dict) and run.get('table_cell_items'):
+            flush_pending_runs()
+            for cell in run.get('table_cell_items') or []:
+                for nested in cell.get('items') or []:
+                    rendered = render_rich_text_block_items_in_order(nested, chapter=chapter, render_media=True) or rendered
+    flush_pending_runs()
+    return rendered
+
+
+def looks_like_list_bridge_text(text):
+    t = clean_text_artifacts(text).strip()
+    if not t:
+        return False
+    if re.match(r'^(?:[-*+]|\u2022|\u00b7|\u25e6|\u2023)\s+\S', t):
+        return True
+    if re.match(r'^(?:\(?\d{1,3}\)?[.)、]|[A-Za-z][.)])\s+\S', t):
+        return True
+    if re.match(r'^(?:\([ivxlcdmIVXLCDM]{1,8}\)|[IVXLCDM]{2,8}[.)、]|[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+[、.)）])\s*\S', t):
+        return True
+    if re.match(r'^(?:\[\d{1,3}\]|［\d{1,3}］|【\d{1,3}】|〔\d{1,3}〕)[、.]?\s*\S', t):
+        return True
+    if re.match(r'^[（(]?\d{1,3}[）)][、.]?\s*\S', t):
+        return True
+    if re.match(r'^[一二三四五六七八九十]+[、.)）]\s*\S', t):
+        return True
+    if re.match(r'^[①②③④⑤⑥⑦⑧⑨⑩]\s*\S', t):
+        return True
+    return False
+
+
 def render_paragraph_item(item, code_sensitive=False, chapter=None):
     if isinstance(item, dict) and item.get('role') == 'rich_text':
-        add_rich_text_runs(item, role='body', first_indent=True)
+        if rich_text_needs_run_stream_breaks(item):
+            render_rich_text_runs_with_block_breaks(item, chapter=chapter)
+            render_rich_text_block_items_in_order(item, chapter=chapter, include_runs=False)
+        else:
+            add_rich_text_runs(item, role='body', first_indent=True, render_item_media=False)
+            render_rich_text_block_items_in_order(item, chapter=chapter)
         return
     if isinstance(item, dict) and item.get('role') == 'formula_problem':
         add_text(item.get('text') or '', role='body', first_indent=True)
@@ -73,6 +398,33 @@ def is_landscape_table_item(item):
     return is_table_item(item) and bool(table_render_section_page_setup(item))
 
 
+def landscape_table_section_signature(item):
+    setup = table_render_section_page_setup(item)
+    if not setup:
+        return ()
+    margins = setup.get('margins_twips') or {}
+    if not isinstance(margins, dict):
+        margins = {}
+    return (
+        str(setup.get('orientation') or '').strip().lower(),
+        safe_positive_int(setup.get('page_width_twips')),
+        safe_positive_int(setup.get('page_height_twips')),
+        safe_positive_int(margins.get('left')),
+        safe_positive_int(margins.get('right')),
+        safe_positive_int(margins.get('top')),
+        safe_positive_int(margins.get('bottom')),
+        safe_positive_int(margins.get('header')),
+        safe_positive_int(margins.get('footer')),
+        safe_positive_int(margins.get('gutter')),
+    )
+
+
+def landscape_table_section_compatible(first_item, next_item):
+    first_sig = landscape_table_section_signature(first_item)
+    next_sig = landscape_table_section_signature(next_item)
+    return bool(first_sig and next_sig and first_sig == next_sig)
+
+
 def table_group_at(paragraphs, idx):
     if idx >= len(paragraphs):
         return None
@@ -87,6 +439,37 @@ def table_group_at(paragraphs, idx):
     return None
 
 
+def landscape_table_bridge_visible_text(item):
+    if item is None:
+        return ''
+    if isinstance(item, str):
+        return item
+    if not isinstance(item, dict):
+        return ''
+    role = str(item.get('role') or '').strip()
+    kind = str(item.get('type') or '').strip()
+    if role == 'note_ref' or kind == 'note_ref':
+        return ''
+    parts = []
+    text = item.get('text')
+    if text:
+        return str(text)
+    for run in item.get('runs') or []:
+        run_text = landscape_table_bridge_visible_text(run)
+        if run_text:
+            parts.append(run_text)
+    for nested in item.get('items') or []:
+        nested_text = landscape_table_bridge_visible_text(nested)
+        if nested_text:
+            parts.append(nested_text)
+    for cell in item.get('table_cell_items') or []:
+        for nested in cell.get('items') or []:
+            nested_text = landscape_table_bridge_visible_text(nested)
+            if nested_text:
+                parts.append(nested_text)
+    return ''.join(parts)
+
+
 def landscape_table_bridge_text(item):
     if not isinstance(item, str):
         if not isinstance(item, dict):
@@ -94,21 +477,23 @@ def landscape_table_bridge_text(item):
         role = str(item.get('role') or '').strip()
         if role in ('table_caption', 'figure_caption', 'figure', 'image', 'code', 'formula', 'formula_problem'):
             return ''
-        if paragraph_item_has_image(item) or is_table_item(item) or item.get('code'):
+        if paragraph_item_has_image(item) or paragraph_item_has_display_math(item) or paragraph_item_has_block_formula_item(item) or paragraph_item_has_table(item) or paragraph_item_has_code(item) or paragraph_item_has_caption(item):
             return ''
-        text = clean_text_artifacts(item.get('text') or '').strip()
+        text = clean_text_artifacts(landscape_table_bridge_visible_text(item)).strip()
     else:
         text = clean_text_artifacts(item).strip()
     if not text:
         return ''
-    if looks_like_table_title(text) or is_figure_caption_text(text) or is_table_caption_text(text):
+    if looks_like_numbered_heading_text(text) or looks_like_table_title(text) or is_figure_caption_text(text) or is_table_caption_text(text):
+        return ''
+    if looks_like_list_bridge_text(text):
         return ''
     if looks_like_code_line(text):
         return ''
     return text
 
 
-def landscape_table_bridge_run_at(paragraphs, idx):
+def landscape_table_bridge_run_at(paragraphs, idx, anchor_table_item=None):
     bridge_items = []
     total_len = 0
     pos = idx
@@ -120,21 +505,28 @@ def landscape_table_bridge_run_at(paragraphs, idx):
         if not text or len(text) > 220:
             return None
         total_len += len(text)
-        if total_len > 360:
+        if total_len > 220:
             return None
         bridge_items.append(bridge)
         pos += 1
-        if table_group_at(paragraphs, pos):
+        next_group = table_group_at(paragraphs, pos)
+        if next_group:
+            if anchor_table_item is not None and not landscape_table_section_compatible(
+                anchor_table_item, next_group.get('table_item') or {}
+            ):
+                return None
             return {'items': bridge_items, 'next_idx': pos}
     return None
 
 
-def render_landscape_table_group(paragraphs, idx, current_chapter):
+def render_landscape_table_group(paragraphs, idx, current_chapter, leading_caption_text=None):
     first_group = table_group_at(paragraphs, idx)
     if not first_group:
         return idx
     started = begin_table_source_section(first_group.get('table_item'))
     try:
+        if leading_caption_text:
+            add_caption(next_table_caption(leading_caption_text, current_chapter), 'table_caption')
         while True:
             group = table_group_at(paragraphs, idx)
             if not group:
@@ -147,7 +539,19 @@ def render_landscape_table_group(paragraphs, idx, current_chapter):
                 add_caption(next_table_caption(title_text, current_chapter), 'table_caption')
             render_table_from_item(group.get('table_item') or {})
             idx = group.get('next_idx') or (idx + 1)
-            bridge_run = landscape_table_bridge_run_at(paragraphs, idx)
+            next_group = table_group_at(paragraphs, idx)
+            if next_group:
+                if landscape_table_section_compatible(
+                    group.get('table_item') or {},
+                    next_group.get('table_item') or {},
+                ):
+                    continue
+                break
+            bridge_run = landscape_table_bridge_run_at(
+                paragraphs,
+                idx,
+                anchor_table_item=group.get('table_item') or {},
+            )
             if bridge_run:
                 for bridge in bridge_run.get('items') or []:
                     render_paragraph_item(bridge, code_sensitive=False, chapter=current_chapter)
@@ -174,13 +578,23 @@ def render_body():
         if sec.get('page_break_before') and rendered_body_sections > 0:
             doc.add_page_break()
         rendered_body_sections += 1
+        paragraphs = sec.get('paragraphs', []) or []
+        first_table_group = table_group_at(paragraphs, 0)
+        defer_heading_table_caption = (
+            h if (
+                is_table_caption_text(h)
+                and first_table_group
+                and not first_table_group.get('caption_item')
+                and not first_table_group.get('title_text')
+            ) else None
+        )
         if is_caption_heading(h):
-            add_caption(h, 'figure_caption' if is_figure_caption_text(h) else 'table_caption')
+            if not defer_heading_table_caption:
+                add_caption(h, 'figure_caption' if is_figure_caption_text(h) else 'table_caption')
         elif h and h != '正文':
             add_heading(h, sec.get('level') or 1)
             if int(sec.get('level') or 1) == 1:
                 current_chapter = chapter_number_from_heading(h) or current_chapter
-        paragraphs = sec.get('paragraphs', []) or []
         has_inline_images = any(paragraph_item_has_image(x) for x in paragraphs)
         # New content_parser keeps images in the paragraph stream.  For old
         # content.json files, fall back to section-level images, but do not
@@ -194,7 +608,10 @@ def render_body():
             para = paragraphs[idx]
             nxt = paragraphs[idx + 1] if idx + 1 < len(paragraphs) else None
             if table_group_at(paragraphs, idx):
-                idx = render_landscape_table_group(paragraphs, idx, current_chapter)
+                leading_caption = defer_heading_table_caption if idx == 0 else None
+                idx = render_landscape_table_group(paragraphs, idx, current_chapter, leading_caption)
+                if leading_caption:
+                    defer_heading_table_caption = None
                 continue
             if isinstance(para, dict) and para.get('role') == 'table_caption' and is_table_item(nxt):
                 started = begin_table_source_section(nxt)

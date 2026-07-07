@@ -832,6 +832,657 @@ def content_parser_preserves_merged_table_cells() -> None:
 
 
 @case
+def content_parser_coalesces_rectangular_merged_table_cells() -> None:
+    work = new_workdir("parser_rectangular_merged_table")
+    docx = work / "rectangular_merged_table.docx"
+    doc = Document()
+    table = doc.add_table(rows=3, cols=3)
+    table.cell(0, 0).merge(table.cell(1, 1)).text = "Merged block"
+    table.cell(0, 2).text = "Score"
+    table.cell(1, 2).text = "1"
+    table.cell(2, 0).text = "Alpha"
+    table.cell(2, 1).text = "Beta"
+    table.cell(2, 2).text = "2"
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"rectangular merged table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [
+            ["Merged block", "", "Score"],
+            ["", "", "1"],
+            ["Alpha", "Beta", "2"],
+        ],
+        f"rectangular merge did not expand to a stable grid: {table_item}",
+    )
+    assert_true(
+        table_item.get("table_merges") == [{"row": 0, "col": 0, "rowspan": 2, "colspan": 2}],
+        f"rectangular merge should be one coalesced merge, not overlapping merges: {table_item}",
+    )
+
+    result = run_generated_case("parser_rectangular_merge_generated", content, base_format())
+    assert_true(result["report"]["passed"] is True, f"rectangular merge render should pass QA: {result['report']}")
+    counts = result["manifest"].get("counts") or {}
+    assert_true(
+        counts.get("content_table_merges_rendered") == 1,
+        f"rectangular merge should render as one merge operation: {counts}",
+    )
+
+
+@case
+def content_parser_coalesces_legacy_hmerge_vmerge_rectangular_cells() -> None:
+    work = new_workdir("parser_legacy_hmerge_vmerge_rectangular_table")
+    docx = work / "legacy_hmerge_vmerge_rectangular_table.docx"
+    doc = Document()
+    table = doc.add_table(rows=3, cols=3)
+    table.cell(0, 0).text = "Legacy block"
+    table.cell(0, 1).text = ""
+    table.cell(0, 2).text = "Score"
+    table.cell(1, 0).text = ""
+    table.cell(1, 1).text = ""
+    table.cell(1, 2).text = "1"
+    table.cell(2, 0).text = "Alpha"
+    table.cell(2, 1).text = "Beta"
+    table.cell(2, 2).text = "2"
+    doc.save(docx)
+
+    def inject_legacy_hmerge_vmerge(xml: str) -> str:
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + w_ns + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(w_ns + "tr")
+        assert_true(len(rows) == 3, "test rows missing")
+
+        def ensure_tc_pr(cell):
+            tc_pr = cell.find(w_ns + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(w_ns + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        for row_idx in (0, 1):
+            cells = rows[row_idx].findall(w_ns + "tc")
+            assert_true(len(cells) == 3, "test row cells missing")
+            first_pr = ensure_tc_pr(cells[0])
+            hmerge = ET.SubElement(first_pr, w_ns + "hMerge")
+            hmerge.set(w_ns + "val", "restart")
+            vmerge = ET.SubElement(first_pr, w_ns + "vMerge")
+            if row_idx == 0:
+                vmerge.set(w_ns + "val", "restart")
+
+            second_pr = ensure_tc_pr(cells[1])
+            ET.SubElement(second_pr, w_ns + "hMerge")
+            second_vmerge = ET.SubElement(second_pr, w_ns + "vMerge")
+            if row_idx == 0:
+                second_vmerge.set(w_ns + "val", "restart")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_legacy_hmerge_vmerge)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"legacy hMerge/vMerge table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [
+            ["Legacy block", "", "Score"],
+            ["", "", "1"],
+            ["Alpha", "Beta", "2"],
+        ],
+        f"legacy hMerge/vMerge rectangle did not expand to a stable grid: {table_item}",
+    )
+    assert_true(
+        table_item.get("table_merges") == [{"row": 0, "col": 0, "rowspan": 2, "colspan": 2}],
+        f"legacy hMerge/vMerge rectangle should be one coalesced merge, not overlapping merges: {table_item}",
+    )
+
+    result = run_generated_case("parser_legacy_hmerge_vmerge_rectangle_generated", content, base_format())
+    assert_true(result["report"]["passed"] is True, f"legacy hMerge/vMerge rectangle should pass QA: {result['report']}")
+    counts = result["manifest"].get("counts") or {}
+    assert_true(
+        counts.get("content_table_merges_rendered") == 1,
+        f"legacy hMerge/vMerge rectangle should render as one merge operation: {counts}",
+    )
+
+
+@case
+def content_parser_repairs_nonrectangular_legacy_hmerge_vmerge_without_overlap() -> None:
+    work = new_workdir("parser_nonrectangular_legacy_hmerge_vmerge")
+    docx = work / "nonrectangular_legacy_hmerge_vmerge.docx"
+    doc = Document()
+    table = doc.add_table(rows=3, cols=3)
+    table.cell(0, 0).text = "Wide top"
+    table.cell(0, 1).text = ""
+    table.cell(0, 2).text = "Score"
+    table.cell(1, 0).text = "Continuation should stay visible"
+    table.cell(1, 1).text = "Beta"
+    table.cell(1, 2).text = "1"
+    table.cell(2, 0).text = "Alpha"
+    table.cell(2, 1).text = "Gamma"
+    table.cell(2, 2).text = "2"
+    doc.save(docx)
+
+    def inject_nonrectangular_legacy_hmerge_vmerge(xml: str) -> str:
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + w_ns + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(w_ns + "tr")
+        assert_true(len(rows) == 3, "test rows missing")
+
+        def ensure_tc_pr(cell):
+            tc_pr = cell.find(w_ns + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(w_ns + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        first_row_cells = rows[0].findall(w_ns + "tc")
+        second_row_cells = rows[1].findall(w_ns + "tc")
+        assert_true(len(first_row_cells) == 3 and len(second_row_cells) == 3, "test row cells missing")
+        first_pr = ensure_tc_pr(first_row_cells[0])
+        hmerge = ET.SubElement(first_pr, w_ns + "hMerge")
+        hmerge.set(w_ns + "val", "restart")
+        vmerge = ET.SubElement(first_pr, w_ns + "vMerge")
+        vmerge.set(w_ns + "val", "restart")
+        ET.SubElement(ensure_tc_pr(first_row_cells[1]), w_ns + "hMerge")
+        ET.SubElement(ensure_tc_pr(second_row_cells[0]), w_ns + "vMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_nonrectangular_legacy_hmerge_vmerge)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"nonrectangular hMerge/vMerge table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [
+            ["Wide top", "", "Score"],
+            ["Continuation should stay visible", "Beta", "1"],
+            ["Alpha", "Gamma", "2"],
+        ],
+        f"nonrectangular hMerge/vMerge continuation text should fail open as visible: {table_item}",
+    )
+    assert_true(
+        table_item.get("table_merges") == [{"row": 0, "col": 0, "rowspan": 1, "colspan": 2}],
+        f"nonrectangular hMerge/vMerge should keep only the safe horizontal merge: {table_item}",
+    )
+
+    result = run_generated_case("parser_nonrectangular_legacy_hmerge_vmerge_generated", content, base_format())
+    assert_true(result["report"]["passed"] is True, f"nonrectangular hMerge/vMerge repair should pass QA: {result['report']}")
+    assert_true("Continuation should stay visible" in result["xml"], "generated DOCX lost repaired continuation text")
+    counts = result["manifest"].get("counts") or {}
+    assert_true(
+        counts.get("content_table_merges_rendered") == 1,
+        f"nonrectangular hMerge/vMerge should render only one safe merge operation: {counts}",
+    )
+
+
+@case
+def content_parser_preserves_legacy_hmerge_table_cells() -> None:
+    work = new_workdir("parser_legacy_hmerge_table")
+    docx = work / "legacy_hmerge_table.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=3)
+    table.cell(0, 0).text = "Legacy merged header"
+    table.cell(0, 1).text = ""
+    table.cell(0, 2).text = "Score"
+    table.cell(1, 0).text = "Alpha"
+    table.cell(1, 1).text = "Beta"
+    table.cell(1, 2).text = "1"
+    doc.save(docx)
+
+    def inject_legacy_hmerge(xml: str) -> str:
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + w_ns + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        first_row = table_el.find(w_ns + "tr")
+        assert_true(first_row is not None, "test first row missing")
+        cells = first_row.findall(w_ns + "tc")
+        assert_true(len(cells) == 3, "test first row cells missing")
+
+        def ensure_tc_pr(cell):
+            tc_pr = cell.find(w_ns + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(w_ns + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        restart = ET.SubElement(ensure_tc_pr(cells[0]), w_ns + "hMerge")
+        restart.set(w_ns + "val", "restart")
+        ET.SubElement(ensure_tc_pr(cells[1]), w_ns + "hMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_legacy_hmerge)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"legacy hMerge table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [
+            ["Legacy merged header", "", "Score"],
+            ["Alpha", "Beta", "1"],
+        ],
+        f"legacy hMerge table did not expand to a stable grid: {table_item}",
+    )
+    assert_true(
+        {"row": 0, "col": 0, "rowspan": 1, "colspan": 2} in (table_item.get("table_merges") or []),
+        f"legacy hMerge was not converted to a generated merge: {table_item}",
+    )
+
+    result = run_generated_case("parser_legacy_hmerge_generated", content, base_format())
+    assert_true(re.search(r"<w:gridSpan\b[^>]*/?w:val=\"2\"", result["xml"]), "legacy hMerge did not render as a Word gridSpan merge")
+    assert_true("Legacy merged header" in result["xml"], "generated DOCX lost legacy hMerge text")
+    assert_true(result["report"]["passed"] is True, f"legacy hMerge render should pass QA: {result['report']}")
+
+
+@case
+def content_parser_does_not_double_count_mixed_gridspan_hmerge() -> None:
+    work = new_workdir("parser_mixed_gridspan_hmerge")
+    docx = work / "mixed_gridspan_hmerge.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=4)
+    table.cell(0, 0).text = "Mixed encoded header"
+    table.cell(0, 1).text = ""
+    table.cell(0, 2).text = "Score"
+    table.cell(0, 3).text = "Note"
+    table.cell(1, 0).text = "Alpha"
+    table.cell(1, 1).text = "Beta"
+    table.cell(1, 2).text = "1"
+    table.cell(1, 3).text = "Keep"
+    doc.save(docx)
+
+    def inject_mixed_gridspan_hmerge(xml: str) -> str:
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + w_ns + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        first_row = table_el.find(w_ns + "tr")
+        assert_true(first_row is not None, "test first row missing")
+        cells = first_row.findall(w_ns + "tc")
+        assert_true(len(cells) == 4, "test first row cells missing")
+
+        def ensure_tc_pr(cell):
+            tc_pr = cell.find(w_ns + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(w_ns + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        first_pr = ensure_tc_pr(cells[0])
+        grid_span = first_pr.find(w_ns + "gridSpan")
+        if grid_span is None:
+            grid_span = ET.SubElement(first_pr, w_ns + "gridSpan")
+        grid_span.set(w_ns + "val", "2")
+        hmerge = ET.SubElement(first_pr, w_ns + "hMerge")
+        hmerge.set(w_ns + "val", "restart")
+        ET.SubElement(ensure_tc_pr(cells[1]), w_ns + "hMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_mixed_gridspan_hmerge)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"mixed gridSpan/hMerge table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [
+            ["Mixed encoded header", "", "Score", "Note"],
+            ["Alpha", "Beta", "1", "Keep"],
+        ],
+        f"mixed gridSpan/hMerge table did not keep a stable visible grid: {table_item}",
+    )
+    assert_true(
+        table_item.get("table_merges") == [{"row": 0, "col": 0, "rowspan": 1, "colspan": 2}],
+        f"mixed gridSpan/hMerge should use gridSpan width once, not double-count hMerge continues: {table_item}",
+    )
+
+    result = run_generated_case("parser_mixed_gridspan_hmerge_generated", content, base_format())
+    assert_true(result["report"]["passed"] is True, f"mixed gridSpan/hMerge repair should pass QA: {result['report']}")
+    counts = result["manifest"].get("counts") or {}
+    assert_true(
+        counts.get("content_table_merges_rendered") == 1,
+        f"mixed gridSpan/hMerge should render only one merge operation: {counts}",
+    )
+    assert_true("Score" in result["xml"] and "Note" in result["xml"], "generated DOCX lost cells after mixed hMerge")
+
+
+@case
+def content_parser_coalesces_mixed_gridspan_hmerge_vmerge_rectangle() -> None:
+    work = new_workdir("parser_mixed_gridspan_hmerge_vmerge")
+    docx = work / "mixed_gridspan_hmerge_vmerge.docx"
+    doc = Document()
+    table = doc.add_table(rows=3, cols=4)
+    table.cell(0, 0).text = "Mixed 2D block"
+    table.cell(0, 1).text = ""
+    table.cell(0, 2).text = "Score"
+    table.cell(0, 3).text = "Note"
+    table.cell(1, 0).text = ""
+    table.cell(1, 1).text = ""
+    table.cell(1, 2).text = "1"
+    table.cell(1, 3).text = "Keep"
+    table.cell(2, 0).text = "Alpha"
+    table.cell(2, 1).text = "Beta"
+    table.cell(2, 2).text = "2"
+    table.cell(2, 3).text = "Tail"
+    doc.save(docx)
+
+    def inject_mixed_gridspan_hmerge_vmerge(xml: str) -> str:
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + w_ns + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(w_ns + "tr")
+        assert_true(len(rows) == 3, "test rows missing")
+
+        def ensure_tc_pr(cell):
+            tc_pr = cell.find(w_ns + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(w_ns + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        for row_idx in (0, 1):
+            cells = rows[row_idx].findall(w_ns + "tc")
+            assert_true(len(cells) == 4, "test row cells missing")
+            first_pr = ensure_tc_pr(cells[0])
+            grid_span = first_pr.find(w_ns + "gridSpan")
+            if grid_span is None:
+                grid_span = ET.SubElement(first_pr, w_ns + "gridSpan")
+            grid_span.set(w_ns + "val", "2")
+            hmerge = ET.SubElement(first_pr, w_ns + "hMerge")
+            hmerge.set(w_ns + "val", "restart")
+            vmerge = ET.SubElement(first_pr, w_ns + "vMerge")
+            if row_idx == 0:
+                vmerge.set(w_ns + "val", "restart")
+
+            second_pr = ensure_tc_pr(cells[1])
+            ET.SubElement(second_pr, w_ns + "hMerge")
+            second_vmerge = ET.SubElement(second_pr, w_ns + "vMerge")
+            if row_idx == 0:
+                second_vmerge.set(w_ns + "val", "restart")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_mixed_gridspan_hmerge_vmerge)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"mixed gridSpan/hMerge/vMerge table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [
+            ["Mixed 2D block", "", "Score", "Note"],
+            ["", "", "1", "Keep"],
+            ["Alpha", "Beta", "2", "Tail"],
+        ],
+        f"mixed gridSpan/hMerge/vMerge rectangle did not keep a stable visible grid: {table_item}",
+    )
+    assert_true(
+        table_item.get("table_merges") == [{"row": 0, "col": 0, "rowspan": 2, "colspan": 2}],
+        f"mixed gridSpan/hMerge/vMerge rectangle should be one coalesced merge: {table_item}",
+    )
+
+    result = run_generated_case("parser_mixed_gridspan_hmerge_vmerge_generated", content, base_format())
+    assert_true(result["report"]["passed"] is True, f"mixed gridSpan/hMerge/vMerge render should pass QA: {result['report']}")
+    counts = result["manifest"].get("counts") or {}
+    assert_true(
+        counts.get("content_table_merges_rendered") == 1,
+        f"mixed gridSpan/hMerge/vMerge rectangle should render only one merge operation: {counts}",
+    )
+    assert_true("Score" in result["xml"] and "Keep" in result["xml"], "generated DOCX lost cells after mixed 2D merge")
+
+
+@case
+def content_parser_coalesces_split_vmerge_continuations_under_gridspan_restart() -> None:
+    work = new_workdir("parser_split_vmerge_under_gridspan")
+    docx = work / "split_vmerge_under_gridspan.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=3)
+    table.cell(0, 0).text = "Split 2D block"
+    table.cell(0, 1).text = ""
+    table.cell(0, 2).text = "Score"
+    table.cell(1, 0).text = ""
+    table.cell(1, 1).text = ""
+    table.cell(1, 2).text = "1"
+    doc.save(docx)
+
+    def inject_split_vmerge_continuations(xml: str) -> str:
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + w_ns + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(w_ns + "tr")
+        assert_true(len(rows) == 2, "test rows missing")
+
+        def ensure_tc_pr(cell):
+            tc_pr = cell.find(w_ns + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(w_ns + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        first_row_cells = rows[0].findall(w_ns + "tc")
+        second_row_cells = rows[1].findall(w_ns + "tc")
+        assert_true(len(first_row_cells) == 3 and len(second_row_cells) == 3, "test row cells missing")
+
+        first_pr = ensure_tc_pr(first_row_cells[0])
+        grid_span = first_pr.find(w_ns + "gridSpan")
+        if grid_span is None:
+            grid_span = ET.SubElement(first_pr, w_ns + "gridSpan")
+        grid_span.set(w_ns + "val", "2")
+        vmerge = ET.SubElement(first_pr, w_ns + "vMerge")
+        vmerge.set(w_ns + "val", "restart")
+        rows[0].remove(first_row_cells[1])
+
+        for cell in second_row_cells[:2]:
+            ET.SubElement(ensure_tc_pr(cell), w_ns + "vMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_split_vmerge_continuations)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"split vMerge table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [
+            ["Split 2D block", "", "Score"],
+            ["", "", "1"],
+        ],
+        f"split vMerge continuations should keep a stable grid: {table_item}",
+    )
+    assert_true(
+        table_item.get("table_merges") == [{"row": 0, "col": 0, "rowspan": 2, "colspan": 2}],
+        f"split vMerge continuations should coalesce into one safe 2D merge: {table_item}",
+    )
+
+    result = run_generated_case("parser_split_vmerge_under_gridspan_generated", content, base_format())
+    assert_true(result["report"]["passed"] is True, f"split vMerge repair should pass QA: {result['report']}")
+    counts = result["manifest"].get("counts") or {}
+    assert_true(
+        counts.get("content_table_merges_rendered") == 1,
+        f"split vMerge 2D block should render as one merge operation: {counts}",
+    )
+
+
+@case
+def content_parser_preserves_visible_mixed_gridspan_hmerge_vmerge_continuation_text() -> None:
+    work = new_workdir("parser_visible_mixed_gridspan_hmerge_vmerge")
+    docx = work / "visible_mixed_gridspan_hmerge_vmerge.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=4)
+    table.cell(0, 0).text = "Mixed 2D block"
+    table.cell(0, 1).text = "Duplicate header should stay"
+    table.cell(0, 2).text = "Score"
+    table.cell(0, 3).text = "Note"
+    table.cell(1, 0).text = ""
+    table.cell(1, 1).text = "Visible continuation should stay"
+    table.cell(1, 2).text = "1"
+    table.cell(1, 3).text = "Keep"
+    doc.save(docx)
+
+    def inject_mixed_gridspan_hmerge_vmerge(xml: str) -> str:
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + w_ns + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(w_ns + "tr")
+        assert_true(len(rows) == 2, "test rows missing")
+
+        def ensure_tc_pr(cell):
+            tc_pr = cell.find(w_ns + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(w_ns + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        for row_idx in (0, 1):
+            cells = rows[row_idx].findall(w_ns + "tc")
+            assert_true(len(cells) == 4, "test row cells missing")
+            first_pr = ensure_tc_pr(cells[0])
+            grid_span = first_pr.find(w_ns + "gridSpan")
+            if grid_span is None:
+                grid_span = ET.SubElement(first_pr, w_ns + "gridSpan")
+            grid_span.set(w_ns + "val", "2")
+            hmerge = ET.SubElement(first_pr, w_ns + "hMerge")
+            hmerge.set(w_ns + "val", "restart")
+            vmerge = ET.SubElement(first_pr, w_ns + "vMerge")
+            if row_idx == 0:
+                vmerge.set(w_ns + "val", "restart")
+
+            second_pr = ensure_tc_pr(cells[1])
+            ET.SubElement(second_pr, w_ns + "hMerge")
+            second_vmerge = ET.SubElement(second_pr, w_ns + "vMerge")
+            if row_idx == 0:
+                second_vmerge.set(w_ns + "val", "restart")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_mixed_gridspan_hmerge_vmerge)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"visible mixed continuation table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [
+            ["Mixed 2D block", "", "Duplicate header should stay", "Score", "Note"],
+            ["", "", "Visible continuation should stay", "1", "Keep"],
+        ],
+        f"visible duplicate continuation text should fail open instead of being cleared: {table_item}",
+    )
+    assert_true(
+        table_item.get("table_merges") == [{"row": 0, "col": 0, "rowspan": 2, "colspan": 2}],
+        f"visible duplicate continuation should not add overlapping merge records: {table_item}",
+    )
+
+    result = run_generated_case("parser_visible_mixed_gridspan_hmerge_vmerge_generated", content, base_format())
+    assert_true(result["report"]["passed"] is True, f"visible mixed continuation render should pass QA: {result['report']}")
+    assert_true("Visible continuation should stay" in result["xml"], "generated DOCX lost visible duplicate continuation text")
+
+
+@case
+def content_parser_preserves_image_only_mixed_gridspan_hmerge_vmerge_continuations() -> None:
+    work = new_workdir("parser_image_only_mixed_gridspan_hmerge_vmerge")
+    img = work / "continuation.png"
+    write_sample_png(img, width=96, height=72)
+    docx = work / "image_only_mixed_gridspan_hmerge_vmerge.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=4)
+    table.cell(0, 0).text = "Mixed 2D block"
+    table.cell(0, 1).paragraphs[0].add_run().add_picture(str(img))
+    table.cell(0, 2).text = "Score"
+    table.cell(0, 3).text = "Note"
+    table.cell(1, 0).text = ""
+    table.cell(1, 1).paragraphs[0].add_run().add_picture(str(img))
+    table.cell(1, 2).text = "1"
+    table.cell(1, 3).text = "Keep"
+    doc.save(docx)
+
+    def inject_mixed_gridspan_hmerge_vmerge(xml: str) -> str:
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + w_ns + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(w_ns + "tr")
+        assert_true(len(rows) == 2, "test rows missing")
+
+        def ensure_tc_pr(cell):
+            tc_pr = cell.find(w_ns + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(w_ns + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        for row_idx in (0, 1):
+            cells = rows[row_idx].findall(w_ns + "tc")
+            assert_true(len(cells) == 4, "test row cells missing")
+            first_pr = ensure_tc_pr(cells[0])
+            grid_span = first_pr.find(w_ns + "gridSpan")
+            if grid_span is None:
+                grid_span = ET.SubElement(first_pr, w_ns + "gridSpan")
+            grid_span.set(w_ns + "val", "2")
+            hmerge = ET.SubElement(first_pr, w_ns + "hMerge")
+            hmerge.set(w_ns + "val", "restart")
+            vmerge = ET.SubElement(first_pr, w_ns + "vMerge")
+            if row_idx == 0:
+                vmerge.set(w_ns + "val", "restart")
+
+            second_pr = ensure_tc_pr(cells[1])
+            ET.SubElement(second_pr, w_ns + "hMerge")
+            second_vmerge = ET.SubElement(second_pr, w_ns + "vMerge")
+            if row_idx == 0:
+                second_vmerge.set(w_ns + "val", "restart")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_mixed_gridspan_hmerge_vmerge)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"image-only mixed continuation table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [
+            ["Mixed 2D block", "", "", "Score", "Note"],
+            ["", "", "", "1", "Keep"],
+        ],
+        f"image-only duplicate continuation should keep a stable visible grid slot: {table_item}",
+    )
+    cell_images = [
+        item
+        for entry in table_item.get("table_cell_items") or []
+        if entry.get("col") == 2
+        for item in entry.get("items") or []
+        if isinstance(item, dict) and item.get("role") == "image"
+    ]
+    assert_true(len(cell_images) == 2, f"image-only duplicate continuations were not attached to their cells: {table_item}")
+    assert_true(
+        table_item.get("table_merges") == [{"row": 0, "col": 0, "rowspan": 2, "colspan": 2}],
+        f"image-only duplicate continuations should not add overlapping merge records: {table_item}",
+    )
+
+    result = run_generated_case("parser_image_only_mixed_gridspan_hmerge_vmerge_generated", content, base_format())
+    assert_true(result["report"]["passed"] is True, f"image-only mixed continuation render should pass QA: {result['report']}")
+    assert_true(result["manifest"]["counts"].get("content_images_rendered") == 2, f"duplicate continuation images were not rendered: {result['manifest']}")
+    table_xmls = re.findall(r"<w:tbl\b.*?</w:tbl>", result["xml"], flags=re.S)
+    table_drawings = sum(xml.count("<w:drawing>") for xml in table_xmls)
+    assert_true(table_drawings == 2, "image-only duplicate continuation images rendered outside the generated table")
+
+
+@case
 def content_parser_repairs_orphan_vmerge_without_losing_text() -> None:
     work = new_workdir("parser_orphan_vmerge_repair")
     docx = work / "orphan_vmerge.docx"
@@ -952,6 +1603,155 @@ def content_parser_repairs_mismatched_vmerge_span_without_losing_text() -> None:
 
 
 @case
+def content_parser_preserves_rich_vmerge_continuation_as_visible_cell() -> None:
+    work = new_workdir("parser_rich_vmerge_continuation")
+    img = work / "vmerge_continuation.png"
+    write_sample_png(img, width=128, height=96)
+    docx = work / "rich_vmerge_continuation.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Vertical start"
+    table.cell(0, 1).text = "Top right"
+    para = table.cell(1, 0).paragraphs[0]
+    para.add_run().add_picture(str(img))
+    para.add_run(r"$x=1$")
+    table.cell(1, 1).text = "Bottom right"
+    doc.save(docx)
+
+    def inject_visible_vmerge_continue(xml: str) -> str:
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + w_ns + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(w_ns + "tr")
+        assert_true(len(rows) == 2, "test rows missing")
+        first_row_cells = rows[0].findall(w_ns + "tc")
+        second_row_cells = rows[1].findall(w_ns + "tc")
+        assert_true(len(first_row_cells) == 2 and len(second_row_cells) == 2, "test row cells missing")
+
+        def ensure_tc_pr(cell):
+            tc_pr = cell.find(w_ns + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(w_ns + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        restart = ET.SubElement(ensure_tc_pr(first_row_cells[0]), w_ns + "vMerge")
+        restart.set(w_ns + "val", "restart")
+        ET.SubElement(ensure_tc_pr(second_row_cells[0]), w_ns + "vMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_visible_vmerge_continue)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"rich vMerge-continuation table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [
+            ["Vertical start", "Top right"],
+            [r"$x=1$", "Bottom right"],
+        ],
+        f"rich vMerge continuation should fail open as a visible cell: {table_item}",
+    )
+    assert_true(
+        not any(int(merge.get("rowspan") or 1) > 1 for merge in table_item.get("table_merges") or []),
+        f"visible rich vMerge continuation should not be hidden behind a vertical merge: {table_item}",
+    )
+    cell_items = table_item.get("table_cell_items") or []
+    image_item = next(
+        (
+            item
+            for entry in cell_items
+            if entry.get("row") == 1 and entry.get("col") == 0
+            for item in entry.get("items") or []
+            if isinstance(item, dict) and item.get("role") == "image"
+        ),
+        None,
+    )
+    rich_item = next(
+        (
+            item
+            for entry in cell_items
+            if entry.get("row") == 1 and entry.get("col") == 0
+            for item in entry.get("items") or []
+            if isinstance(item, dict) and item.get("role") == "rich_text"
+        ),
+        None,
+    )
+    assert_true(image_item, f"rich vMerge continuation image was not attached to the visible cell: {table_item}")
+    assert_true(rich_item, f"rich vMerge continuation formula was not attached to the visible cell: {table_item}")
+
+    result = run_generated_case("parser_rich_vmerge_continuation_generated", content, base_format())
+    assert_true(result["report"]["passed"] is True, f"rich vMerge continuation render should pass QA: {result['report']}")
+    assert_true(result["manifest"]["counts"].get("content_images_rendered") == 1, f"continuation image was not rendered: {result['manifest']}")
+    assert_true(omath_count(result["xml"]) >= 1, "continuation formula did not render as native Word math")
+
+
+@case
+def content_parser_preserves_plain_vmerge_continuation_text_as_visible_cell() -> None:
+    work = new_workdir("parser_plain_vmerge_continuation")
+    docx = work / "plain_vmerge_continuation.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Vertical start"
+    table.cell(0, 1).text = "Top right"
+    table.cell(1, 0).text = "Plain continuation should stay visible"
+    table.cell(1, 1).text = "Bottom right"
+    doc.save(docx)
+
+    def inject_visible_vmerge_continue(xml: str) -> str:
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + w_ns + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(w_ns + "tr")
+        assert_true(len(rows) == 2, "test rows missing")
+        first_row_cells = rows[0].findall(w_ns + "tc")
+        second_row_cells = rows[1].findall(w_ns + "tc")
+        assert_true(len(first_row_cells) == 2 and len(second_row_cells) == 2, "test row cells missing")
+
+        def ensure_tc_pr(cell):
+            tc_pr = cell.find(w_ns + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(w_ns + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        restart = ET.SubElement(ensure_tc_pr(first_row_cells[0]), w_ns + "vMerge")
+        restart.set(w_ns + "val", "restart")
+        ET.SubElement(ensure_tc_pr(second_row_cells[0]), w_ns + "vMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_visible_vmerge_continue)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"plain vMerge-continuation table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [
+            ["Vertical start", "Top right"],
+            ["Plain continuation should stay visible", "Bottom right"],
+        ],
+        f"plain vMerge continuation text should fail open as a visible cell: {table_item}",
+    )
+    assert_true(
+        not any(int(merge.get("rowspan") or 1) > 1 for merge in table_item.get("table_merges") or []),
+        f"plain vMerge continuation text should not be hidden behind a vertical merge: {table_item}",
+    )
+
+    result = run_generated_case("parser_plain_vmerge_continuation_generated", content, base_format())
+    assert_true(
+        "Plain continuation should stay visible" in result["xml"],
+        "generated DOCX lost plain vMerge continuation text",
+    )
+    assert_true(result["report"]["passed"] is True, f"plain vMerge continuation render should pass QA: {result['report']}")
+
+
+@case
 def content_parser_preserves_grid_before_vmerge_cells() -> None:
     work = new_workdir("parser_grid_before_vmerge")
     docx = work / "grid_before_vmerge.docx"
@@ -998,12 +1798,12 @@ def content_parser_preserves_grid_before_vmerge_cells() -> None:
     assert_true(len(table_items) == 1, f"gridBefore table was not preserved as a table: {items}")
     table_item = table_items[0]
     assert_true(
-        table_item.get("table_rows") == [["Left", "Vertical start"], ["", ""]],
-        f"gridBefore row offset was not preserved: {table_item}",
+        table_item.get("table_rows") == [["Left", "Vertical start"], ["", "Vertical continue"]],
+        f"gridBefore row offset or visible continuation text was not preserved: {table_item}",
     )
     assert_true(
-        {"row": 0, "col": 1, "rowspan": 2, "colspan": 1} in (table_item.get("table_merges") or []),
-        f"gridBefore vertical merge was not captured: {table_item}",
+        not any(int(merge.get("rowspan") or 1) > 1 for merge in table_item.get("table_merges") or []),
+        f"gridBefore vMerge continuation text should fail open instead of being hidden behind a vertical merge: {table_item}",
     )
     assert_true(
         table_item.get("table_row_grid_before") == [0, 1],
@@ -1024,7 +1824,660 @@ def content_parser_preserves_grid_before_vmerge_cells() -> None:
         len(second_row_cells) == 1,
         "generated gridBefore row should omit the leading cell instead of rendering a visible empty cell",
     )
+    assert_true("Vertical continue" in result["xml"], "generated gridBefore table lost visible vMerge continuation text")
     assert_true(result["report"]["passed"] is True, f"gridBefore vMerge render should pass QA: {result['report']}")
+
+
+@case
+def script_generator_does_not_delete_media_in_grid_before_omission_zone() -> None:
+    work = new_workdir("generator_grid_before_media_guard")
+    image = work / "omission_zone.png"
+    write_sample_png(image, width=96, height=72)
+    content = base_content(
+        [
+            {
+                "role": "table",
+                "table_rows": [["Header", "Value"], ["", "Visible cell"]],
+                "table_row_grid_before": [0, 1],
+                "table_cell_items": [
+                    {
+                        "row": 1,
+                        "col": 0,
+                        "items": [
+                            {"role": "image", "image": image.name},
+                            {
+                                "role": "rich_text",
+                                "runs": [
+                                    {
+                                        "type": "math",
+                                        "math": [{"type": "inline", "latex": "x=1", "text": "x=1"}],
+                                    }
+                                ],
+                                "math": [{"type": "inline", "latex": "x=1", "text": "x=1"}],
+                            },
+                        ],
+                    }
+                ],
+            }
+        ],
+        meta_tables=1,
+    )
+    content["_meta"]["images_dir"] = str(work)
+
+    result = run_generated_case("generator_grid_before_media_guard_generated", content, base_format())
+    root = etree.fromstring(result["xml"].encode("utf-8"))
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    tables = root.xpath(".//w:tbl[.//w:t='Header']", namespaces=ns)
+    assert_true(len(tables) == 1, f"generated table missing or duplicated: {len(tables)}")
+    rows = tables[0].xpath("./w:tr", namespaces=ns)
+    assert_true(len(rows) == 2, f"generated table should have two rows: {len(rows)}")
+    second_row_drawings = rows[1].xpath(".//w:drawing", namespaces=ns)
+    assert_true(second_row_drawings, "gridBefore omission restoration deleted visible media from the omitted grid zone")
+    assert_true(omath_count(result["xml"]) >= 1, "gridBefore omission restoration deleted a visible formula from the omitted grid zone")
+    second_grid_before = rows[1].xpath("./w:trPr/w:gridBefore/@w:val", namespaces=ns)
+    assert_true(
+        second_grid_before == [],
+        "row omission should not be restored when the omitted grid zone carries media",
+    )
+    counts = result["manifest"]["counts"]
+    assert_true(counts.get("content_images_rendered") == 1, f"omitted-zone image was not rendered: {counts}")
+    assert_true(counts.get("inline_formulas_rendered") == 1, f"omitted-zone formula was not rendered: {counts}")
+    assert_true(
+        counts.get("content_table_grid_before_media_guard_rows_skipped") == 1,
+        f"gridBefore media guard did not record the protected row: {counts}",
+    )
+
+
+@case
+def script_generator_preserves_nested_formula_in_grid_before_omission_zone() -> None:
+    content = base_content(
+        [
+            {
+                "role": "table",
+                "table_rows": [["Header", "Value"], ["", "Visible cell"]],
+                "table_row_grid_before": [0, 1],
+                "table_cell_items": [
+                    {
+                        "row": 1,
+                        "col": 0,
+                        "items": [
+                            {
+                                "role": "table",
+                                "table_rows": [["Nested head"], ["Nested formula cell"]],
+                                "table_cell_items": [
+                                    {
+                                        "row": 1,
+                                        "col": 0,
+                                        "items": [
+                                            {"role": "formula", "latex": "z=1", "text": "z=1"},
+                                        ],
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        meta_tables=1,
+    )
+
+    result = run_generated_case("generator_grid_before_nested_formula_guard_generated", content, base_format())
+    root = etree.fromstring(result["xml"].encode("utf-8"))
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    tables = root.xpath(".//w:tbl[.//w:t='Header']", namespaces=ns)
+    assert_true(len(tables) == 1, f"outer table missing or duplicated: {len(tables)}")
+    rows = tables[0].xpath("./w:tr", namespaces=ns)
+    second_grid_before = rows[1].xpath("./w:trPr/w:gridBefore/@w:val", namespaces=ns)
+    assert_true(second_grid_before == [], "row omission should not be restored when omitted zone carries a nested table")
+    assert_true("Nested formula cell" in result["xml"], "nested table text in omitted grid zone was dropped")
+    assert_true(omath_count(result["xml"]) >= 1, "nested direct formula in omitted grid zone did not render as native math")
+    counts = result["manifest"]["counts"]
+    assert_true(counts.get("content_nested_tables_rendered", 0) >= 1, f"nested table render count missing: {counts}")
+    assert_true(counts.get("inline_formulas_rendered", 0) >= 1, f"nested direct formula render count missing: {counts}")
+    assert_true(
+        counts.get("content_table_grid_before_media_guard_rows_skipped") == 1,
+        f"gridBefore guard did not record the nested-table protected row: {counts}",
+    )
+    assert_true(result["report"]["passed"] is True, f"nested direct formula row-omission render should pass QA: {result['report']}")
+
+
+@case
+def script_generator_does_not_delete_media_in_grid_after_omission_zone() -> None:
+    work = new_workdir("generator_grid_after_media_guard")
+    image = work / "tail_omission_zone.png"
+    write_sample_png(image, width=96, height=72)
+    content = base_content(
+        [
+            {
+                "role": "table",
+                "table_rows": [["Header", "Value"], ["Visible cell", ""]],
+                "table_row_grid_after": [0, 1],
+                "table_cell_items": [
+                    {
+                        "row": 1,
+                        "col": 1,
+                        "items": [
+                            {"role": "image", "image": image.name},
+                            {
+                                "role": "rich_text",
+                                "runs": [
+                                    {
+                                        "type": "math",
+                                        "math": [{"type": "inline", "latex": "y=1", "text": "y=1"}],
+                                    }
+                                ],
+                                "math": [{"type": "inline", "latex": "y=1", "text": "y=1"}],
+                            },
+                        ],
+                    }
+                ],
+            }
+        ],
+        meta_tables=1,
+    )
+    content["_meta"]["images_dir"] = str(work)
+
+    result = run_generated_case("generator_grid_after_media_guard_generated", content, base_format())
+    root = etree.fromstring(result["xml"].encode("utf-8"))
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    tables = root.xpath(".//w:tbl[.//w:t='Header']", namespaces=ns)
+    assert_true(len(tables) == 1, f"generated table missing or duplicated: {len(tables)}")
+    rows = tables[0].xpath("./w:tr", namespaces=ns)
+    assert_true(len(rows) == 2, f"generated table should have two rows: {len(rows)}")
+    second_row_drawings = rows[1].xpath(".//w:drawing", namespaces=ns)
+    assert_true(second_row_drawings, "gridAfter omission restoration deleted visible media from the omitted grid zone")
+    assert_true(omath_count(result["xml"]) >= 1, "gridAfter omission restoration deleted a visible formula from the omitted grid zone")
+    second_grid_after = rows[1].xpath("./w:trPr/w:gridAfter/@w:val", namespaces=ns)
+    assert_true(
+        second_grid_after == [],
+        "row omission should not be restored when the trailing omitted grid zone carries media",
+    )
+    counts = result["manifest"]["counts"]
+    assert_true(counts.get("content_images_rendered") == 1, f"omitted-zone image was not rendered: {counts}")
+    assert_true(counts.get("inline_formulas_rendered") == 1, f"omitted-zone formula was not rendered: {counts}")
+    assert_true(
+        counts.get("content_table_grid_after_media_guard_rows_skipped") == 1,
+        f"gridAfter media guard did not record the protected row: {counts}",
+    )
+
+
+@case
+def script_generator_renders_rich_text_image_run_in_grid_after_omission_zone() -> None:
+    work = new_workdir("generator_grid_after_rich_image_run_guard")
+    image = work / "rich_run_tail.png"
+    write_sample_png(image, width=96, height=72)
+    note_text = "Rich image-run omitted-zone note must stay attached to the table cell."
+    content = base_content(
+        [
+            {
+                "role": "table",
+                "table_rows": [["Header", "Value"], ["Visible cell", ""]],
+                "table_row_grid_after": [0, 1],
+                "table_cell_items": [
+                    {
+                        "row": 1,
+                        "col": 1,
+                        "items": [
+                            {
+                                "role": "rich_text",
+                                "runs": [
+                                    {"type": "text", "text": "Tail rich lead "},
+                                    {"type": "image", "image": image.name},
+                                    {"type": "text", "text": " formula "},
+                                    {
+                                        "type": "math",
+                                        "math": [{"type": "inline", "latex": "r=1", "text": "r=1"}],
+                                    },
+                                    {
+                                        "type": "note_ref",
+                                        "note_type": "footnote",
+                                        "source_id": "52",
+                                        "text": note_text,
+                                    },
+                                ],
+                                "notes": [
+                                    {
+                                        "type": "footnote",
+                                        "source_id": "52",
+                                        "text": note_text,
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        meta_tables=1,
+    )
+    content["_meta"]["images_dir"] = str(work)
+    content["_meta"]["footnote_references_extracted"] = 1
+    content["_meta"]["footnote_definitions_extracted"] = 1
+
+    result = run_generated_case("generator_grid_after_rich_image_run_guard_generated", content, base_format())
+    root = etree.fromstring(result["xml"].encode("utf-8"))
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    tables = root.xpath(".//w:tbl[.//w:t='Header']", namespaces=ns)
+    assert_true(len(tables) == 1, f"generated table missing or duplicated: {len(tables)}")
+    rows = tables[0].xpath("./w:tr", namespaces=ns)
+    second_grid_after = rows[1].xpath("./w:trPr/w:gridAfter/@w:val", namespaces=ns)
+    assert_true(second_grid_after == [], "row omission should not be restored when omitted zone carries rich image runs")
+    assert_true(rows[1].xpath(".//w:drawing", namespaces=ns), "rich-text image run in omitted grid zone was dropped")
+    assert_true(omath_count(result["xml"]) >= 1, "rich-text formula run in omitted grid zone did not render as native math")
+    assert_true("<w:footnoteReference" in result["xml"], "rich-text note run in omitted grid zone did not render natively")
+    counts = result["manifest"]["counts"]
+    assert_true(counts.get("content_images_rendered") == 1, f"rich image run was not rendered: {counts}")
+    assert_true(counts.get("inline_formulas_rendered", 0) >= 1, f"rich formula run render count missing: {counts}")
+    assert_true(counts.get("footnote_references_rendered") == 1, f"rich note run render count missing: {counts}")
+    assert_true(
+        counts.get("content_table_grid_after_media_guard_rows_skipped") == 1,
+        f"gridAfter guard did not record the rich-image protected row: {counts}",
+    )
+    assert_true(result["report"]["passed"] is True, f"rich image-run row-omission render should pass QA: {result['report']}")
+
+
+@case
+def script_generator_renders_rich_text_note_item_in_grid_after_omission_zone() -> None:
+    note_text = "Nested rich note item in an omitted grid zone must render natively."
+    content = base_content(
+        [
+            {
+                "role": "table",
+                "table_rows": [["Header", "Value"], ["Visible cell", ""]],
+                "table_row_grid_after": [0, 1],
+                "table_cell_items": [
+                    {
+                        "row": 1,
+                        "col": 1,
+                        "items": [
+                            {
+                                "role": "rich_text",
+                                "items": [
+                                    {
+                                        "role": "note_ref",
+                                        "type": "note_ref",
+                                        "note_type": "footnote",
+                                        "source_id": "53",
+                                        "text": note_text,
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        meta_tables=1,
+    )
+    content["_meta"]["footnote_references_extracted"] = 1
+    content["_meta"]["footnote_definitions_extracted"] = 1
+
+    result = run_generated_case("generator_grid_after_rich_note_item_guard_generated", content, base_format())
+    root = etree.fromstring(result["xml"].encode("utf-8"))
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    tables = root.xpath(".//w:tbl[.//w:t='Header']", namespaces=ns)
+    assert_true(len(tables) == 1, f"generated table missing or duplicated: {len(tables)}")
+    rows = tables[0].xpath("./w:tr", namespaces=ns)
+    second_grid_after = rows[1].xpath("./w:trPr/w:gridAfter/@w:val", namespaces=ns)
+    assert_true(second_grid_after == [], "row omission should not be restored when omitted zone carries rich note items")
+    assert_true("<w:footnoteReference" in result["xml"], "rich-text nested note item in omitted grid zone did not render natively")
+    counts = result["manifest"]["counts"]
+    assert_true(counts.get("footnote_references_rendered") == 1, f"rich nested note item render count missing: {counts}")
+    assert_true(
+        counts.get("content_table_grid_after_media_guard_rows_skipped") == 1,
+        f"gridAfter guard did not record the rich-note protected row: {counts}",
+    )
+    assert_true(result["report"]["passed"] is True, f"rich note-item row-omission render should pass QA: {result['report']}")
+
+
+@case
+def script_generator_records_text_guard_for_row_omission_zones() -> None:
+    content = base_content(
+        [
+            {
+                "role": "table",
+                "table_rows": [["Before header", "Value"], ["Leading omitted text must stay", "Visible cell"]],
+                "table_row_grid_before": [0, 1],
+            },
+            {
+                "role": "table",
+                "table_rows": [["After header", "Value"], ["Visible cell", "Trailing omitted text must stay"]],
+                "table_row_grid_after": [0, 1],
+            },
+        ],
+        meta_tables=2,
+    )
+
+    result = run_generated_case("generator_row_omission_text_guard_generated", content, base_format())
+    root = etree.fromstring(result["xml"].encode("utf-8"))
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    before_tables = root.xpath(".//w:tbl[.//w:t='Before header']", namespaces=ns)
+    after_tables = root.xpath(".//w:tbl[.//w:t='After header']", namespaces=ns)
+    assert_true(len(before_tables) == 1, f"gridBefore text-guard table missing: {len(before_tables)}")
+    assert_true(len(after_tables) == 1, f"gridAfter text-guard table missing: {len(after_tables)}")
+    before_rows = before_tables[0].xpath("./w:tr", namespaces=ns)
+    after_rows = after_tables[0].xpath("./w:tr", namespaces=ns)
+    assert_true("Leading omitted text must stay" in result["xml"], "gridBefore text guard lost visible source text")
+    assert_true("Trailing omitted text must stay" in result["xml"], "gridAfter text guard lost visible source text")
+    before_grid = before_rows[1].xpath("./w:trPr/w:gridBefore/@w:val", namespaces=ns)
+    after_grid = after_rows[1].xpath("./w:trPr/w:gridAfter/@w:val", namespaces=ns)
+    assert_true(before_grid == [], "row omission should not be restored when leading omitted zone carries text")
+    assert_true(after_grid == [], "row omission should not be restored when trailing omitted zone carries text")
+    counts = result["manifest"]["counts"]
+    assert_true(
+        counts.get("content_table_grid_before_text_guard_rows_skipped") == 1,
+        f"gridBefore text guard did not record the protected row: {counts}",
+    )
+    assert_true(
+        counts.get("content_table_grid_after_text_guard_rows_skipped") == 1,
+        f"gridAfter text guard did not record the protected row: {counts}",
+    )
+    assert_true(result["report"]["passed"] is True, f"text row-omission render should pass QA: {result['report']}")
+
+
+@case
+def script_generator_preserves_math_list_formula_in_grid_after_omission_zone() -> None:
+    content = base_content(
+        [
+            {
+                "role": "table",
+                "table_rows": [["Header", "Value"], ["Visible cell", ""]],
+                "table_row_grid_after": [0, 1],
+                "table_cell_items": [
+                    {
+                        "row": 1,
+                        "col": 1,
+                        "items": [
+                            {
+                                "text": "q=1",
+                                "math": [{"type": "inline", "latex": "q=1", "text": "q=1"}],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        meta_tables=1,
+    )
+
+    result = run_generated_case("generator_grid_after_math_list_guard_generated", content, base_format())
+    root = etree.fromstring(result["xml"].encode("utf-8"))
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    tables = root.xpath(".//w:tbl[.//w:t='Header']", namespaces=ns)
+    assert_true(len(tables) == 1, f"generated table missing or duplicated: {len(tables)}")
+    rows = tables[0].xpath("./w:tr", namespaces=ns)
+    second_grid_after = rows[1].xpath("./w:trPr/w:gridAfter/@w:val", namespaces=ns)
+    assert_true(second_grid_after == [], "row omission should not be restored when omitted zone carries a math list")
+    assert_true(omath_count(result["xml"]) >= 1, "math-list formula in omitted grid zone did not render as native math")
+    counts = result["manifest"]["counts"]
+    assert_true(counts.get("inline_formulas_rendered", 0) >= 1, f"math-list formula render count missing: {counts}")
+    assert_true(
+        counts.get("content_table_grid_after_media_guard_rows_skipped") == 1,
+        f"gridAfter guard did not record the math-list protected row: {counts}",
+    )
+    assert_true(result["report"]["passed"] is True, f"math-list row-omission render should pass QA: {result['report']}")
+
+
+@case
+def script_generator_preserves_note_only_in_grid_after_omission_zone() -> None:
+    note_text = "Trailing omitted-zone endnote must stay attached to the table cell."
+    content = base_content(
+        [
+            {
+                "role": "table",
+                "table_rows": [["Header", "Value"], ["Visible cell", ""]],
+                "table_row_grid_after": [0, 1],
+                "table_cell_items": [
+                    {
+                        "row": 1,
+                        "col": 1,
+                        "items": [
+                            {
+                                "role": "rich_text",
+                                "location": "table_cell",
+                                "replace_paragraph_index": 0,
+                                "runs": [
+                                    {
+                                        "type": "note_ref",
+                                        "note_type": "endnote",
+                                        "source_id": "42",
+                                        "text": note_text,
+                                    }
+                                ],
+                                "notes": [
+                                    {
+                                        "type": "endnote",
+                                        "source_id": "42",
+                                        "text": note_text,
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        meta_tables=1,
+    )
+    content["_meta"]["endnote_references_extracted"] = 1
+    content["_meta"]["endnote_definitions_extracted"] = 1
+
+    result = run_generated_case("generator_grid_after_note_only_guard_generated", content, base_format())
+    root = etree.fromstring(result["xml"].encode("utf-8"))
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    tables = root.xpath(".//w:tbl[.//w:t='Header']", namespaces=ns)
+    assert_true(len(tables) == 1, f"generated table missing or duplicated: {len(tables)}")
+    rows = tables[0].xpath("./w:tr", namespaces=ns)
+    second_grid_after = rows[1].xpath("./w:trPr/w:gridAfter/@w:val", namespaces=ns)
+    assert_true(second_grid_after == [], "row omission should not be restored when omitted zone carries only a note")
+    assert_true("<w:endnoteReference" in result["xml"], "note-only omitted grid zone did not render as native endnote")
+    counts = result["manifest"]["counts"]
+    assert_true(counts.get("endnote_references_rendered") == 1, f"endnote reference count missing: {counts}")
+    assert_true(
+        counts.get("content_table_grid_after_media_guard_rows_skipped") == 1,
+        f"gridAfter guard did not record the note-only protected row: {counts}",
+    )
+    assert_true(result["report"]["passed"] is True, f"note-only row-omission render should pass QA: {result['report']}")
+
+
+@case
+def script_generator_renders_direct_note_ref_in_grid_before_omission_zone() -> None:
+    note_text = "Leading omitted-zone footnote must render from a direct note item."
+    content = base_content(
+        [
+            {
+                "role": "table",
+                "table_rows": [["Header", "Value"], ["", "Visible cell"]],
+                "table_row_grid_before": [0, 1],
+                "table_cell_items": [
+                    {
+                        "row": 1,
+                        "col": 0,
+                        "items": [
+                            {
+                                "role": "note_ref",
+                                "type": "note_ref",
+                                "note_type": "footnote",
+                                "source_id": "31",
+                                "text": note_text,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        meta_tables=1,
+    )
+    content["_meta"]["footnote_references_extracted"] = 1
+    content["_meta"]["footnote_definitions_extracted"] = 1
+
+    result = run_generated_case("generator_grid_before_direct_note_guard_generated", content, base_format())
+    root = etree.fromstring(result["xml"].encode("utf-8"))
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    tables = root.xpath(".//w:tbl[.//w:t='Header']", namespaces=ns)
+    assert_true(len(tables) == 1, f"generated table missing or duplicated: {len(tables)}")
+    rows = tables[0].xpath("./w:tr", namespaces=ns)
+    second_grid_before = rows[1].xpath("./w:trPr/w:gridBefore/@w:val", namespaces=ns)
+    assert_true(second_grid_before == [], "row omission should not be restored when omitted zone carries a direct note")
+    assert_true("<w:footnoteReference" in result["xml"], "direct note item in omitted grid zone did not render natively")
+    counts = result["manifest"]["counts"]
+    assert_true(counts.get("footnote_references_rendered") == 1, f"footnote reference count missing: {counts}")
+    assert_true(
+        counts.get("content_table_grid_before_media_guard_rows_skipped") == 1,
+        f"gridBefore guard did not record the direct-note protected row: {counts}",
+    )
+    assert_true(result["report"]["passed"] is True, f"direct-note row-omission render should pass QA: {result['report']}")
+
+
+@case
+def content_parser_repairs_grid_before_mismatched_2d_merge_without_fake_vertical_merge() -> None:
+    work = new_workdir("parser_grid_before_mismatched_2d_merge")
+    docx = work / "grid_before_mismatched_2d_merge.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=3)
+    table.cell(0, 0).text = "Merged header"
+    table.cell(0, 1).text = "Header continuation"
+    table.cell(0, 2).text = "Right header"
+    table.cell(1, 0).text = "Omitted lead"
+    table.cell(1, 1).text = "Visible continuation must stay"
+    table.cell(1, 2).text = "Right body"
+    doc.save(docx)
+
+    def rewrite(xml: str) -> str:
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + w_ns + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(w_ns + "tr")
+        assert_true(len(rows) == 2, "test rows missing")
+        first_cells = rows[0].findall(w_ns + "tc")
+        second_cells = rows[1].findall(w_ns + "tc")
+        assert_true(len(first_cells) == 3 and len(second_cells) == 3, "test cell grid changed")
+
+        def ensure_tc_pr(cell):
+            tc_pr = cell.find(w_ns + "tcPr")
+            if tc_pr is None:
+                tc_pr = ET.Element(w_ns + "tcPr")
+                cell.insert(0, tc_pr)
+            return tc_pr
+
+        first_pr = ensure_tc_pr(first_cells[0])
+        grid_span = first_pr.find(w_ns + "gridSpan")
+        if grid_span is None:
+            grid_span = ET.SubElement(first_pr, w_ns + "gridSpan")
+        grid_span.set(w_ns + "val", "2")
+        hmerge = ET.SubElement(first_pr, w_ns + "hMerge")
+        hmerge.set(w_ns + "val", "restart")
+        vmerge = ET.SubElement(first_pr, w_ns + "vMerge")
+        vmerge.set(w_ns + "val", "restart")
+        rows[0].remove(first_cells[1])
+
+        rows[1].remove(second_cells[0])
+        tr_pr = rows[1].find(w_ns + "trPr")
+        if tr_pr is None:
+            tr_pr = ET.Element(w_ns + "trPr")
+            rows[1].insert(0, tr_pr)
+        grid_before = ET.SubElement(tr_pr, w_ns + "gridBefore")
+        grid_before.set(w_ns + "val", "1")
+        ET.SubElement(ensure_tc_pr(second_cells[1]), w_ns + "vMerge")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", rewrite)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"mismatched gridBefore 2D merge table was not preserved: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows")
+        == [["Merged header", "", "Right header"], ["", "Visible continuation must stay", "Right body"]],
+        f"mismatched gridBefore 2D merge did not preserve visible grid/text: {table_item}",
+    )
+    assert_true(
+        table_item.get("table_merges") == [{"row": 0, "col": 0, "rowspan": 1, "colspan": 2}],
+        f"mismatched gridBefore 2D merge should keep only the safe horizontal merge: {table_item}",
+    )
+    assert_true(
+        table_item.get("table_row_grid_before") == [0, 1],
+        f"mismatched gridBefore row omission metadata was not preserved: {table_item}",
+    )
+
+    result = run_generated_case("parser_grid_before_mismatched_2d_merge_generated", content, base_format())
+    counts = result["manifest"].get("counts", {})
+    assert_true(
+        counts.get("content_table_merges_rendered") == 1,
+        f"mismatched gridBefore 2D repair should render only one safe merge operation: {counts}",
+    )
+    assert_true(
+        "Visible continuation must stay" in result["xml"],
+        "generated DOCX lost visible text from mismatched gridBefore vMerge continuation",
+    )
+    assert_true(result["report"]["passed"] is True, f"mismatched gridBefore 2D repair render should pass QA: {result['report']}")
+
+
+@case
+def content_parser_preserves_grid_after_row_omissions() -> None:
+    work = new_workdir("parser_grid_after")
+    docx = work / "grid_after.docx"
+    doc = Document()
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "Left"
+    table.cell(0, 1).text = "Right"
+    table.cell(1, 0).text = "Trailing row"
+    table.cell(1, 1).text = "Omitted tail"
+    doc.save(docx)
+
+    def rewrite(xml: str) -> str:
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        root = ET.fromstring(xml.encode("utf-8"))
+        table_el = root.find(".//" + w_ns + "tbl")
+        assert_true(table_el is not None, "test table missing")
+        rows = table_el.findall(w_ns + "tr")
+        assert_true(len(rows) == 2, "test rows missing")
+        second_row_cells = rows[1].findall(w_ns + "tc")
+        assert_true(len(second_row_cells) == 2, "test second row grid changed")
+        rows[1].remove(second_row_cells[1])
+        tr_pr = rows[1].find(w_ns + "trPr")
+        if tr_pr is None:
+            tr_pr = ET.Element(w_ns + "trPr")
+            rows[1].insert(0, tr_pr)
+        grid_after = ET.SubElement(tr_pr, w_ns + "gridAfter")
+        grid_after.set(w_ns + "val", "1")
+        return ET.tostring(root, encoding="unicode")
+
+    _rewrite_docx_part(docx, "word/document.xml", rewrite)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"gridAfter table was not preserved as a table: {items}")
+    table_item = table_items[0]
+    assert_true(
+        table_item.get("table_rows") == [["Left", "Right"], ["Trailing row", ""]],
+        f"gridAfter row omission did not keep the stable table grid: {table_item}",
+    )
+    assert_true(
+        table_item.get("table_row_grid_after") == [0, 1],
+        f"gridAfter row omission metadata was not preserved: {table_item}",
+    )
+
+    result = run_generated_case("parser_grid_after_generated", content, base_format())
+    root = etree.fromstring(result["xml"].encode("utf-8"))
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    tables = root.xpath(".//w:tbl[.//w:t='Trailing row']", namespaces=ns)
+    assert_true(len(tables) == 1, f"generated gridAfter table missing or duplicated: {len(tables)}")
+    rows = tables[0].xpath("./w:tr", namespaces=ns)
+    assert_true(len(rows) == 2, f"generated gridAfter table should have two rows: {len(rows)}")
+    second_grid_after = rows[1].xpath("./w:trPr/w:gridAfter/@w:val", namespaces=ns)
+    assert_true(second_grid_after == ["1"], f"generated second row did not restore w:gridAfter=1: {result['xml']}")
+    second_row_cells = rows[1].xpath("./w:tc", namespaces=ns)
+    assert_true(
+        len(second_row_cells) == 1,
+        "generated gridAfter row should omit the trailing cell instead of rendering a visible empty cell",
+    )
+    assert_true(result["report"]["passed"] is True, f"gridAfter render should pass QA: {result['report']}")
 
 
 @case
@@ -1181,6 +2634,102 @@ def content_parser_preserves_landscape_section_for_wide_table() -> None:
         f"landscape table section render count missing: {result['manifest']}",
     )
     assert_true(result["report"]["passed"] is True, f"landscape wide table render should pass QA: {result['report']}")
+
+
+@case
+def content_parser_preserves_wrapped_landscape_section_break_for_wide_table() -> None:
+    wrappers = ("sdt", "customXml", "ins")
+
+    def wrap_landscape_section_break(xml: str, wrapper_name: str) -> str:
+        w_ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+        root = etree.fromstring(xml.encode("utf-8"))
+        ns = {"w": w_ns}
+        body = root.xpath(".//w:body", namespaces=ns)[0]
+        break_paragraphs = body.xpath(
+            "./w:p[w:pPr/w:sectPr/w:pgSz[@w:orient='landscape']]",
+            namespaces=ns,
+        )
+        assert_true(len(break_paragraphs) == 1, f"expected one landscape section break paragraph, got {len(break_paragraphs)}")
+        paragraph = break_paragraphs[0]
+        index = body.index(paragraph)
+        body.remove(paragraph)
+
+        if wrapper_name == "sdt":
+            wrapper = etree.Element(f"{{{w_ns}}}sdt")
+            sdt_pr = etree.SubElement(wrapper, f"{{{w_ns}}}sdtPr")
+            tag = etree.SubElement(sdt_pr, f"{{{w_ns}}}tag")
+            tag.set(f"{{{w_ns}}}val", "wrapped-landscape-break")
+            content = etree.SubElement(wrapper, f"{{{w_ns}}}sdtContent")
+            content.append(paragraph)
+        elif wrapper_name == "customXml":
+            wrapper = etree.Element(f"{{{w_ns}}}customXml")
+            wrapper.set(f"{{{w_ns}}}element", "wrappedLandscapeBreak")
+            wrapper.set(f"{{{w_ns}}}uri", "urn:synthetic")
+            wrapper.append(paragraph)
+        else:
+            wrapper = etree.Element(f"{{{w_ns}}}ins")
+            wrapper.set(f"{{{w_ns}}}id", "42")
+            wrapper.set(f"{{{w_ns}}}author", "Synthetic")
+            wrapper.set(f"{{{w_ns}}}date", "2026-01-01T00:00:00Z")
+            wrapper.append(paragraph)
+
+        body.insert(index, wrapper)
+        return etree.tostring(root, encoding="unicode")
+
+    for wrapper_name in wrappers:
+        work = new_workdir(f"parser_wrapped_landscape_section_{wrapper_name}")
+        docx = work / f"wrapped_landscape_section_{wrapper_name}.docx"
+        doc = Document()
+        doc.add_paragraph("1 Wrapped landscape section")
+        landscape = doc.add_section(WD_SECTION.NEW_PAGE)
+        landscape.orientation = WD_ORIENT.LANDSCAPE
+        landscape.page_width, landscape.page_height = landscape.page_height, landscape.page_width
+        table = doc.add_table(rows=2, cols=9)
+        for ci in range(9):
+            table.cell(0, ci).text = f"H{ci + 1}"
+            table.cell(1, ci).text = f"Wrapped wide cell {ci + 1}"
+        portrait = doc.add_section(WD_SECTION.NEW_PAGE)
+        portrait.orientation = WD_ORIENT.PORTRAIT
+        if portrait.page_width > portrait.page_height:
+            portrait.page_width, portrait.page_height = portrait.page_height, portrait.page_width
+        doc.add_paragraph("Back to portrait body")
+        doc.save(docx)
+
+        _rewrite_docx_part(docx, "word/document.xml", lambda xml, name=wrapper_name: wrap_landscape_section_break(xml, name))
+
+        content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+        items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+        table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+        assert_true(len(table_items) == 1, f"{wrapper_name}-wrapped section table was not preserved as a table: {items}")
+        table_item = table_items[0]
+        source_setup = table_item.get("source_section_page_setup") or {}
+        assert_true(
+            source_setup.get("orientation") == "landscape",
+            f"{wrapper_name}-wrapped landscape section setup was not attached to the table: {table_item}",
+        )
+        assert_true(
+            int(source_setup.get("page_width_twips") or 0) > int(source_setup.get("page_height_twips") or 0),
+            f"{wrapper_name}-wrapped landscape page dimensions were not preserved: {source_setup}",
+        )
+
+        result = run_generated_case(f"parser_wrapped_landscape_section_{wrapper_name}_generated", content, base_format())
+        assert_true('w:orient="landscape"' in result["xml"], f"{wrapper_name}-wrapped generated DOCX lost landscape table section")
+        assert_true(
+            result["xml"].count('w:orient="landscape"') == 1,
+            f"{wrapper_name}-wrapped generated DOCX should restore portrait orientation after the landscape table",
+        )
+        assert_true(
+            result["manifest"]["counts"].get("content_landscape_table_sections_rendered", 0) == 1,
+            f"{wrapper_name}-wrapped landscape table section render count missing: {result['manifest']}",
+        )
+        if wrapper_name == "ins":
+            codes = {issue.get("code") for issue in result["report"].get("issues") or []}
+            assert_true(
+                "TRACKED_CHANGES_PRESENT" in codes,
+                f"{wrapper_name}-wrapped generated DOCX should still surface tracked-change review guidance: {result['report']}",
+            )
+        else:
+            assert_true(result["report"]["passed"] is True, f"{wrapper_name}-wrapped landscape render should pass QA: {result['report']}")
 
 
 @case
@@ -1561,6 +3110,387 @@ def content_parser_preserves_four_level_nested_tables_in_cells() -> None:
         f"four nested table render count missing: {result['manifest']}",
     )
     assert_true(result["report"]["passed"] is True, f"four-level nested table render should pass QA: {result['report']}")
+
+
+@case
+def content_parser_preserves_five_level_nested_tables_in_cells() -> None:
+    work = new_workdir("parser_five_level_nested_table_cell")
+    docx = work / "five_level_nested_table_cell.docx"
+    doc = Document()
+    outer = doc.add_table(rows=1, cols=1)
+    host = outer.cell(0, 0)
+    host.text = "Level 0 before"
+    expected_rows = ["Level 0 before\nLevel 0 after"]
+    for depth in range(1, 6):
+        nested = host.add_table(rows=1, cols=1)
+        host = nested.cell(0, 0)
+        text = f"Level {depth} deepest value" if depth == 5 else f"Level {depth} before"
+        host.text = text
+        expected_rows.append(text if depth == 5 else f"Level {depth} before\nLevel {depth} after")
+    for depth in range(4, -1, -1):
+        parent = outer.cell(0, 0)
+        for _ in range(depth):
+            parent = parent.tables[0].cell(0, 0)
+        parent.add_paragraph(f"Level {depth} after")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    assert_true(content.get("_meta", {}).get("tables_count") == 6, f"five-level nested table count missing: {content.get('_meta')}")
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"five-level nested tables should stay inside the outer table cell: {items}")
+
+    current = table_items[0]
+    for depth, expected_text in enumerate(expected_rows):
+        assert_true(
+            current.get("table_rows") == [[expected_text]],
+            f"nested table depth {depth} text changed: {current}",
+        )
+        if depth == len(expected_rows) - 1:
+            break
+        current = next(
+            (
+                item
+                for entry in current.get("table_cell_items") or []
+                if entry.get("row") == 0 and entry.get("col") == 0
+                for item in entry.get("items") or []
+                if isinstance(item, dict) and item.get("role") == "table"
+            ),
+            None,
+        )
+        assert_true(current, f"nested table depth {depth + 1} was not attached to its parent cell")
+
+    result = run_generated_case("parser_five_level_nested_table_cell_generated", content, base_format())
+    assert_true("Level 5 deepest value" in result["xml"], "fifth-level nested table text did not render")
+    assert_true(
+        result["manifest"]["counts"].get("content_nested_tables_rendered", 0) >= 5,
+        f"five nested table render count missing: {result['manifest']}",
+    )
+    assert_true(result["report"]["passed"] is True, f"five-level nested table render should pass QA: {result['report']}")
+
+
+@case
+def content_parser_preserves_six_level_nested_tables_in_cells() -> None:
+    work = new_workdir("parser_six_level_nested_table_cell")
+    docx = work / "six_level_nested_table_cell.docx"
+    doc = Document()
+    outer = doc.add_table(rows=1, cols=1)
+    host = outer.cell(0, 0)
+    host.text = "Level 0 before"
+    expected_rows = ["Level 0 before\nLevel 0 after"]
+    for depth in range(1, 7):
+        nested = host.add_table(rows=1, cols=1)
+        host = nested.cell(0, 0)
+        text = f"Level {depth} deepest value" if depth == 6 else f"Level {depth} before"
+        host.text = text
+        expected_rows.append(text if depth == 6 else f"Level {depth} before\nLevel {depth} after")
+    for depth in range(5, -1, -1):
+        parent = outer.cell(0, 0)
+        for _ in range(depth):
+            parent = parent.tables[0].cell(0, 0)
+        parent.add_paragraph(f"Level {depth} after")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    assert_true(content.get("_meta", {}).get("tables_count") == 7, f"six-level nested table count missing: {content.get('_meta')}")
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"six-level nested tables should stay inside the outer table cell: {items}")
+
+    current = table_items[0]
+    for depth, expected_text in enumerate(expected_rows):
+        assert_true(
+            current.get("table_rows") == [[expected_text]],
+            f"nested table depth {depth} text changed: {current}",
+        )
+        if depth == len(expected_rows) - 1:
+            break
+        current = next(
+            (
+                item
+                for entry in current.get("table_cell_items") or []
+                if entry.get("row") == 0 and entry.get("col") == 0
+                for item in entry.get("items") or []
+                if isinstance(item, dict) and item.get("role") == "table"
+            ),
+            None,
+        )
+        assert_true(current, f"nested table depth {depth + 1} was not attached to its parent cell")
+
+    result = run_generated_case("parser_six_level_nested_table_cell_generated", content, base_format())
+    assert_true("Level 6 deepest value" in result["xml"], "sixth-level nested table text did not render")
+    assert_true(
+        result["manifest"]["counts"].get("content_nested_tables_rendered", 0) >= 6,
+        f"six nested table render count missing: {result['manifest']}",
+    )
+    assert_true(result["report"]["passed"] is True, f"six-level nested table render should pass QA: {result['report']}")
+
+
+@case
+def content_parser_flattens_too_deep_nested_table_text_instead_of_dropping_it() -> None:
+    work = new_workdir("parser_too_deep_nested_table_text")
+    docx = work / "too_deep_nested_table_text.docx"
+    doc = Document()
+    outer = doc.add_table(rows=1, cols=1)
+    host = outer.cell(0, 0)
+    host.text = "Level 0 before"
+    for depth in range(1, 8):
+        nested = host.add_table(rows=1, cols=1)
+        host = nested.cell(0, 0)
+        host.text = "Level 7 beyond limit value" if depth == 7 else f"Level {depth} before"
+    for depth in range(6, -1, -1):
+        parent = outer.cell(0, 0)
+        for _ in range(depth):
+            parent = parent.tables[0].cell(0, 0)
+        parent.add_paragraph(f"Level {depth} after")
+    doc.save(docx)
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+
+    def flatten_table_text(item: Dict[str, Any]) -> str:
+        pieces: List[str] = []
+        for row in item.get("table_rows") or []:
+            pieces.extend(str(cell or "") for cell in row)
+        for entry in item.get("table_cell_items") or []:
+            for child in entry.get("items") or []:
+                if isinstance(child, dict) and child.get("role") == "table":
+                    pieces.append(flatten_table_text(child))
+                elif isinstance(child, dict):
+                    pieces.append(str(child.get("text") or child.get("code") or ""))
+        return "\n".join(part for part in pieces if part)
+
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"too-deep nested table should still have one outer table: {items}")
+    table_text = flatten_table_text(table_items[0])
+    assert_true(
+        "Level 7 beyond limit value" in table_text,
+        f"too-deep nested table text was silently dropped instead of flattened: {table_items[0]}",
+    )
+
+    result = run_generated_case("parser_too_deep_nested_table_text_generated", content, base_format())
+    assert_true("Level 7 beyond limit value" in result["xml"], "too-deep nested table text did not render")
+    assert_true(result["report"]["passed"] is True, f"too-deep nested table flatten render should pass QA: {result['report']}")
+
+
+@case
+def content_parser_flattens_too_deep_nested_table_media_formula_and_note() -> None:
+    work = new_workdir("parser_too_deep_nested_table_media_formula_note")
+    img = work / "too_deep_nested_image.png"
+    write_sample_png(img, width=128, height=96)
+    docx = work / "too_deep_nested_table_media_formula_note.docx"
+    doc = Document()
+    outer = doc.add_table(rows=1, cols=1)
+    host = outer.cell(0, 0)
+    host.text = "Level 0 before"
+    for depth in range(1, 8):
+        nested = host.add_table(rows=1, cols=1)
+        host = nested.cell(0, 0)
+        if depth == 7:
+            host.text = ""
+            para = host.paragraphs[0]
+            para.add_run("TooDeepLead")
+            para.add_run().add_picture(str(img))
+            para.add_run(r"TooDeep formula $a=1$ and ")
+            para._element.append(etree.fromstring(latex_to_omath(r"b=2", display=False).encode("utf-8")))
+            para.add_run(" noted")
+        else:
+            host.text = f"Level {depth} before"
+    for depth in range(6, -1, -1):
+        parent = outer.cell(0, 0)
+        for _ in range(depth):
+            parent = parent.tables[0].cell(0, 0)
+        parent.add_paragraph(f"Level {depth} after")
+    doc.save(docx)
+
+    footnote_text = "Too-deep nested table note must stay visible after flattening."
+
+    def inject_reference(xml: str) -> str:
+        replacements = [
+            (
+                '<w:t xml:space="preserve"> noted</w:t></w:r></w:p>',
+                '<w:t xml:space="preserve"> noted</w:t></w:r><w:r><w:footnoteReference w:id="9"/></w:r></w:p>',
+            ),
+            (
+                "<w:t> noted</w:t></w:r></w:p>",
+                '<w:t> noted</w:t></w:r><w:r><w:footnoteReference w:id="9"/></w:r></w:p>',
+            ),
+        ]
+        for old, new in replacements:
+            if old in xml:
+                return xml.replace(old, new, 1)
+        return xml
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_reference)
+    with zipfile.ZipFile(docx, "a") as zf:
+        zf.writestr(
+            "word/footnotes.xml",
+            (
+                '<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                '<w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote>'
+                '<w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>'
+                f'<w:footnote w:id="9"><w:p><w:r><w:t>{footnote_text}</w:t></w:r></w:p></w:footnote>'
+                "</w:footnotes>"
+            ),
+        )
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"too-deep media nested table should still have one outer table: {items}")
+
+    current = table_items[0]
+    for depth in range(1, 7):
+        current = next(
+            (
+                item
+                for entry in current.get("table_cell_items") or []
+                if entry.get("row") == 0 and entry.get("col") == 0
+                for item in entry.get("items") or []
+                if isinstance(item, dict) and item.get("role") == "table"
+            ),
+            None,
+        )
+        assert_true(current, f"nested table depth {depth} was not attached to its parent cell")
+
+    deepest_cell_items = [
+        item
+        for entry in current.get("table_cell_items") or []
+        if entry.get("row") == 0 and entry.get("col") == 0
+        for item in entry.get("items") or []
+        if isinstance(item, dict)
+    ]
+    image_item = next((item for item in deepest_cell_items if item.get("role") == "image"), None)
+    rich_item = next((item for item in deepest_cell_items if item.get("role") == "rich_text"), None)
+    assert_true(image_item and image_item.get("after_paragraph_index") == 2, f"too-deep image was dropped or misplaced: {current}")
+    assert_true(
+        rich_item and rich_item.get("replace_paragraph_index") == 2,
+        f"too-deep formula/note rich text was dropped or misplaced: {current}",
+    )
+    assert_true(
+        [run.get("type") for run in rich_item.get("runs") or []] == ["text", "math", "text", "math", "text", "note_ref"],
+        f"too-deep formula/note run order changed: {rich_item}",
+    )
+    assert_true((rich_item.get("notes") or [{}])[0].get("text") == footnote_text, f"too-deep note text lost: {rich_item}")
+
+    result = run_generated_case("parser_too_deep_nested_table_media_formula_note_generated", content, base_format())
+    xml = result["xml"]
+    assert_true("$a=1$" not in xml, "too-deep table-cell formula leaked LaTeX delimiters into generated XML")
+    assert_true(omath_count(xml) >= 2, "too-deep table-cell LaTeX/OMML formulas did not render as native math")
+    assert_true(xml.count("<w:drawing>") == 1, f"too-deep table-cell image did not render exactly once: {result['manifest']}")
+    assert_true("<w:footnoteReference" in xml, "too-deep table-cell footnote did not render as native reference")
+    assert_true(
+        xml.find("TooDeepLead") < xml.find("<w:drawing>") < xml.find("TooDeep formula") < xml.find("<w:footnoteReference"),
+        "too-deep table-cell image/formula/footnote source order changed after flattening",
+    )
+    assert_true(result["manifest"]["counts"].get("inline_formulas_rendered", 0) >= 2, f"inline formula count missing: {result['manifest']}")
+    assert_true(result["manifest"]["counts"].get("footnote_references_rendered") == 1, f"footnote count missing: {result['manifest']}")
+    assert_true(result["report"]["passed"] is True, f"too-deep inline image/formula/note render should pass QA: {result['report']}")
+
+
+@case
+def content_parser_flattens_too_deep_multicell_endnote_image_caption_order() -> None:
+    work = new_workdir("parser_too_deep_multicell_endnote_image_caption")
+    img = work / "too_deep_caption_image.png"
+    write_sample_png(img, width=128, height=96)
+    docx = work / "too_deep_multicell_endnote_image_caption.docx"
+    doc = Document()
+    doc.add_paragraph("1 Deep multicell note image")
+    outer = doc.add_table(rows=1, cols=1)
+    host = outer.cell(0, 0)
+    host.text = "Level 0 before"
+    for depth in range(1, 8):
+        nested = host.add_table(rows=1, cols=2 if depth == 7 else 1)
+        if depth == 7:
+            nested.cell(0, 0).paragraphs[0].add_run("NOTE_ANCHOR")
+            image_para = nested.cell(0, 1).paragraphs[0]
+            image_para.add_run().add_picture(str(img))
+            nested.cell(0, 1).add_paragraph("Fig. 7 Over-depth image caption")
+        else:
+            host = nested.cell(0, 0)
+            host.text = f"Level {depth} before"
+    doc.save(docx)
+
+    endnote_text = "Over-depth table endnote must stay before the following image."
+
+    def inject_reference(xml: str) -> str:
+        return xml.replace(
+            "<w:r><w:t>NOTE_ANCHOR</w:t></w:r>",
+            '<w:r><w:endnoteReference w:id="12"/></w:r>',
+            1,
+        )
+
+    _rewrite_docx_part(docx, "word/document.xml", inject_reference)
+    with zipfile.ZipFile(docx, "a") as zf:
+        zf.writestr(
+            "word/endnotes.xml",
+            (
+                '<w:endnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                '<w:endnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:endnote>'
+                '<w:endnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:endnote>'
+                f'<w:endnote w:id="12"><w:p><w:r><w:t>{endnote_text}</w:t></w:r></w:p></w:endnote>'
+                "</w:endnotes>"
+            ),
+        )
+
+    content = extract_docx_content(str(docx), output_dir=str(work / "out"))
+    items = [item for sec in content.get("sections") or [] for item in sec.get("paragraphs") or []]
+    table_items = [item for item in items if isinstance(item, dict) and item.get("role") == "table"]
+    assert_true(len(table_items) == 1, f"too-deep multicell table should still have one outer table: {items}")
+
+    current = table_items[0]
+    for depth in range(1, 7):
+        current = next(
+            (
+                item
+                for entry in current.get("table_cell_items") or []
+                if entry.get("row") == 0 and entry.get("col") == 0
+                for item in entry.get("items") or []
+                if isinstance(item, dict) and item.get("role") == "table"
+            ),
+            None,
+        )
+        assert_true(current, f"nested table depth {depth} was not attached to its parent cell")
+
+    flattened_cell_items = [
+        item
+        for entry in current.get("table_cell_items") or []
+        if entry.get("row") == 0 and entry.get("col") == 0
+        for item in entry.get("items") or []
+        if isinstance(item, dict)
+    ]
+    note_item = next(
+        (
+            item
+            for item in flattened_cell_items
+            if item.get("role") == "rich_text"
+            and any(run.get("type") == "note_ref" and run.get("note_type") == "endnote" for run in item.get("runs") or [])
+        ),
+        None,
+    )
+    image_item = next((item for item in flattened_cell_items if item.get("role") == "image"), None)
+    assert_true(note_item, f"note-only flattened item missing: {current}")
+    assert_true(image_item, f"image flattened item missing: {current}")
+    assert_true(
+        note_item.get("replace_paragraph_index") == image_item.get("after_paragraph_index"),
+        f"note-only/image flattened index collision not reproduced: {current}",
+    )
+    assert_true(
+        flattened_cell_items.index(note_item) < flattened_cell_items.index(image_item),
+        f"flattened multi-cell source order changed before generation: {flattened_cell_items}",
+    )
+
+    result = run_generated_case("too_deep_multicell_endnote_image_caption_render", content, base_format())
+    xml = result["xml"]
+    assert_true("<w:endnoteReference" in xml, "too-deep multi-cell endnote did not render as native reference")
+    assert_true("<w:drawing>" in xml, f"too-deep multi-cell image did not render: {result['manifest']}")
+    assert_true("Fig. 7 Over-depth image caption" in xml, "too-deep multi-cell image caption was dropped during render")
+    assert_true(
+        xml.find("<w:endnoteReference") < xml.find("<w:drawing>") < xml.find("Fig. 7 Over-depth image caption"),
+        "too-deep multi-cell endnote/image/caption source order changed after flattening",
+    )
+    assert_true(result["manifest"]["counts"].get("endnote_references_rendered") == 1, f"endnote count missing: {result['manifest']}")
+    assert_true(result["report"]["passed"] is True, f"too-deep multi-cell endnote/image/caption render should pass QA: {result['report']}")
 
 
 @case

@@ -1,0 +1,6600 @@
+"""AST helpers for detecting unsafe generated-script text decoding."""
+from __future__ import annotations
+
+import ast
+import codecs
+from typing import Callable, Dict, List, Optional, Set, Tuple, Union
+
+DANGEROUS_UNICODE_CODECS = {"unicode-escape", "raw-unicode-escape"}
+
+
+def _normalize_codec_name(name: str) -> str:
+    if not name:
+        return ""
+    try:
+        return codecs.lookup(name).name
+    except LookupError:
+        return name.strip().lower().replace("_", "-").replace(" ", "-")
+
+
+def _is_dangerous_unicode_codec(name: str) -> bool:
+    return _normalize_codec_name(name) in DANGEROUS_UNICODE_CODECS
+
+
+def _codec_label(name: str) -> str:
+    return name or "<dynamic>"
+
+
+def _static_string_value(node: ast.AST, constants: Dict[str, str]) -> Optional[str]:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name):
+        return constants.get(node.id)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _static_string_value(node.left, constants)
+        right = _static_string_value(node.right, constants)
+        if left is not None and right is not None:
+            return left + right
+    if isinstance(node, ast.JoinedStr):
+        parts: List[str] = []
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                parts.append(value.value)
+            elif isinstance(value, ast.FormattedValue):
+                item = _static_string_value(value.value, constants)
+                if item is None:
+                    return None
+                parts.append(item)
+            else:
+                return None
+        return "".join(parts)
+    return None
+
+
+def _string_constant(node: ast.AST, constants: Dict[str, str] | None = None) -> str:
+    value = _static_string_value(node, constants or {})
+    if value is not None:
+        return value
+    return ""
+
+
+def _constant_string_aliases(tree: ast.AST) -> Dict[str, str]:
+    constants: Dict[str, str] = {}
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if value is None:
+                continue
+            item = _static_string_value(value, constants)
+            if item is None:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and constants.get(target.id) != item:
+                    constants[target.id] = item
+                    changed = True
+        if not changed:
+            break
+    return constants
+
+
+def _call_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _call_name(node.value)
+        return f"{parent}.{node.attr}" if parent else node.attr
+    return ""
+
+
+def _keyword_value(node: ast.Call, constants: Dict[str, str], *names: str) -> str:
+    wanted = set(names)
+    for keyword in node.keywords or []:
+        if keyword.arg in wanted:
+            return _string_constant(keyword.value, constants)
+    return ""
+
+
+def _keyword_node(node: ast.Call, *names: str) -> Optional[ast.AST]:
+    wanted = set(names)
+    for keyword in node.keywords or []:
+        if keyword.arg in wanted:
+            return keyword.value
+    return None
+
+
+def _has_keyword_unpack(node: ast.Call) -> bool:
+    return any(keyword.arg is None for keyword in node.keywords or [])
+
+
+def _codec_import_bound_names(stmt: ast.stmt) -> Set[str]:
+    if not isinstance(stmt, ast.ImportFrom) or stmt.module != "codecs":
+        return set()
+    names: Set[str] = set()
+    for alias in stmt.names:
+        if alias.name == "*":
+            names.update({"decode", "escape_decode", "getdecoder", "lookup"})
+        elif alias.name in {"decode", "escape_decode", "getdecoder", "lookup"}:
+            names.add(alias.asname or alias.name)
+    return names
+
+
+def _target_names(node: ast.AST) -> Set[str]:
+    if isinstance(node, ast.Name):
+        return {node.id}
+    if isinstance(node, (ast.Tuple, ast.List)):
+        names: Set[str] = set()
+        for item in node.elts:
+            names.update(_target_names(item))
+        return names
+    return set()
+
+
+def _statement_bound_names(stmt: ast.stmt) -> Set[str]:
+    if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return {stmt.name}
+    if isinstance(stmt, ast.Assign):
+        names: Set[str] = set()
+        for target in stmt.targets:
+            names.update(_target_names(target))
+        return names
+    if isinstance(stmt, ast.AnnAssign):
+        return _target_names(stmt.target)
+    if isinstance(stmt, ast.AugAssign):
+        return _target_names(stmt.target)
+    if isinstance(stmt, ast.Import):
+        return {alias.asname or alias.name.split(".")[0] for alias in stmt.names}
+    if isinstance(stmt, ast.ImportFrom):
+        return {alias.asname or alias.name for alias in stmt.names if alias.name != "*"}
+    return set()
+
+
+def _top_level_bound_name_lines(tree: ast.AST, names: Set[str]) -> Dict[str, List[int]]:
+    lines: Dict[str, List[int]] = {name: [] for name in names}
+    if not isinstance(tree, ast.Module):
+        return lines
+    for stmt in tree.body:
+        lineno = getattr(stmt, "lineno", 0)
+        if not lineno:
+            continue
+        for name in _statement_bound_names(stmt):
+            if name in lines:
+                lines[name].append(lineno)
+    return lines
+
+
+def _name_bound_before_call(bound_lines: Dict[str, List[int]], name: str, node: ast.AST) -> bool:
+    lineno = getattr(node, "lineno", 0)
+    return bool(lineno and any(bound_line < lineno for bound_line in bound_lines.get(name, [])))
+
+
+def _top_level_shadowed_codec_import_aliases(tree: ast.AST) -> Set[str]:
+    if not isinstance(tree, ast.Module):
+        return set()
+    states: Dict[str, str] = {}
+    for stmt in tree.body:
+        codec_imports = _codec_import_bound_names(stmt)
+        if codec_imports:
+            for name in codec_imports:
+                states[name] = "imported"
+            continue
+        self_assignment = isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Name)
+        for name in _statement_bound_names(stmt):
+            if states.get(name) != "imported":
+                continue
+            if self_assignment and stmt.value.id == name:
+                continue
+            states[name] = "shadowed"
+    return {name for name, state in states.items() if state == "shadowed"}
+
+
+def _codec_module_import_bound_names(stmt: ast.stmt) -> Set[str]:
+    if not isinstance(stmt, ast.Import):
+        return set()
+    return {alias.asname or alias.name for alias in stmt.names if alias.name == "codecs"}
+
+
+def _literal_codecs_module_import_call(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and _call_name(node.func) == "__import__"
+        and len(node.args) >= 1
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "codecs"
+    )
+
+
+def _top_level_codec_module_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str]]:
+    if not isinstance(tree, ast.Module):
+        return set(), set()
+    states: Dict[str, str] = {}
+    for stmt in tree.body:
+        module_imports = _codec_module_import_bound_names(stmt)
+        if module_imports:
+            for name in module_imports:
+                states[name] = "imported"
+            continue
+        if isinstance(stmt, (ast.Assign, ast.AnnAssign)):
+            value = stmt.value
+            targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+            target_names: Set[str] = set()
+            for target in targets:
+                target_names.update(_target_names(target))
+            value_name = _call_name(value) if value is not None else ""
+            if value_name and states.get(value_name) == "imported":
+                for name in target_names:
+                    states[name] = "imported"
+                continue
+            if value is not None and _literal_codecs_module_import_call(value):
+                for name in target_names:
+                    states[name] = "imported"
+                continue
+            self_assignment = isinstance(value, ast.Name)
+            for name in target_names:
+                if states.get(name) != "imported":
+                    continue
+                if self_assignment and value.id == name:
+                    continue
+                states[name] = "shadowed"
+            continue
+        for name in _statement_bound_names(stmt):
+            if states.get(name) == "imported":
+                states[name] = "shadowed"
+    active = {name for name, state in states.items() if state == "imported"}
+    shadowed = {name for name, state in states.items() if state == "shadowed"}
+    return active, shadowed
+
+
+def _codec_import_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str], Set[str], Set[str], Set[str]]:
+    module_aliases, shadowed_module_aliases = _top_level_codec_module_aliases(tree)
+    decode_aliases: Set[str] = set()
+    escape_decode_aliases: Set[str] = set()
+    getdecoder_aliases: Set[str] = set()
+    lookup_aliases: Set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "codecs":
+                    module_aliases.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "codecs":
+            for alias in node.names:
+                if alias.name == "*":
+                    decode_aliases.add("decode")
+                    escape_decode_aliases.add("escape_decode")
+                    getdecoder_aliases.add("getdecoder")
+                    lookup_aliases.add("lookup")
+                    continue
+                imported_name = alias.asname or alias.name
+                if alias.name == "decode":
+                    decode_aliases.add(imported_name)
+                elif alias.name == "escape_decode":
+                    escape_decode_aliases.add(imported_name)
+                elif alias.name == "getdecoder":
+                    getdecoder_aliases.add(imported_name)
+                elif alias.name == "lookup":
+                    lookup_aliases.add(imported_name)
+    module_aliases.difference_update(shadowed_module_aliases)
+    for shadowed_name in _top_level_shadowed_codec_import_aliases(tree):
+        decode_aliases.discard(shadowed_name)
+        escape_decode_aliases.discard(shadowed_name)
+        getdecoder_aliases.discard(shadowed_name)
+        lookup_aliases.discard(shadowed_name)
+    return module_aliases, decode_aliases, escape_decode_aliases, getdecoder_aliases, lookup_aliases
+
+
+def _functools_import_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str]]:
+    module_aliases = {"functools"}
+    partial_aliases: Set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "functools":
+                    module_aliases.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "functools":
+            for alias in node.names:
+                if alias.name == "partial":
+                    partial_aliases.add(alias.asname or alias.name)
+    return module_aliases, partial_aliases
+
+
+def _importlib_import_aliases(tree: ast.AST, constants: Dict[str, str]) -> Tuple[Set[str], Set[str]]:
+    module_aliases = {"importlib"}
+    builtins_module_aliases = {"__builtins__"}
+    import_module_aliases: Set[str] = {"__import__", "__builtins__.__import__", "importlib.import_module"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "importlib":
+                    imported_name = alias.asname or alias.name
+                    module_aliases.add(imported_name)
+                    import_module_aliases.add(f"{imported_name}.import_module")
+                elif alias.name == "builtins":
+                    imported_name = alias.asname or alias.name
+                    builtins_module_aliases.add(imported_name)
+                    import_module_aliases.add(f"{imported_name}.__import__")
+        elif isinstance(node, ast.ImportFrom) and node.module == "importlib":
+            for alias in node.names:
+                if alias.name == "import_module":
+                    import_module_aliases.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "builtins":
+            for alias in node.names:
+                if alias.name == "__import__":
+                    import_module_aliases.add(alias.asname or alias.name)
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            value, targets = _assignment_value_targets(node)
+            if value is None:
+                continue
+            value_name = _call_name(value)
+            value_is_importer = (
+                value_name in import_module_aliases
+                or _attribute_on_module_alias(value, module_aliases, "import_module")
+                or _getattr_on_module_alias(value, module_aliases, "import_module", constants)
+                or _attribute_on_module_alias(value, builtins_module_aliases, "__import__")
+                or _getattr_on_module_alias(value, builtins_module_aliases, "__import__", constants)
+            )
+            if not value_is_importer:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id not in import_module_aliases:
+                    import_module_aliases.add(target.id)
+                    changed = True
+        if not changed:
+            break
+    return module_aliases, import_module_aliases
+
+
+def _operator_import_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str], Set[str], Set[str]]:
+    module_aliases = {"operator"}
+    methodcaller_aliases: Set[str] = set()
+    attrgetter_aliases: Set[str] = set()
+    call_aliases: Set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "operator":
+                    module_aliases.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "operator":
+            for alias in node.names:
+                imported_name = alias.asname or alias.name
+                if alias.name == "methodcaller":
+                    methodcaller_aliases.add(imported_name)
+                elif alias.name == "attrgetter":
+                    attrgetter_aliases.add(imported_name)
+                elif alias.name == "call":
+                    call_aliases.add(imported_name)
+    return module_aliases, methodcaller_aliases, attrgetter_aliases, call_aliases
+
+
+def _itertools_import_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str]]:
+    module_aliases: Set[str] = set()
+    starmap_aliases: Set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "itertools":
+                    module_aliases.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "itertools":
+            for alias in node.names:
+                if alias.name == "starmap":
+                    starmap_aliases.add(alias.asname or alias.name)
+    return module_aliases, starmap_aliases
+
+
+def _builtins_constructor_aliases(tree: ast.AST) -> Tuple[Set[str], Set[str]]:
+    module_aliases = {"builtins", "__builtins__"}
+    constructor_aliases: Set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "builtins":
+                    module_aliases.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module == "builtins":
+            for alias in node.names:
+                if alias.name in {"bytes", "bytearray"}:
+                    constructor_aliases.add(alias.asname or alias.name)
+    return module_aliases, constructor_aliases
+
+
+def _attribute_on_module_alias(node: ast.AST, module_aliases: Set[str], attr: str) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == attr
+        and _call_name(node.value) in module_aliases
+    )
+
+
+def _getattr_on_module_alias(
+    node: ast.AST,
+    module_aliases: Set[str],
+    attr: str,
+    constants: Dict[str, str],
+) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and _call_name(node.func) == "getattr"
+        and len(node.args) >= 2
+        and _call_name(node.args[0]) in module_aliases
+        and _string_constant(node.args[1], constants) == attr
+    )
+
+
+def _getattr_full_attribute_name(node: ast.AST, constants: Dict[str, str]) -> str:
+    if not (
+        isinstance(node, ast.Call)
+        and _call_name(node.func) == "getattr"
+        and len(node.args) >= 2
+    ):
+        return ""
+    base = _call_name(node.args[0])
+    attr = _string_constant(node.args[1], constants)
+    return f"{base}.{attr}" if base and attr else ""
+
+
+def _importlib_codecs_module_call(
+    node: ast.AST,
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    constants: Dict[str, str],
+) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and len(node.args) >= 1
+        and _string_constant(node.args[0], constants) == "codecs"
+        and (
+            _call_name(node.func) in import_module_aliases
+            or _getattr_full_attribute_name(node.func, constants) in import_module_aliases
+            or _attribute_on_module_alias(node.func, importlib_module_aliases, "import_module")
+        )
+    )
+
+
+def _globals_or_locals_module_subscript(
+    node: ast.AST,
+    module_aliases: Set[str],
+    constants: Dict[str, str],
+) -> bool:
+    return (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Call)
+        and _call_name(node.value.func) in {"globals", "locals"}
+        and _string_constant(node.slice, constants) in module_aliases
+    )
+
+
+def _literal_dict_subscript(
+    node: ast.AST,
+    aliases: Dict[str, Set[str]],
+    constants: Dict[str, str],
+) -> bool:
+    if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
+        return _string_constant(node.slice, constants) in aliases.get(node.value.id, set())
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "get"
+        and isinstance(node.func.value, ast.Name)
+        and node.args
+    ):
+        return _string_constant(node.args[0], constants) in aliases.get(node.func.value.id, set())
+    return False
+
+
+def _static_codecs_module_ref(
+    node: ast.AST,
+    module_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+) -> bool:
+    if _call_name(node) in module_aliases:
+        return True
+    if (
+        isinstance(node, ast.Call)
+        and _call_name(node.func) == "__import__"
+        and len(node.args) >= 1
+        and _string_constant(node.args[0], constants) == "codecs"
+    ):
+        return True
+    if _importlib_codecs_module_call(node, importlib_module_aliases, import_module_aliases, constants):
+        return True
+    if _globals_or_locals_module_subscript(node, module_aliases, constants):
+        return True
+    if _literal_dict_subscript(node, module_dict_aliases, constants):
+        return True
+    return False
+
+
+def _getattr_on_static_codecs_module(
+    node: ast.AST,
+    module_aliases: Set[str],
+    attr: str,
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and _call_name(node.func) == "getattr"
+        and len(node.args) >= 2
+        and _static_codecs_module_ref(
+            node.args[0],
+            module_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+        )
+        and _string_constant(node.args[1], constants) == attr
+    )
+
+
+def _dunder_getattribute_on_static_codecs_module(
+    node: ast.AST,
+    module_aliases: Set[str],
+    attr: str,
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "__getattribute__"
+        and len(node.args) >= 1
+        and _static_codecs_module_ref(
+            node.func.value,
+            module_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+        )
+        and _string_constant(node.args[0], constants) == attr
+    )
+
+
+def _module_dict_decode_subscript(
+    node: ast.AST,
+    module_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+) -> bool:
+    if isinstance(node, ast.Subscript):
+        if _string_constant(node.slice, constants) != "decode":
+            return False
+        value = node.value
+    elif (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "get"
+        and node.args
+        and _string_constant(node.args[0], constants) == "decode"
+    ):
+        value = node.func.value
+    else:
+        return False
+    if isinstance(value, ast.Attribute) and value.attr == "__dict__":
+        return _static_codecs_module_ref(
+            value.value,
+            module_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+        )
+    if isinstance(value, ast.Call) and _call_name(value.func) == "vars" and value.args:
+        return _static_codecs_module_ref(
+            value.args[0],
+            module_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+        )
+    return False
+
+
+def _static_codecs_decode_ref(
+    node: Optional[ast.AST],
+    module_aliases: Set[str],
+    decode_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    decode_dict_aliases: Dict[str, Set[str]],
+) -> bool:
+    if node is None:
+        return False
+    if isinstance(node, ast.Attribute) and node.attr == "__call__":
+        return _static_codecs_decode_ref(
+            node.value,
+            module_aliases,
+            decode_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            decode_dict_aliases,
+        )
+    if (
+        isinstance(node, ast.Call)
+        and _call_name(node.func) == "getattr"
+        and len(node.args) >= 2
+        and _string_constant(node.args[1], constants) == "__call__"
+    ):
+        return _static_codecs_decode_ref(
+            node.args[0],
+            module_aliases,
+            decode_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            decode_dict_aliases,
+        )
+    name = _call_name(node)
+    if name in decode_aliases:
+        return True
+    if isinstance(node, ast.Attribute) and node.attr == "decode":
+        return _static_codecs_module_ref(
+            node.value,
+            module_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+        )
+    if _getattr_on_static_codecs_module(
+        node,
+        module_aliases,
+        "decode",
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+    ):
+        return True
+    if _dunder_getattribute_on_static_codecs_module(
+        node,
+        module_aliases,
+        "decode",
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+    ):
+        return True
+    if _module_dict_decode_subscript(
+        node,
+        module_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+    ):
+        return True
+    return _literal_dict_subscript(node, decode_dict_aliases, constants)
+
+
+def _literal_dict_codec_aliases(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    decode_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
+    module_dict_aliases: Dict[str, Set[str]] = {}
+    decode_dict_aliases: Dict[str, Set[str]] = {}
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if not isinstance(value, ast.Dict):
+                continue
+            module_keys: Set[str] = set()
+            decode_keys: Set[str] = set()
+            for key_node, value_node in zip(value.keys, value.values):
+                if key_node is None:
+                    continue
+                key = _string_constant(key_node, constants)
+                if not key:
+                    continue
+                if _static_codecs_module_ref(
+                    value_node,
+                    module_aliases,
+                    constants,
+                    importlib_module_aliases,
+                    import_module_aliases,
+                    module_dict_aliases,
+                ):
+                    module_keys.add(key)
+                if _static_codecs_decode_ref(
+                    value_node,
+                    module_aliases,
+                    decode_aliases,
+                    constants,
+                    importlib_module_aliases,
+                    import_module_aliases,
+                    module_dict_aliases,
+                    decode_dict_aliases,
+                ):
+                    decode_keys.add(key)
+            if not module_keys and not decode_keys:
+                continue
+            for target in targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                before_module = set(module_dict_aliases.get(target.id, set()))
+                before_decode = set(decode_dict_aliases.get(target.id, set()))
+                module_dict_aliases.setdefault(target.id, set()).update(module_keys)
+                decode_dict_aliases.setdefault(target.id, set()).update(decode_keys)
+                changed = changed or before_module != module_dict_aliases[target.id]
+                changed = changed or before_decode != decode_dict_aliases[target.id]
+        if not changed:
+            break
+    return module_dict_aliases, decode_dict_aliases
+
+
+def _builtins_subscript_constructor(node: ast.AST, constants: Dict[str, str]) -> bool:
+    return (
+        isinstance(node, ast.Subscript)
+        and _call_name(node.value) == "__builtins__"
+        and _string_constant(node.slice, constants) in {"bytes", "bytearray"}
+    )
+
+
+def _bytearray_zero_arg_call(node: ast.AST) -> bool:
+    return isinstance(node, ast.Call) and _call_name(node.func) == "bytearray" and not node.args and not node.keywords
+
+
+def _static_byte_constructor_factory(node: ast.AST) -> bool:
+    if (
+        isinstance(node, ast.Call)
+        and _call_name(node.func) == "type"
+        and len(node.args) == 1
+        and not node.keywords
+    ):
+        value = node.args[0]
+        return (
+            isinstance(value, ast.Constant)
+            and isinstance(value.value, (bytes, bytearray))
+        ) or _bytearray_zero_arg_call(value)
+    if isinstance(node, ast.Attribute) and node.attr == "__class__":
+        value = node.value
+        return (
+            isinstance(value, ast.Constant)
+            and isinstance(value.value, (bytes, bytearray))
+        ) or _bytearray_zero_arg_call(value)
+    return False
+
+
+def _is_byte_constructor_ref(
+    node: ast.AST,
+    aliases: Set[str],
+    constants: Dict[str, str],
+) -> bool:
+    return (
+        _call_name(node) in aliases
+        or _builtins_subscript_constructor(node, constants)
+        or _static_byte_constructor_factory(node)
+    )
+
+
+def _add_simple_factory_assignment_aliases(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    getdecoder_aliases: Set[str],
+    lookup_aliases: Set[str],
+) -> None:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            value = node.value
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            value = node.value
+            targets = [node.target]
+        else:
+            continue
+        if value is None:
+            continue
+        value_name = _call_name(value)
+        is_getdecoder = value_name in getdecoder_aliases or _attribute_on_module_alias(value, module_aliases, "getdecoder")
+        is_lookup = value_name in lookup_aliases or _attribute_on_module_alias(value, module_aliases, "lookup")
+        if not is_getdecoder and not is_lookup:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                if is_getdecoder:
+                    getdecoder_aliases.add(target.id)
+                if is_lookup:
+                    lookup_aliases.add(target.id)
+
+
+def _add_simple_module_assignment_aliases(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+) -> None:
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if value is None:
+                continue
+            if not _static_codecs_module_ref(
+                value,
+                module_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+            ):
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id not in module_aliases:
+                    module_aliases.add(target.id)
+                    changed = True
+        if not changed:
+            break
+
+
+def _add_simple_decode_assignment_aliases(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    decode_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    decode_dict_aliases: Dict[str, Set[str]],
+) -> None:
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if value is None:
+                continue
+            value_name = _call_name(value)
+            is_decode = (
+                _static_codecs_decode_ref(
+                    value,
+                    module_aliases,
+                    decode_aliases,
+                    constants,
+                    importlib_module_aliases,
+                    import_module_aliases,
+                    module_dict_aliases,
+                    decode_dict_aliases,
+                )
+                or _attribute_on_module_alias(value, module_aliases, "decode")
+                or _getattr_on_module_alias(value, module_aliases, "decode", constants)
+            )
+            if not is_decode:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id not in decode_aliases:
+                    decode_aliases.add(target.id)
+                    changed = True
+        if not changed:
+            break
+
+
+def _factory_call_encoding(
+    node: ast.AST,
+    module_aliases: Set[str],
+    getdecoder_aliases: Set[str],
+    lookup_aliases: Set[str],
+    constants: Dict[str, str],
+) -> Tuple[str, str]:
+    if not isinstance(node, ast.Call):
+        return "", ""
+    name = _call_name(node.func)
+    if name in getdecoder_aliases or _attribute_on_module_alias(node.func, module_aliases, "getdecoder"):
+        return "getdecoder", _codec_factory_encoding(node, constants)
+    if name in lookup_aliases or _attribute_on_module_alias(node.func, module_aliases, "lookup"):
+        return "lookup", _codec_factory_encoding(node, constants)
+    return "", ""
+
+
+def _factory_function_ref_kind(
+    node: Optional[ast.AST],
+    module_aliases: Set[str],
+    getdecoder_aliases: Set[str],
+    lookup_aliases: Set[str],
+    constants: Dict[str, str],
+) -> str:
+    if node is None:
+        return ""
+    name = _call_name(node)
+    if (
+        name in getdecoder_aliases
+        or _attribute_on_module_alias(node, module_aliases, "getdecoder")
+        or _getattr_on_module_alias(node, module_aliases, "getdecoder", constants)
+    ):
+        return "getdecoder"
+    if (
+        name in lookup_aliases
+        or _attribute_on_module_alias(node, module_aliases, "lookup")
+        or _getattr_on_module_alias(node, module_aliases, "lookup", constants)
+    ):
+        return "lookup"
+    return ""
+
+
+def _decoder_factory_result_aliases(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    getdecoder_aliases: Set[str],
+    lookup_aliases: Set[str],
+    constants: Dict[str, str],
+) -> Tuple[Dict[str, str], Dict[str, str]]:
+    decoder_results: Dict[str, str] = {}
+    lookup_results: Dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            value = node.value
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            value = node.value
+            targets = [node.target]
+        else:
+            continue
+        kind, encoding = _factory_call_encoding(value, module_aliases, getdecoder_aliases, lookup_aliases, constants)
+        if not kind:
+            continue
+        for target in targets:
+            if not isinstance(target, ast.Name):
+                continue
+            if kind == "getdecoder":
+                decoder_results[target.id] = encoding
+            elif kind == "lookup":
+                lookup_results[target.id] = encoding
+    return decoder_results, lookup_results
+
+
+def _decoder_factory_container_aliases(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    getdecoder_aliases: Set[str],
+    lookup_aliases: Set[str],
+    constants: Dict[str, str],
+    decoder_results: Dict[str, str],
+    lookup_results: Dict[str, str],
+) -> Tuple[Dict[str, Dict[Tuple[str, str], str]], Dict[str, Dict[Tuple[str, str], str]]]:
+    decoder_containers: Dict[str, Dict[Tuple[str, str], str]] = {}
+    lookup_containers: Dict[str, Dict[Tuple[str, str], str]] = {}
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if value is None:
+                continue
+            if isinstance(value, ast.Name) and value.id in decoder_containers:
+                decoder_items = dict(decoder_containers[value.id])
+            else:
+                decoder_items: Dict[Tuple[str, str], str] = {}
+            if isinstance(value, ast.Name) and value.id in lookup_containers:
+                lookup_items = dict(lookup_containers[value.id])
+            else:
+                lookup_items: Dict[Tuple[str, str], str] = {}
+            if not decoder_items and not lookup_items:
+                for key, item in _literal_container_items(value, constants):
+                    if isinstance(item, ast.Name) and item.id in decoder_results:
+                        decoder_items[key] = decoder_results[item.id]
+                        continue
+                    if isinstance(item, ast.Name) and item.id in lookup_results:
+                        lookup_items[key] = lookup_results[item.id]
+                        continue
+                    kind, encoding = _factory_call_encoding(item, module_aliases, getdecoder_aliases, lookup_aliases, constants)
+                    if kind == "getdecoder":
+                        decoder_items[key] = encoding
+                    elif kind == "lookup":
+                        lookup_items[key] = encoding
+            if not decoder_items and not lookup_items:
+                continue
+            for target in targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                if decoder_items and decoder_containers.get(target.id) != decoder_items:
+                    decoder_containers[target.id] = dict(decoder_items)
+                    changed = True
+                if lookup_items and lookup_containers.get(target.id) != lookup_items:
+                    lookup_containers[target.id] = dict(lookup_items)
+                    changed = True
+        if not changed:
+            break
+    return decoder_containers, lookup_containers
+
+
+def _decoder_factory_value_alias(
+    value: ast.AST,
+    module_aliases: Set[str],
+    getdecoder_aliases: Set[str],
+    lookup_aliases: Set[str],
+    constants: Dict[str, str],
+    decoder_results: Dict[str, str],
+    lookup_results: Dict[str, str],
+    decoder_containers: Dict[str, Dict[Tuple[str, str], str]],
+    lookup_containers: Dict[str, Dict[Tuple[str, str], str]],
+    decoder_attributes: Dict[str, str],
+    lookup_attributes: Dict[str, str],
+) -> Tuple[str, str]:
+    if isinstance(value, ast.Name):
+        if value.id in decoder_results:
+            return "getdecoder", decoder_results[value.id]
+        if value.id in lookup_results:
+            return "lookup", lookup_results[value.id]
+    container_decoder = _container_subscript_lookup(value, decoder_containers, constants)
+    if container_decoder is not None:
+        return "getdecoder", container_decoder
+    container_lookup = _container_subscript_lookup(value, lookup_containers, constants)
+    if container_lookup is not None:
+        return "lookup", container_lookup
+    attribute_decoder = _attribute_alias_lookup(value, decoder_attributes)
+    if attribute_decoder is not None:
+        return "getdecoder", attribute_decoder
+    attribute_lookup = _attribute_alias_lookup(value, lookup_attributes)
+    if attribute_lookup is not None:
+        return "lookup", attribute_lookup
+    return _factory_call_encoding(value, module_aliases, getdecoder_aliases, lookup_aliases, constants)
+
+
+def _simple_namespace_keyword_items(value: ast.AST) -> List[Tuple[str, ast.AST]]:
+    if not isinstance(value, ast.Call):
+        return []
+    if _call_name(value.func) not in {"SimpleNamespace", "types.SimpleNamespace"}:
+        return []
+    return [(keyword.arg, keyword.value) for keyword in value.keywords or [] if keyword.arg]
+
+
+def _assignment_value_targets(node: ast.AST) -> Tuple[Optional[ast.AST], List[ast.AST]]:
+    if isinstance(node, ast.Assign):
+        return node.value, list(node.targets)
+    if isinstance(node, ast.AnnAssign):
+        return node.value, [node.target]
+    return None, []
+
+
+def _setattr_assignment_items(node: ast.AST, constants: Dict[str, str]) -> List[Tuple[ast.AST, str, ast.AST]]:
+    call = node.value if isinstance(node, ast.Expr) else node
+    if (
+        not isinstance(call, ast.Call)
+        or _call_name(call.func) not in {"setattr", "builtins.setattr"}
+        or len(call.args) < 3
+    ):
+        return []
+    attr = _string_constant(call.args[1], constants)
+    if not attr:
+        return []
+    return [(call.args[0], attr, call.args[2])]
+
+
+def _attribute_names_for_object(node: ast.AST, attr: str, object_aliases: Dict[str, str]) -> Set[str]:
+    name = _call_name(node)
+    if not name:
+        return set()
+    names = {f"{name}.{attr}"}
+    source = object_aliases.get(name, name)
+    if source:
+        names.add(f"{source}.{attr}")
+    return names
+
+
+def _class_attribute_assignment_items(node: ast.ClassDef, constants: Dict[str, str]) -> List[Tuple[str, ast.AST]]:
+    items: List[Tuple[str, ast.AST]] = []
+    for child in node.body:
+        if isinstance(child, ast.FunctionDef) and child.name == "__init__":
+            self_names: Set[str] = set()
+            if child.args.args:
+                self_names.add(child.args.args[0].arg)
+            if not self_names:
+                continue
+            for stmt in ast.walk(child):
+                for obj, attr, item in _setattr_assignment_items(stmt, constants):
+                    if isinstance(obj, ast.Name) and obj.id in self_names:
+                        items.append((attr, item))
+                value, targets = _assignment_value_targets(stmt)
+                if value is None:
+                    continue
+                for target in targets:
+                    if (
+                        isinstance(target, ast.Attribute)
+                        and isinstance(target.value, ast.Name)
+                        and target.value.id in self_names
+                    ):
+                        items.append((target.attr, value))
+            continue
+
+        value, targets = _assignment_value_targets(child)
+        if value is None:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                items.append((target.id, value))
+    return items
+
+
+def _class_aliases(tree: ast.AST) -> Dict[str, str]:
+    class_names = {node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)}
+    aliases: Dict[str, str] = {name: name for name in class_names}
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            value, targets = _assignment_value_targets(node)
+            if value is None or not isinstance(value, ast.Name) or value.id not in aliases:
+                continue
+            class_name = aliases[value.id]
+            for target in targets:
+                if isinstance(target, ast.Name) and aliases.get(target.id) != class_name:
+                    aliases[target.id] = class_name
+                    changed = True
+        if not changed:
+            break
+    return aliases
+
+
+def _function_decorator_names(node: ast.FunctionDef) -> Set[str]:
+    names: Set[str] = set()
+    for decorator in node.decorator_list:
+        item = decorator.func if isinstance(decorator, ast.Call) else decorator
+        name = _call_name(item)
+        if name:
+            names.add(name)
+    return names
+
+
+def _zero_explicit_arg_method_names(
+    class_node: ast.ClassDef,
+    method: ast.FunctionDef,
+    class_aliases: Dict[str, str],
+    class_instances: Dict[str, str],
+) -> List[str]:
+    if method.name == "__init__":
+        return []
+    required = _function_required_arg_count(method)
+    decorator_names = _function_decorator_names(method)
+    class_name = class_aliases.get(class_node.name, class_node.name)
+    class_names = [alias for alias, target in class_aliases.items() if target == class_name]
+    instance_names = [alias for alias, target in class_instances.items() if target == class_name]
+    if "staticmethod" in decorator_names:
+        if required != 0:
+            return []
+        owners = class_names + instance_names
+    elif "classmethod" in decorator_names:
+        if required > 1:
+            return []
+        owners = class_names + instance_names
+    else:
+        if required > 1:
+            return []
+        owners = instance_names
+    return [f"{owner}.{method.name}" for owner in owners]
+
+
+def _class_factory_aliases(tree: ast.AST, class_aliases: Dict[str, str]) -> Dict[str, str]:
+    factories: Dict[str, str] = {}
+
+    def returned_class(value: Optional[ast.AST]) -> str:
+        if not isinstance(value, ast.Call) or value.args or value.keywords:
+            return ""
+        return class_aliases.get(_call_name(value.func), "")
+
+    def register_method_factories(class_node: ast.ClassDef) -> None:
+        class_name = class_aliases.get(class_node.name, class_node.name)
+        alias_names = [alias for alias, target in class_aliases.items() if target == class_name]
+        for child in class_node.body:
+            if not isinstance(child, ast.FunctionDef):
+                continue
+            names = _function_decorator_names(child)
+            method_class = ""
+            if "staticmethod" in names and _function_required_arg_count(child) == 0:
+                method_class = returned_class(_single_return_value(child))
+            elif "classmethod" in names and _function_required_arg_count(child) <= 1:
+                value = _single_return_value(child)
+                first_arg = child.args.args[0].arg if child.args.args else ""
+                if (
+                    isinstance(value, ast.Call)
+                    and not value.args
+                    and not value.keywords
+                    and _call_name(value.func) == first_arg
+                ):
+                    method_class = class_name
+                else:
+                    method_class = returned_class(value)
+            if not method_class:
+                continue
+            for alias in alias_names:
+                factories[f"{alias}.{child.name}"] = method_class
+
+    for node in getattr(tree, "body", []):
+        if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+            continue
+        class_name = returned_class(_single_return_value(node))
+        if class_name:
+            factories[node.name] = class_name
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            register_method_factories(node)
+
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            value, targets = _assignment_value_targets(node)
+            if value is None:
+                continue
+            factory_name = ""
+            if isinstance(value, ast.Name):
+                factory_name = value.id
+            elif isinstance(value, ast.Attribute):
+                factory_name = _call_name(value)
+            if factory_name not in factories:
+                continue
+            class_name = factories[factory_name]
+            for target in targets:
+                if isinstance(target, ast.Name) and factories.get(target.id) != class_name:
+                    factories[target.id] = class_name
+                    changed = True
+        if not changed:
+            break
+    return factories
+
+
+def _class_instance_aliases(tree: ast.AST) -> Dict[str, str]:
+    class_aliases = _class_aliases(tree)
+    factory_aliases = _class_factory_aliases(tree, class_aliases)
+    aliases: Dict[str, str] = {}
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            value, targets = _assignment_value_targets(node)
+            if value is None:
+                continue
+            class_name = ""
+            if isinstance(value, ast.Call) and not value.args and not value.keywords:
+                called = _call_name(value.func)
+                class_name = class_aliases.get(called, "") or factory_aliases.get(called, "")
+            elif isinstance(value, ast.Name) and value.id in aliases:
+                class_name = aliases[value.id]
+            if not class_name:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and aliases.get(target.id) != class_name:
+                    aliases[target.id] = class_name
+                    changed = True
+        if not changed:
+            break
+    return aliases
+
+
+def _decoder_factory_attribute_aliases(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    getdecoder_aliases: Set[str],
+    lookup_aliases: Set[str],
+    constants: Dict[str, str],
+    decoder_results: Dict[str, str],
+    lookup_results: Dict[str, str],
+    decoder_containers: Dict[str, Dict[Tuple[str, str], str]],
+    lookup_containers: Dict[str, Dict[Tuple[str, str], str]],
+) -> Tuple[Dict[str, str], Dict[str, str]]:
+    decoder_attributes: Dict[str, str] = {}
+    lookup_attributes: Dict[str, str] = {}
+    object_aliases: Dict[str, str] = {}
+    class_instances = _class_instance_aliases(tree)
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                for attr, item in _class_attribute_assignment_items(node, constants):
+                    kind, encoding = _decoder_factory_value_alias(
+                        item,
+                        module_aliases,
+                        getdecoder_aliases,
+                        lookup_aliases,
+                        constants,
+                        decoder_results,
+                        lookup_results,
+                        decoder_containers,
+                        lookup_containers,
+                        decoder_attributes,
+                        lookup_attributes,
+                    )
+                    attr_name = f"{node.name}.{attr}"
+                    if kind == "getdecoder" and decoder_attributes.get(attr_name) != encoding:
+                        decoder_attributes[attr_name] = encoding
+                        changed = True
+                    elif kind == "lookup" and lookup_attributes.get(attr_name) != encoding:
+                        lookup_attributes[attr_name] = encoding
+                        changed = True
+                continue
+
+            for obj, attr, item in _setattr_assignment_items(node, constants):
+                kind, encoding = _decoder_factory_value_alias(
+                    item,
+                    module_aliases,
+                    getdecoder_aliases,
+                    lookup_aliases,
+                    constants,
+                    decoder_results,
+                    lookup_results,
+                    decoder_containers,
+                    lookup_containers,
+                    decoder_attributes,
+                    lookup_attributes,
+                )
+                for attr_name in _attribute_names_for_object(obj, attr, object_aliases):
+                    if kind == "getdecoder" and decoder_attributes.get(attr_name) != encoding:
+                        decoder_attributes[attr_name] = encoding
+                        changed = True
+                    elif kind == "lookup" and lookup_attributes.get(attr_name) != encoding:
+                        lookup_attributes[attr_name] = encoding
+                        changed = True
+
+            value, targets = _assignment_value_targets(node)
+            if value is None:
+                continue
+
+            if isinstance(value, ast.Name):
+                source = object_aliases.get(value.id, value.id)
+                for target in targets:
+                    if isinstance(target, ast.Name) and object_aliases.get(target.id) != source:
+                        object_aliases[target.id] = source
+                        changed = True
+
+            for target in targets:
+                if isinstance(target, ast.Attribute):
+                    kind, encoding = _decoder_factory_value_alias(
+                        value,
+                        module_aliases,
+                        getdecoder_aliases,
+                        lookup_aliases,
+                        constants,
+                        decoder_results,
+                        lookup_results,
+                        decoder_containers,
+                        lookup_containers,
+                        decoder_attributes,
+                        lookup_attributes,
+                    )
+                    attr_name = _call_name(target)
+                    if kind == "getdecoder" and decoder_attributes.get(attr_name) != encoding:
+                        decoder_attributes[attr_name] = encoding
+                        changed = True
+                    elif kind == "lookup" and lookup_attributes.get(attr_name) != encoding:
+                        lookup_attributes[attr_name] = encoding
+                        changed = True
+                    continue
+
+                if not isinstance(target, ast.Name):
+                    continue
+                for attr, item in _simple_namespace_keyword_items(value):
+                    kind, encoding = _decoder_factory_value_alias(
+                        item,
+                        module_aliases,
+                        getdecoder_aliases,
+                        lookup_aliases,
+                        constants,
+                        decoder_results,
+                        lookup_results,
+                        decoder_containers,
+                        lookup_containers,
+                        decoder_attributes,
+                        lookup_attributes,
+                    )
+                    attr_name = f"{target.id}.{attr}"
+                    if kind == "getdecoder" and decoder_attributes.get(attr_name) != encoding:
+                        decoder_attributes[attr_name] = encoding
+                        changed = True
+                    elif kind == "lookup" and lookup_attributes.get(attr_name) != encoding:
+                        lookup_attributes[attr_name] = encoding
+                        changed = True
+        for alias, source in list(object_aliases.items()):
+            prefix = f"{source}."
+            for attr_name, encoding in list(decoder_attributes.items()):
+                if attr_name.startswith(prefix):
+                    alias_name = f"{alias}.{attr_name[len(prefix):]}"
+                    if decoder_attributes.get(alias_name) != encoding:
+                        decoder_attributes[alias_name] = encoding
+                        changed = True
+            for attr_name, encoding in list(lookup_attributes.items()):
+                if attr_name.startswith(prefix):
+                    alias_name = f"{alias}.{attr_name[len(prefix):]}"
+                    if lookup_attributes.get(alias_name) != encoding:
+                        lookup_attributes[alias_name] = encoding
+                        changed = True
+        for instance, class_name in class_instances.items():
+            prefix = f"{class_name}."
+            for attr_name, encoding in list(decoder_attributes.items()):
+                if attr_name.startswith(prefix):
+                    instance_name = f"{instance}.{attr_name[len(prefix):]}"
+                    if decoder_attributes.get(instance_name) != encoding:
+                        decoder_attributes[instance_name] = encoding
+                        changed = True
+            for attr_name, encoding in list(lookup_attributes.items()):
+                if attr_name.startswith(prefix):
+                    instance_name = f"{instance}.{attr_name[len(prefix):]}"
+                    if lookup_attributes.get(instance_name) != encoding:
+                        lookup_attributes[instance_name] = encoding
+                        changed = True
+        if not changed:
+            break
+    return decoder_attributes, lookup_attributes
+
+
+def _method_decode_encoding(node: ast.Call, constants: Dict[str, str]) -> str:
+    if node.args:
+        return _string_constant(node.args[0], constants)
+    return _keyword_value(node, constants, "encoding")
+
+
+def _method_decode_encoding_or_default(node: ast.Call, constants: Dict[str, str]) -> str:
+    if node.args:
+        return _string_constant(node.args[0], constants)
+    keyword = _keyword_node(node, "encoding")
+    if keyword is not None:
+        return _string_constant(keyword, constants)
+    if _has_keyword_unpack(node):
+        return ""
+    return "utf-8"
+
+
+def _method_encode_encoding_or_default(node: ast.Call, constants: Dict[str, str]) -> str:
+    if node.args:
+        return _string_constant(node.args[0], constants)
+    keyword = _keyword_node(node, "encoding")
+    if keyword is not None:
+        return _string_constant(keyword, constants)
+    if _has_keyword_unpack(node):
+        return ""
+    return "utf-8"
+
+
+def _byte_constructor_aliases(tree: ast.AST, constants: Dict[str, str]) -> Set[str]:
+    builtins_module_aliases, builtins_import_aliases = _builtins_constructor_aliases(tree)
+    aliases = {"bytes", "bytearray"} | builtins_import_aliases
+    for module_alias in builtins_module_aliases:
+        aliases.add(f"{module_alias}.bytes")
+        aliases.add(f"{module_alias}.bytearray")
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            is_constructor = _is_byte_constructor_ref(value, aliases, constants) or any(
+                _getattr_on_module_alias(value, builtins_module_aliases, constructor, constants)
+                for constructor in ("bytes", "bytearray")
+            )
+            if not is_constructor:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id not in aliases:
+                    aliases.add(target.id)
+                    changed = True
+        if not changed:
+            break
+    return aliases
+
+
+def _text_encode_call_encoding(
+    node: ast.AST,
+    constants: Dict[str, str],
+    byte_constructor_aliases: Set[str],
+) -> Optional[str]:
+    if not isinstance(node, ast.Call):
+        return None
+    if isinstance(node.func, ast.Attribute) and node.func.attr == "encode":
+        return _method_encode_encoding_or_default(node, constants)
+    if isinstance(node.func, ast.Attribute) and node.func.attr == "__new__":
+        if not _is_byte_constructor_ref(node.func.value, byte_constructor_aliases, constants):
+            return None
+        if len(node.args) >= 3:
+            return _string_constant(node.args[2], constants)
+        keyword = _keyword_node(node, "encoding")
+        if keyword is not None:
+            return _string_constant(keyword, constants)
+        if _has_keyword_unpack(node):
+            return ""
+        return None
+    if not _is_byte_constructor_ref(node.func, byte_constructor_aliases, constants):
+        return None
+    if len(node.args) >= 2:
+        return _string_constant(node.args[1], constants)
+    keyword = _keyword_node(node, "encoding")
+    if keyword is not None:
+        return _string_constant(keyword, constants)
+    if _has_keyword_unpack(node):
+        return ""
+    return None
+
+
+def _encoded_text_bytes_encoding(
+    node: ast.AST,
+    aliases: Dict[str, str],
+    constants: Dict[str, str],
+    byte_constructor_aliases: Set[str],
+) -> Optional[str]:
+    direct = _text_encode_call_encoding(node, constants, byte_constructor_aliases)
+    if direct is not None:
+        return direct
+    if isinstance(node, ast.Call):
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "tobytes":
+            return _encoded_text_bytes_encoding(node.func.value, aliases, constants, byte_constructor_aliases)
+        if _call_name(node.func) == "memoryview" and node.args:
+            return _encoded_text_bytes_encoding(node.args[0], aliases, constants, byte_constructor_aliases)
+    if isinstance(node, ast.Name):
+        return aliases.get(node.id)
+    return None
+
+
+def _encoded_text_byte_aliases(
+    tree: ast.AST,
+    constants: Dict[str, str],
+    byte_constructor_aliases: Set[str],
+) -> Dict[str, str]:
+    aliases: Dict[str, str] = {}
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if value is None:
+                continue
+            encoding = _encoded_text_bytes_encoding(value, aliases, constants, byte_constructor_aliases)
+            if encoding is None:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and aliases.get(target.id) != encoding:
+                    aliases[target.id] = encoding
+                    changed = True
+        if not changed:
+            break
+    return aliases
+
+
+def _operator_methodcaller_decode_encoding(
+    node: ast.AST,
+    operator_module_aliases: Set[str],
+    methodcaller_aliases: Set[str],
+    constants: Dict[str, str],
+) -> Optional[str]:
+    if not isinstance(node, ast.Call):
+        return None
+    is_methodcaller = (
+        _call_name(node.func) in methodcaller_aliases
+        or _attribute_on_module_alias(node.func, operator_module_aliases, "methodcaller")
+    )
+    if not is_methodcaller or not node.args:
+        return None
+    if _string_constant(node.args[0], constants) != "decode":
+        return None
+    if len(node.args) >= 2:
+        return _string_constant(node.args[1], constants)
+    keyword = _keyword_node(node, "encoding")
+    if keyword is not None:
+        return _string_constant(keyword, constants)
+    if _has_keyword_unpack(node):
+        return ""
+    return "utf-8"
+
+
+def _operator_methodcaller_codecs_decode_info(
+    node: ast.AST,
+    operator_module_aliases: Set[str],
+    methodcaller_aliases: Set[str],
+    constants: Dict[str, str],
+    encoded_text_bytes: Dict[str, str],
+    byte_constructor_aliases: Set[str],
+) -> Optional[Tuple[str, str]]:
+    if not isinstance(node, ast.Call):
+        return None
+    is_methodcaller = (
+        _call_name(node.func) in methodcaller_aliases
+        or _attribute_on_module_alias(node.func, operator_module_aliases, "methodcaller")
+    )
+    if not is_methodcaller or len(node.args) < 2:
+        return None
+    if _string_constant(node.args[0], constants) != "decode":
+        return None
+    encoded_as = _encoded_text_bytes_encoding(
+        node.args[1],
+        encoded_text_bytes,
+        constants,
+        byte_constructor_aliases,
+    )
+    if encoded_as is None:
+        return None
+    if len(node.args) >= 3:
+        encoding = _string_constant(node.args[2], constants)
+    else:
+        keyword = _keyword_node(node, "encoding")
+        if keyword is not None:
+            encoding = _string_constant(keyword, constants)
+        elif _has_keyword_unpack(node):
+            encoding = ""
+        else:
+            encoding = "utf-8"
+    return encoded_as, encoding
+
+
+def _operator_attrgetter_decode_ref(
+    node: ast.AST,
+    operator_module_aliases: Set[str],
+    attrgetter_aliases: Set[str],
+    constants: Dict[str, str],
+) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and node.args
+        and _string_constant(node.args[0], constants) == "decode"
+        and (
+            _call_name(node.func) in attrgetter_aliases
+            or _attribute_on_module_alias(node.func, operator_module_aliases, "attrgetter")
+        )
+    )
+
+
+def _operator_attrgetter_codecs_decode_ref(
+    node: ast.AST,
+    operator_module_aliases: Set[str],
+    attrgetter_aliases: Set[str],
+    module_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    module_containers: Dict[str, Dict[ContainerAliasKey, str]],
+    module_attributes: Set[str],
+    module_functions: Set[str],
+    class_aliases: Dict[str, str],
+    factory_aliases: Dict[str, str],
+) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and _operator_attrgetter_decode_ref(
+            node.func,
+            operator_module_aliases,
+            attrgetter_aliases,
+            constants,
+        )
+        and node.args
+        and _is_codecs_module_ref_or_result(
+            node.args[0],
+            module_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            module_containers,
+            module_attributes,
+            module_functions,
+            class_aliases,
+            factory_aliases,
+        )
+    )
+
+
+def _decode_method_source_encoding(
+    node: ast.AST,
+    encoded_text_aliases: Dict[str, str],
+    constants: Dict[str, str],
+    byte_constructor_aliases: Set[str],
+    operator_module_aliases: Set[str],
+    attrgetter_aliases: Set[str],
+) -> Optional[str]:
+    if isinstance(node, ast.Attribute) and node.attr == "decode":
+        return _encoded_text_bytes_encoding(
+            node.value,
+            encoded_text_aliases,
+            constants,
+            byte_constructor_aliases,
+        )
+    if (
+        isinstance(node, ast.Call)
+        and _call_name(node.func) == "getattr"
+        and len(node.args) >= 2
+        and _string_constant(node.args[1], constants) == "decode"
+    ):
+        return _encoded_text_bytes_encoding(
+            node.args[0],
+            encoded_text_aliases,
+            constants,
+            byte_constructor_aliases,
+        )
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "__getattribute__"
+        and node.args
+        and _string_constant(node.args[0], constants) == "decode"
+    ):
+        return _encoded_text_bytes_encoding(
+            node.func.value,
+            encoded_text_aliases,
+            constants,
+            byte_constructor_aliases,
+        )
+    if (
+        isinstance(node, ast.Call)
+        and _operator_attrgetter_decode_ref(
+            node.func,
+            operator_module_aliases,
+            attrgetter_aliases,
+            constants,
+        )
+        and node.args
+    ):
+        return _encoded_text_bytes_encoding(
+            node.args[0],
+            encoded_text_aliases,
+            constants,
+            byte_constructor_aliases,
+        )
+    return None
+
+
+def _decode_method_result_aliases(
+    tree: ast.AST,
+    encoded_text_aliases: Dict[str, str],
+    constants: Dict[str, str],
+    byte_constructor_aliases: Set[str],
+    operator_module_aliases: Set[str],
+    attrgetter_aliases: Set[str],
+) -> Dict[str, str]:
+    aliases: Dict[str, str] = {}
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if value is None:
+                continue
+            if isinstance(value, ast.Name) and value.id in aliases:
+                encoded_as = aliases[value.id]
+            else:
+                encoded_as = _decode_method_source_encoding(
+                    value,
+                    encoded_text_aliases,
+                    constants,
+                    byte_constructor_aliases,
+                    operator_module_aliases,
+                    attrgetter_aliases,
+                )
+            if encoded_as is None:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and aliases.get(target.id) != encoded_as:
+                    aliases[target.id] = encoded_as
+                    changed = True
+        if not changed:
+            break
+    return aliases
+
+
+def _container_key_from_literal(node: ast.AST, constants: Dict[str, str]) -> Optional[Tuple[str, str]]:
+    if isinstance(node, ast.Constant) and isinstance(node.value, int) and node.value >= 0:
+        return ("index", str(node.value))
+    string_value = _static_string_value(node, constants)
+    if string_value is not None:
+        return ("key", string_value)
+    return None
+
+
+def _literal_container_items(
+    node: ast.AST,
+    constants: Dict[str, str],
+) -> List[Tuple[Tuple[str, str], ast.AST]]:
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return [(("index", str(index)), item) for index, item in enumerate(node.elts)]
+    if isinstance(node, ast.Dict):
+        items: List[Tuple[Tuple[str, str], ast.AST]] = []
+        for key_node, value_node in zip(node.keys, node.values):
+            if key_node is None:
+                continue
+            key = _container_key_from_literal(key_node, constants)
+            if key is not None:
+                items.append((key, value_node))
+        return items
+    return []
+
+
+ContainerAliasKey = Union[Tuple[str, str], Tuple[Tuple[str, str], ...]]
+ParamAccess = Union[str, Tuple[str, Tuple[Tuple[str, str], ...]]]
+IndexAlias = Tuple[str, str]
+
+
+def _literal_container_path_items(
+    node: ast.AST,
+    constants: Dict[str, str],
+    *,
+    max_depth: int = 4,
+) -> List[Tuple[ContainerAliasKey, ast.AST]]:
+    items: List[Tuple[ContainerAliasKey, ast.AST]] = []
+
+    def walk(value: ast.AST, prefix: Tuple[Tuple[str, str], ...]) -> None:
+        if len(prefix) >= max_depth:
+            return
+        for key, child in _literal_container_items(value, constants):
+            path = prefix + (key,)
+            alias_key: ContainerAliasKey = path[0] if len(path) == 1 else path
+            items.append((alias_key, child))
+            walk(child, path)
+
+    walk(node, tuple())
+    return items
+
+
+def _next_tracked_list_index(items: Dict[ContainerAliasKey, str]) -> int:
+    indexes = [
+        int(key[1])
+        for key in items
+        if isinstance(key, tuple)
+        and len(key) == 2
+        and key[0] == "index"
+        and isinstance(key[1], str)
+        and key[1].isdigit()
+    ]
+    return max(indexes, default=-1) + 1
+
+
+def _string_literal_container_aliases(tree: ast.AST, constants: Dict[str, str]) -> Dict[str, Dict[ContainerAliasKey, str]]:
+    containers: Dict[str, Dict[ContainerAliasKey, str]] = {}
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if value is None:
+                continue
+            if isinstance(value, ast.Name) and value.id in containers:
+                items = dict(containers[value.id])
+            else:
+                items: Dict[ContainerAliasKey, str] = {}
+                for key, child in _literal_container_path_items(value, constants):
+                    string_value = _static_string_value(child, constants)
+                    if string_value is not None:
+                        items[key] = string_value
+            if not items:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and containers.get(target.id) != items:
+                    containers[target.id] = dict(items)
+                    changed = True
+        if not changed:
+            break
+    return containers
+
+
+def _codec_literal_container_aliases(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    decode_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    decode_dict_aliases: Dict[str, Set[str]],
+) -> Tuple[
+    Dict[str, Dict[ContainerAliasKey, str]],
+    Dict[str, Dict[ContainerAliasKey, str]],
+    Dict[str, Set[ContainerAliasKey]],
+]:
+    module_containers: Dict[str, Dict[ContainerAliasKey, str]] = {}
+    decode_containers: Dict[str, Dict[ContainerAliasKey, str]] = {}
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if value is None:
+                continue
+            if isinstance(value, ast.Name) and value.id in module_containers:
+                module_items = dict(module_containers[value.id])
+            else:
+                module_items: Dict[ContainerAliasKey, str] = {}
+            if isinstance(value, ast.Name) and value.id in decode_containers:
+                decode_items = dict(decode_containers[value.id])
+            else:
+                decode_items: Dict[ContainerAliasKey, str] = {}
+            if not module_items and not decode_items:
+                for key, item in _literal_container_path_items(value, constants):
+                    if _static_codecs_module_ref(
+                        item,
+                        module_aliases,
+                        constants,
+                        importlib_module_aliases,
+                        import_module_aliases,
+                        module_dict_aliases,
+                    ):
+                        module_items[key] = "codecs"
+                    if _static_codecs_decode_ref(
+                        item,
+                        module_aliases,
+                        decode_aliases,
+                        constants,
+                        importlib_module_aliases,
+                        import_module_aliases,
+                        module_dict_aliases,
+                        decode_dict_aliases,
+                    ):
+                        decode_items[key] = "codecs.decode"
+            if not module_items and not decode_items:
+                continue
+            for target in targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                if module_items and module_containers.get(target.id) != module_items:
+                    module_containers[target.id] = dict(module_items)
+                    changed = True
+                if decode_items and decode_containers.get(target.id) != decode_items:
+                    decode_containers[target.id] = dict(decode_items)
+                    changed = True
+        if not changed:
+            break
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+                continue
+            value = _single_own_return_value(node)
+            if value is None:
+                continue
+            if isinstance(value, ast.Name) and value.id in module_containers:
+                module_items = dict(module_containers[value.id])
+            else:
+                call_name = _zero_arg_function_call_name(value)
+                if call_name and call_name in module_containers:
+                    module_items = dict(module_containers[call_name])
+                else:
+                    module_items = {}
+            if not module_items:
+                for key, item in _literal_container_path_items(value, constants):
+                    if _static_codecs_module_ref(
+                        item,
+                        module_aliases,
+                        constants,
+                        importlib_module_aliases,
+                        import_module_aliases,
+                        module_dict_aliases,
+                    ):
+                        module_items[key] = "codecs"
+            if not module_items:
+                continue
+            if module_containers.get(node.name) != module_items:
+                module_containers[node.name] = dict(module_items)
+                changed = True
+        if not changed:
+            break
+    object_aliases: Dict[str, str] = {}
+    class_aliases = _class_aliases(tree)
+    class_instances = _class_instance_aliases(tree)
+
+    def module_items_for(value: ast.AST) -> Dict[ContainerAliasKey, str]:
+        if isinstance(value, ast.Name) and value.id in module_containers:
+            return dict(module_containers[value.id])
+        attr_name = _call_name(value) if isinstance(value, ast.Attribute) else ""
+        if attr_name and attr_name in module_containers:
+            return dict(module_containers[attr_name])
+        call_name = _zero_arg_function_call_name(value)
+        if call_name and call_name in module_containers:
+            return dict(module_containers[call_name])
+        items: Dict[ContainerAliasKey, str] = {}
+        for key, item in _literal_container_path_items(value, constants):
+            if _static_codecs_module_ref(
+                item,
+                module_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+            ):
+                items[key] = "codecs"
+        return items
+
+    def decode_items_for(value: ast.AST) -> Dict[ContainerAliasKey, str]:
+        if isinstance(value, ast.Name) and value.id in decode_containers:
+            return dict(decode_containers[value.id])
+        attr_name = _call_name(value) if isinstance(value, ast.Attribute) else ""
+        if attr_name and attr_name in decode_containers:
+            return dict(decode_containers[attr_name])
+        items: Dict[ContainerAliasKey, str] = {}
+        for key, item in _literal_container_path_items(value, constants):
+            if _static_codecs_decode_ref(
+                item,
+                module_aliases,
+                decode_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+                decode_dict_aliases,
+            ):
+                items[key] = "codecs.decode"
+        return items
+
+    def set_container(
+        containers: Dict[str, Dict[ContainerAliasKey, str]],
+        name: str,
+        items: Dict[ContainerAliasKey, str],
+    ) -> bool:
+        if not name or not items or containers.get(name) == items:
+            return False
+        containers[name] = dict(items)
+        return True
+
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                for attr, value in _class_attribute_assignment_items(node, constants):
+                    changed = set_container(module_containers, f"{node.name}.{attr}", module_items_for(value)) or changed
+                    changed = set_container(decode_containers, f"{node.name}.{attr}", decode_items_for(value)) or changed
+                for child in node.body:
+                    if not isinstance(child, ast.FunctionDef):
+                        continue
+                    value = _single_own_return_value(child)
+                    if value is None:
+                        continue
+                    module_items = module_items_for(value)
+                    decode_items = decode_items_for(value)
+                    for method_name in _zero_explicit_arg_method_names(node, child, class_aliases, class_instances):
+                        changed = set_container(module_containers, method_name, module_items) or changed
+                        changed = set_container(decode_containers, method_name, decode_items) or changed
+                continue
+            if isinstance(node, ast.FunctionDef) and _function_required_arg_count(node) == 0:
+                value = _single_own_return_value(node)
+                if value is not None:
+                    changed = set_container(module_containers, node.name, module_items_for(value)) or changed
+                    changed = set_container(decode_containers, node.name, decode_items_for(value)) or changed
+                continue
+
+            for obj, attr, item in _setattr_assignment_items(node, constants):
+                module_items = module_items_for(item)
+                decode_items = decode_items_for(item)
+                for attr_name in _attribute_names_for_object(obj, attr, object_aliases):
+                    changed = set_container(module_containers, attr_name, module_items) or changed
+                    changed = set_container(decode_containers, attr_name, decode_items) or changed
+
+            value, targets = _assignment_value_targets(node)
+            if value is None:
+                continue
+
+            if isinstance(value, ast.Name):
+                source = object_aliases.get(value.id, value.id)
+                for target in targets:
+                    if isinstance(target, ast.Name) and object_aliases.get(target.id) != source:
+                        object_aliases[target.id] = source
+                        changed = True
+
+            module_items = module_items_for(value)
+            decode_items = decode_items_for(value)
+            for target in targets:
+                if isinstance(target, ast.Attribute):
+                    attr_name = _call_name(target)
+                    changed = set_container(module_containers, attr_name, module_items) or changed
+                    changed = set_container(decode_containers, attr_name, decode_items) or changed
+                    continue
+                if not isinstance(target, ast.Name):
+                    continue
+                for attr, item in _simple_namespace_keyword_items(value):
+                    changed = set_container(module_containers, f"{target.id}.{attr}", module_items_for(item)) or changed
+                    changed = set_container(decode_containers, f"{target.id}.{attr}", decode_items_for(item)) or changed
+
+        for alias, source in list(object_aliases.items()):
+            prefix = f"{source}."
+            for name, items in list(module_containers.items()):
+                if name.startswith(prefix):
+                    changed = set_container(module_containers, f"{alias}.{name[len(prefix):]}", items) or changed
+            for name, items in list(decode_containers.items()):
+                if name.startswith(prefix):
+                    changed = set_container(decode_containers, f"{alias}.{name[len(prefix):]}", items) or changed
+        for instance, class_name in class_instances.items():
+            prefix = f"{class_name}."
+            for name, items in list(module_containers.items()):
+                if name.startswith(prefix):
+                    changed = set_container(module_containers, f"{instance}.{name[len(prefix):]}", items) or changed
+            for name, items in list(decode_containers.items()):
+                if name.startswith(prefix):
+                    changed = set_container(decode_containers, f"{instance}.{name[len(prefix):]}", items) or changed
+        if not changed:
+            break
+
+    list_lengths: Dict[str, int] = {}
+    known_container_keys: Dict[str, Set[ContainerAliasKey]] = {}
+
+    def container_name(value: ast.AST) -> str:
+        if isinstance(value, (ast.Name, ast.Attribute)):
+            return _call_name(value)
+        return _zero_arg_function_call_name(value)
+
+    def value_is_codecs_module(value: ast.AST) -> bool:
+        return _static_codecs_module_ref(
+            value,
+            module_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+        ) or _container_subscript_lookup(value, module_containers, constants) is not None
+
+    def value_is_codecs_decode(value: ast.AST) -> bool:
+        return _static_codecs_decode_ref(
+            value,
+            module_aliases,
+            decode_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            decode_dict_aliases,
+        ) or _container_subscript_lookup(value, decode_containers, constants) is not None
+
+    def set_container_item(container: str, key: ContainerAliasKey, value: ast.AST) -> None:
+        if not container:
+            return
+        known_container_keys.setdefault(container, set()).add(key)
+        if value_is_codecs_module(value):
+            module_containers.setdefault(container, {})[key] = "codecs"
+        else:
+            module_containers.get(container, {}).pop(key, None)
+        if value_is_codecs_decode(value):
+            decode_containers.setdefault(container, {})[key] = "codecs.decode"
+        else:
+            decode_containers.get(container, {}).pop(key, None)
+
+    def set_literal_container(container: str, value: ast.AST) -> None:
+        if not container or not isinstance(value, (ast.List, ast.Tuple, ast.Dict)):
+            return
+        module_items = module_items_for(value)
+        decode_items = decode_items_for(value)
+        known_container_keys[container] = {key for key, _ in _literal_container_path_items(value, constants)}
+        if module_items:
+            module_containers[container] = module_items
+        else:
+            module_containers.pop(container, None)
+        if decode_items:
+            decode_containers[container] = decode_items
+        else:
+            decode_containers.pop(container, None)
+        if isinstance(value, (ast.List, ast.Tuple)):
+            list_lengths[container] = len(value.elts)
+
+    def assignment_container_key(target: ast.AST) -> Optional[Tuple[str, ContainerAliasKey]]:
+        if not isinstance(target, ast.Subscript):
+            return None
+        path = _container_subscript_path(target, constants)
+        if path is None:
+            return None
+        container, keys = path
+        alias_key: ContainerAliasKey = keys[0] if len(keys) == 1 else keys
+        return container, alias_key
+
+    def static_insert_index(value: ast.AST) -> Optional[int]:
+        if isinstance(value, ast.Constant) and isinstance(value.value, int) and value.value >= 0:
+            return value.value
+        return None
+
+    def shift_indexed_items(container: str, start_index: int) -> None:
+        def shifted_key(key: ContainerAliasKey) -> ContainerAliasKey:
+            if (
+                isinstance(key, tuple)
+                and len(key) == 2
+                and key[0] == "index"
+                and isinstance(key[1], str)
+                and key[1].isdigit()
+            ):
+                index = int(key[1])
+                if index >= start_index:
+                    return ("index", str(index + 1))
+            return key
+
+        if container in module_containers:
+            module_containers[container] = {shifted_key(key): value for key, value in module_containers[container].items()}
+        if container in decode_containers:
+            decode_containers[container] = {shifted_key(key): value for key, value in decode_containers[container].items()}
+        if container in known_container_keys:
+            known_container_keys[container] = {shifted_key(key) for key in known_container_keys[container]}
+
+    def append_container_value(container: str, value: ast.AST) -> None:
+        if not container:
+            return
+        index = list_lengths.get(container)
+        if index is None:
+            index = _next_tracked_list_index(module_containers.get(container, {}))
+            index = max(index, _next_tracked_list_index(decode_containers.get(container, {})))
+        key: ContainerAliasKey = ("index", str(index))
+        set_container_item(container, key, value)
+        list_lengths[container] = index + 1
+
+    def extend_container_values(container: str, value: ast.AST) -> None:
+        if not container or not isinstance(value, (ast.List, ast.Tuple)):
+            return
+        for _, item in _literal_container_items(value, constants):
+            append_container_value(container, item)
+
+    def insert_container_value(container: str, index_node: ast.AST, value: ast.AST) -> None:
+        if not container:
+            return
+        insert_index = static_insert_index(index_node)
+        if insert_index is None:
+            return
+        length = list_lengths.get(container)
+        if length is not None:
+            insert_index = min(insert_index, length)
+        shift_indexed_items(container, insert_index)
+        set_container_item(container, ("index", str(insert_index)), value)
+        if length is None:
+            list_lengths[container] = max(insert_index + 1, _next_tracked_list_index(module_containers.get(container, {})))
+            list_lengths[container] = max(list_lengths[container], _next_tracked_list_index(decode_containers.get(container, {})))
+        else:
+            list_lengths[container] = length + 1
+
+    def update_container_values(container: str, call: ast.Call) -> None:
+        if not container:
+            return
+        if call.args:
+            value = call.args[0]
+            keys = set(module_items_for(value)) | set(decode_items_for(value))
+            keys.update(key for key, _ in _literal_container_path_items(value, constants))
+            for key in keys:
+                if key in module_items_for(value):
+                    module_containers.setdefault(container, {})[key] = "codecs"
+                else:
+                    module_containers.get(container, {}).pop(key, None)
+                if key in decode_items_for(value):
+                    decode_containers.setdefault(container, {})[key] = "codecs.decode"
+                else:
+                    decode_containers.get(container, {}).pop(key, None)
+                known_container_keys.setdefault(container, set()).add(key)
+        for keyword in call.keywords or []:
+            if not keyword.arg:
+                continue
+            set_container_item(container, ("key", keyword.arg), keyword.value)
+
+    def setdefault_container_value(container: str, call: ast.Call) -> None:
+        if not container or len(call.args) < 2:
+            return
+        key = _container_key_from_literal(call.args[0], constants)
+        if key is None:
+            return
+        if key in known_container_keys.get(container, set()):
+            return
+        set_container_item(container, key, call.args[1])
+
+    for node in sorted(ast.walk(tree), key=lambda item: (getattr(item, "lineno", 0), getattr(item, "col_offset", 0))):
+        if isinstance(node, ast.ClassDef):
+            for attr, class_value in _class_attribute_assignment_items(node, constants):
+                set_literal_container(f"{node.name}.{attr}", class_value)
+
+        value, targets = _assignment_value_targets(node)
+        if value is not None:
+            for target in targets:
+                if isinstance(target, (ast.Name, ast.Attribute)):
+                    set_literal_container(container_name(target), value)
+                    continue
+                key_info = assignment_container_key(target)
+                if key_info is not None:
+                    set_container_item(key_info[0], key_info[1], value)
+            for target in targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                for attr, item in _simple_namespace_keyword_items(value):
+                    set_literal_container(f"{target.id}.{attr}", item)
+
+        call = node.value if isinstance(node, ast.Expr) else node
+        if not (
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+        ):
+            continue
+        container = container_name(call.func.value)
+        if not container:
+            continue
+        if call.func.attr == "append" and call.args:
+            append_container_value(container, call.args[0])
+        elif call.func.attr == "extend" and call.args:
+            extend_container_values(container, call.args[0])
+        elif call.func.attr == "insert" and len(call.args) >= 2:
+            insert_container_value(container, call.args[0], call.args[1])
+        elif call.func.attr == "update":
+            update_container_values(container, call)
+        elif call.func.attr == "setdefault":
+            setdefault_container_value(container, call)
+
+    for alias, source in object_aliases.items():
+        prefix = f"{source}."
+        for name, keys in list(known_container_keys.items()):
+            if name.startswith(prefix):
+                known_container_keys.setdefault(f"{alias}.{name[len(prefix):]}", set()).update(keys)
+    for instance, class_name in class_instances.items():
+        prefix = f"{class_name}."
+        for name, keys in list(known_container_keys.items()):
+            if name.startswith(prefix):
+                known_container_keys.setdefault(f"{instance}.{name[len(prefix):]}", set()).update(keys)
+    return module_containers, decode_containers, known_container_keys
+
+
+def _container_subscript_path(
+    node: ast.AST,
+    constants: Dict[str, str],
+) -> Optional[Tuple[str, Tuple[Tuple[str, str], ...]]]:
+    keys: List[Tuple[str, str]] = []
+    current = node
+    while True:
+        if isinstance(current, ast.Subscript):
+            key = _container_key_from_literal(current.slice, constants)
+            if key is None:
+                return None
+            keys.append(key)
+            current = current.value
+            continue
+        if (
+            isinstance(current, ast.Call)
+            and isinstance(current.func, ast.Attribute)
+            and current.func.attr in {"get", "setdefault", "pop"}
+            and current.args
+        ):
+            key = _container_key_from_literal(current.args[0], constants)
+            if key is None:
+                return None
+            keys.append(key)
+            current = current.func.value
+            continue
+        break
+    if not keys:
+        return None
+    keys.reverse()
+    if isinstance(current, ast.Name):
+        container_name = current.id
+    elif isinstance(current, ast.Attribute):
+        container_name = _call_name(current)
+    else:
+        container_name = _zero_arg_function_call_name(current)
+    if not container_name:
+        return None
+    return container_name, tuple(keys)
+
+
+def _container_subscript_lookup(
+    node: ast.AST,
+    aliases: Dict[str, Dict[ContainerAliasKey, str]],
+    constants: Dict[str, str],
+) -> Optional[str]:
+    container_path = _container_subscript_path(node, constants)
+    if container_path is None:
+        return None
+    container_name, path = container_path
+    items = aliases.get(container_name, {})
+    if len(path) == 1:
+        direct = items.get(path[0])
+        if direct is not None:
+            return direct
+    return items.get(path)
+
+
+def _container_method_return_lookup(
+    node: ast.AST,
+    aliases: Dict[str, Dict[ContainerAliasKey, str]],
+    known_container_keys: Dict[str, Set[ContainerAliasKey]],
+    constants: Dict[str, str],
+    default_alias: Callable[[ast.AST], Optional[str]],
+) -> Optional[str]:
+    direct = _container_subscript_lookup(node, aliases, constants)
+    if direct is not None:
+        return direct
+    if not (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"get", "setdefault", "pop"}
+        and node.args
+    ):
+        return None
+    key = _container_key_from_literal(node.args[0], constants)
+    if key is None:
+        return None
+    container_path = _container_subscript_path(node.func.value, constants)
+    if container_path is not None:
+        container_name, prefix_path = container_path
+        key = prefix_path + (key,)
+    elif isinstance(node.func.value, ast.Name):
+        container_name = node.func.value.id
+    elif isinstance(node.func.value, ast.Attribute):
+        container_name = _call_name(node.func.value)
+    else:
+        container_name = _zero_arg_function_call_name(node.func.value)
+    if not container_name or container_name not in known_container_keys:
+        return None
+    if key in known_container_keys.get(container_name, set()):
+        return None
+    if len(node.args) < 2:
+        return None
+    return default_alias(node.args[1])
+
+
+def _add_container_method_return_assignment_aliases(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    decode_aliases: Set[str],
+    module_containers: Dict[str, Dict[ContainerAliasKey, str]],
+    decode_containers: Dict[str, Dict[ContainerAliasKey, str]],
+    known_container_keys: Dict[str, Set[ContainerAliasKey]],
+    constants: Dict[str, str],
+    module_default_alias: Callable[[ast.AST], Optional[str]],
+    decode_default_alias: Callable[[ast.AST], Optional[str]],
+) -> None:
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            value, targets = _assignment_value_targets(node)
+            if value is None:
+                continue
+            is_module = _container_method_return_lookup(
+                value,
+                module_containers,
+                known_container_keys,
+                constants,
+                module_default_alias,
+            ) is not None
+            is_decode = _container_method_return_lookup(
+                value,
+                decode_containers,
+                known_container_keys,
+                constants,
+                decode_default_alias,
+            ) is not None
+            if not is_module and not is_decode:
+                continue
+            for target in targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                if is_module and target.id not in module_aliases:
+                    module_aliases.add(target.id)
+                    changed = True
+                if is_decode and target.id not in decode_aliases:
+                    decode_aliases.add(target.id)
+                    changed = True
+        if not changed:
+            break
+
+
+def _attribute_alias_lookup(node: ast.AST, aliases: Dict[str, str]) -> Optional[str]:
+    if not isinstance(node, ast.Attribute):
+        return None
+    return aliases.get(_call_name(node))
+
+
+def _attribute_name_alias_lookup(node: ast.AST, aliases: Set[str]) -> bool:
+    return isinstance(node, ast.Attribute) and _call_name(node) in aliases
+
+
+def _temporary_instance_attribute_name(
+    node: ast.AST,
+    class_aliases: Dict[str, str],
+    factory_aliases: Dict[str, str],
+) -> str:
+    if not isinstance(node, ast.Attribute):
+        return ""
+    value = node.value
+    if not isinstance(value, ast.Call) or value.args or value.keywords:
+        return ""
+    called = _call_name(value.func)
+    class_name = class_aliases.get(called, "") or factory_aliases.get(called, "")
+    if not class_name:
+        return ""
+    return f"{class_name}.{node.attr}"
+
+
+def _temporary_instance_attribute_alias_lookup(
+    node: ast.AST,
+    aliases: Dict[str, str],
+    class_aliases: Dict[str, str],
+    factory_aliases: Dict[str, str],
+) -> Optional[str]:
+    attr_name = _temporary_instance_attribute_name(node, class_aliases, factory_aliases)
+    if not attr_name:
+        return None
+    return aliases.get(attr_name)
+
+
+def _temporary_instance_attribute_name_alias_lookup(
+    node: ast.AST,
+    aliases: Set[str],
+    class_aliases: Dict[str, str],
+    factory_aliases: Dict[str, str],
+) -> bool:
+    attr_name = _temporary_instance_attribute_name(node, class_aliases, factory_aliases)
+    return bool(attr_name and attr_name in aliases)
+
+
+def _codecs_decode_attribute_aliases(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    decode_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    decode_dict_aliases: Dict[str, Set[str]],
+    decode_containers: Dict[str, Dict[ContainerAliasKey, str]],
+    known_container_keys: Optional[Dict[str, Set[ContainerAliasKey]]] = None,
+    decode_default_alias: Optional[Callable[[ast.AST], Optional[str]]] = None,
+) -> Set[str]:
+    attributes: Set[str] = set()
+    object_aliases: Dict[str, str] = {}
+    class_instances = _class_instance_aliases(tree)
+
+    def value_is_decode(value: ast.AST) -> bool:
+        return (
+            _static_codecs_decode_ref(
+                value,
+                module_aliases,
+                decode_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+                decode_dict_aliases,
+            )
+            or _container_subscript_lookup(value, decode_containers, constants) is not None
+            or (
+                known_container_keys is not None
+                and decode_default_alias is not None
+                and _container_method_return_lookup(
+                    value,
+                    decode_containers,
+                    known_container_keys,
+                    constants,
+                    decode_default_alias,
+                )
+                is not None
+            )
+            or _attribute_name_alias_lookup(value, attributes)
+        )
+
+    def add_attribute(name: str) -> bool:
+        if not name or name in attributes:
+            return False
+        attributes.add(name)
+        return True
+
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                for attr, value in _class_attribute_assignment_items(node, constants):
+                    if not value_is_decode(value):
+                        continue
+                    changed = add_attribute(f"{node.name}.{attr}") or changed
+                continue
+
+            for obj, attr, value in _setattr_assignment_items(node, constants):
+                if value_is_decode(value):
+                    for attr_name in _attribute_names_for_object(obj, attr, object_aliases):
+                        changed = add_attribute(attr_name) or changed
+
+            value, targets = _assignment_value_targets(node)
+            if value is None:
+                continue
+
+            if isinstance(value, ast.Name):
+                source = object_aliases.get(value.id, value.id)
+                for target in targets:
+                    if isinstance(target, ast.Name) and object_aliases.get(target.id) != source:
+                        object_aliases[target.id] = source
+                        changed = True
+
+            for target in targets:
+                if isinstance(target, ast.Attribute):
+                    if value_is_decode(value):
+                        changed = add_attribute(_call_name(target)) or changed
+                    continue
+                if not isinstance(target, ast.Name):
+                    continue
+                for attr, item in _simple_namespace_keyword_items(value):
+                    if value_is_decode(item):
+                        changed = add_attribute(f"{target.id}.{attr}") or changed
+
+        for alias, source in list(object_aliases.items()):
+            prefix = f"{source}."
+            for attr_name in list(attributes):
+                if attr_name.startswith(prefix):
+                    changed = add_attribute(f"{alias}.{attr_name[len(prefix):]}") or changed
+        for instance, class_name in class_instances.items():
+            prefix = f"{class_name}."
+            for attr_name in list(attributes):
+                if attr_name.startswith(prefix):
+                    changed = add_attribute(f"{instance}.{attr_name[len(prefix):]}") or changed
+        if not changed:
+            break
+    return attributes
+
+
+def _subscript_call_label(node: ast.AST) -> str:
+    if not isinstance(node, ast.Subscript) or not isinstance(node.value, ast.Name):
+        return "container"
+    if isinstance(node.slice, ast.Constant):
+        return f"{node.value.id}[{node.slice.value!r}]"
+    return f"{node.value.id}[...]"
+
+
+def _attribute_call_label(node: ast.AST) -> str:
+    return _call_name(node) or "attribute"
+
+
+def _decode_method_container_aliases(
+    tree: ast.AST,
+    encoded_text_aliases: Dict[str, str],
+    constants: Dict[str, str],
+    byte_constructor_aliases: Set[str],
+    operator_module_aliases: Set[str],
+    attrgetter_aliases: Set[str],
+    method_aliases: Dict[str, str],
+) -> Dict[str, Dict[Tuple[str, str], str]]:
+    aliases: Dict[str, Dict[Tuple[str, str], str]] = {}
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if value is None:
+                continue
+            if isinstance(value, ast.Name) and value.id in aliases:
+                container_items = dict(aliases[value.id])
+            else:
+                container_items: Dict[Tuple[str, str], str] = {}
+                for key, item in _literal_container_items(value, constants):
+                    if isinstance(item, ast.Name) and item.id in method_aliases:
+                        encoded_as = method_aliases[item.id]
+                    else:
+                        encoded_as = _decode_method_source_encoding(
+                            item,
+                            encoded_text_aliases,
+                            constants,
+                            byte_constructor_aliases,
+                            operator_module_aliases,
+                            attrgetter_aliases,
+                        )
+                    if encoded_as is not None:
+                        container_items[key] = encoded_as
+            if not container_items:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and aliases.get(target.id) != container_items:
+                    aliases[target.id] = dict(container_items)
+                    changed = True
+        if not changed:
+            break
+    return aliases
+
+
+def _function_required_arg_count(node: ast.FunctionDef) -> int:
+    positional = [*node.args.posonlyargs, *node.args.args]
+    positional_defaults = len(node.args.defaults or [])
+    required_positional = max(0, len(positional) - positional_defaults)
+    required_kwonly = sum(1 for default in node.args.kw_defaults if default is None)
+    return required_positional + required_kwonly
+
+
+def _lambda_required_arg_count(node: ast.Lambda) -> int:
+    positional = [*node.args.posonlyargs, *node.args.args]
+    positional_defaults = len(node.args.defaults or [])
+    required_positional = max(0, len(positional) - positional_defaults)
+    required_kwonly = sum(1 for default in node.args.kw_defaults if default is None)
+    return required_positional + required_kwonly
+
+
+def _zero_arg_lambda_assignments(tree: ast.AST) -> Dict[str, ast.AST]:
+    lambdas: Dict[str, ast.AST] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            value = node.value
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            value = node.value
+            targets = [node.target]
+        else:
+            continue
+        if not isinstance(value, ast.Lambda) or _lambda_required_arg_count(value) != 0:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                lambdas[target.id] = value.body
+    return lambdas
+
+
+def _single_return_value(node: ast.FunctionDef) -> Optional[ast.AST]:
+    returns = [item.value for item in ast.walk(node) if isinstance(item, ast.Return) and item.value is not None]
+    if len(returns) != 1:
+        return None
+    return returns[0]
+
+
+def _single_own_return_value(node: ast.FunctionDef) -> Optional[ast.AST]:
+    returns: List[ast.AST] = []
+
+    def visit(item: ast.AST) -> None:
+        if item is not node and isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            return
+        if isinstance(item, ast.Return) and item.value is not None:
+            returns.append(item.value)
+            return
+        for child in ast.iter_child_nodes(item):
+            visit(child)
+
+    visit(node)
+    if len(returns) != 1:
+        return None
+    return returns[0]
+
+
+def _direct_child_functions(node: ast.FunctionDef) -> Dict[str, ast.FunctionDef]:
+    return {item.name: item for item in node.body if isinstance(item, ast.FunctionDef)}
+
+
+def _decode_method_function_results(
+    tree: ast.AST,
+    encoded_text_aliases: Dict[str, str],
+    constants: Dict[str, str],
+    byte_constructor_aliases: Set[str],
+    operator_module_aliases: Set[str],
+    attrgetter_aliases: Set[str],
+    method_aliases: Dict[str, str],
+) -> Dict[str, str]:
+    functions: Dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+            continue
+        value = _single_return_value(node)
+        if value is None:
+            continue
+        if isinstance(value, ast.Name) and value.id in method_aliases:
+            encoded_as = method_aliases[value.id]
+        else:
+            encoded_as = _decode_method_source_encoding(
+                value,
+                encoded_text_aliases,
+                constants,
+                byte_constructor_aliases,
+                operator_module_aliases,
+                attrgetter_aliases,
+            )
+        if encoded_as is not None:
+            functions[node.name] = encoded_as
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if not isinstance(value, ast.Name) or value.id not in functions:
+                continue
+            encoded_as = functions[value.id]
+            for target in targets:
+                if isinstance(target, ast.Name) and functions.get(target.id) != encoded_as:
+                    functions[target.id] = encoded_as
+                    changed = True
+        if not changed:
+            break
+    return functions
+
+
+def _operator_methodcaller_result_aliases(
+    tree: ast.AST,
+    operator_module_aliases: Set[str],
+    methodcaller_aliases: Set[str],
+    constants: Dict[str, str],
+) -> Dict[str, str]:
+    aliases: Dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            value = node.value
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            value = node.value
+            targets = [node.target]
+        else:
+            continue
+        encoding = _operator_methodcaller_decode_encoding(
+            value,
+            operator_module_aliases,
+            methodcaller_aliases,
+            constants,
+        )
+        if encoding is None:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                aliases[target.id] = encoding
+    return aliases
+
+
+def _operator_methodcaller_codecs_decode_result_aliases(
+    tree: ast.AST,
+    operator_module_aliases: Set[str],
+    methodcaller_aliases: Set[str],
+    constants: Dict[str, str],
+    encoded_text_bytes: Dict[str, str],
+    byte_constructor_aliases: Set[str],
+) -> Dict[str, Tuple[str, str]]:
+    aliases: Dict[str, Tuple[str, str]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            value = node.value
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            value = node.value
+            targets = [node.target]
+        else:
+            continue
+        info = _operator_methodcaller_codecs_decode_info(
+            value,
+            operator_module_aliases,
+            methodcaller_aliases,
+            constants,
+            encoded_text_bytes,
+            byte_constructor_aliases,
+        )
+        if info is None:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                aliases[target.id] = info
+    return aliases
+
+
+def _operator_methodcaller_container_aliases(
+    tree: ast.AST,
+    operator_module_aliases: Set[str],
+    methodcaller_aliases: Set[str],
+    constants: Dict[str, str],
+    methodcaller_result_aliases: Dict[str, str],
+) -> Dict[str, Dict[Tuple[str, str], str]]:
+    aliases: Dict[str, Dict[Tuple[str, str], str]] = {}
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if value is None:
+                continue
+            if isinstance(value, ast.Name) and value.id in aliases:
+                container_items = dict(aliases[value.id])
+            else:
+                container_items: Dict[Tuple[str, str], str] = {}
+                for key, item in _literal_container_items(value, constants):
+                    if isinstance(item, ast.Name) and item.id in methodcaller_result_aliases:
+                        encoding = methodcaller_result_aliases[item.id]
+                    else:
+                        encoding = _operator_methodcaller_decode_encoding(
+                            item,
+                            operator_module_aliases,
+                            methodcaller_aliases,
+                            constants,
+                        )
+                    if encoding is not None:
+                        container_items[key] = encoding
+            if not container_items:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and aliases.get(target.id) != container_items:
+                    aliases[target.id] = dict(container_items)
+                    changed = True
+        if not changed:
+            break
+    return aliases
+
+
+def _operator_methodcaller_function_results(
+    tree: ast.AST,
+    operator_module_aliases: Set[str],
+    methodcaller_aliases: Set[str],
+    constants: Dict[str, str],
+    methodcaller_result_aliases: Dict[str, str],
+) -> Dict[str, str]:
+    functions: Dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+            continue
+        value = _single_return_value(node)
+        if value is None:
+            continue
+        if isinstance(value, ast.Name) and value.id in methodcaller_result_aliases:
+            encoding = methodcaller_result_aliases[value.id]
+        else:
+            encoding = _operator_methodcaller_decode_encoding(
+                value,
+                operator_module_aliases,
+                methodcaller_aliases,
+                constants,
+            )
+        if encoding is not None:
+            functions[node.name] = encoding
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if not isinstance(value, ast.Name) or value.id not in functions:
+                continue
+            encoding = functions[value.id]
+            for target in targets:
+                if isinstance(target, ast.Name) and functions.get(target.id) != encoding:
+                    functions[target.id] = encoding
+                    changed = True
+        if not changed:
+            break
+    return functions
+
+
+def _operator_methodcaller_codecs_decode_function_results(
+    tree: ast.AST,
+    operator_module_aliases: Set[str],
+    methodcaller_aliases: Set[str],
+    constants: Dict[str, str],
+    methodcaller_codecs_result_aliases: Dict[str, Tuple[str, str]],
+    encoded_text_bytes: Dict[str, str],
+    byte_constructor_aliases: Set[str],
+) -> Dict[str, Tuple[str, str]]:
+    functions: Dict[str, Tuple[str, str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+            continue
+        value = _single_return_value(node)
+        if value is None:
+            continue
+        if isinstance(value, ast.Name) and value.id in methodcaller_codecs_result_aliases:
+            info = methodcaller_codecs_result_aliases[value.id]
+        else:
+            info = _operator_methodcaller_codecs_decode_info(
+                value,
+                operator_module_aliases,
+                methodcaller_aliases,
+                constants,
+                encoded_text_bytes,
+                byte_constructor_aliases,
+            )
+        if info is not None:
+            functions[node.name] = info
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if not isinstance(value, ast.Name) or value.id not in functions:
+                continue
+            info = functions[value.id]
+            for target in targets:
+                if isinstance(target, ast.Name) and functions.get(target.id) != info:
+                    functions[target.id] = info
+                    changed = True
+        if not changed:
+            break
+    return functions
+
+
+def _zero_arg_function_call_name(node: ast.AST) -> str:
+    if not isinstance(node, ast.Call) or node.args or node.keywords:
+        return ""
+    return _call_name(node.func)
+
+
+def _codec_module_attribute_aliases(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    module_containers: Dict[str, Dict[ContainerAliasKey, str]],
+    known_container_keys: Optional[Dict[str, Set[ContainerAliasKey]]] = None,
+    module_default_alias: Optional[Callable[[ast.AST], Optional[str]]] = None,
+) -> Set[str]:
+    attributes: Set[str] = set()
+    object_aliases: Dict[str, str] = {}
+    class_instances = _class_instance_aliases(tree)
+
+    def value_is_module(value: ast.AST) -> bool:
+        return (
+            _static_codecs_module_ref(
+                value,
+                module_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+            )
+            or _container_subscript_lookup(value, module_containers, constants) is not None
+            or (
+                known_container_keys is not None
+                and module_default_alias is not None
+                and _container_method_return_lookup(
+                    value,
+                    module_containers,
+                    known_container_keys,
+                    constants,
+                    module_default_alias,
+                )
+                is not None
+            )
+            or _attribute_name_alias_lookup(value, attributes)
+        )
+
+    def add_attribute(name: str) -> bool:
+        if not name or name in attributes:
+            return False
+        attributes.add(name)
+        return True
+
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                for attr, value in _class_attribute_assignment_items(node, constants):
+                    if value_is_module(value):
+                        changed = add_attribute(f"{node.name}.{attr}") or changed
+                continue
+
+            for obj, attr, value in _setattr_assignment_items(node, constants):
+                if value_is_module(value):
+                    for attr_name in _attribute_names_for_object(obj, attr, object_aliases):
+                        changed = add_attribute(attr_name) or changed
+
+            value, targets = _assignment_value_targets(node)
+            if value is None:
+                continue
+
+            if isinstance(value, ast.Name):
+                source = object_aliases.get(value.id, value.id)
+                for target in targets:
+                    if isinstance(target, ast.Name) and object_aliases.get(target.id) != source:
+                        object_aliases[target.id] = source
+                        changed = True
+
+            for target in targets:
+                if isinstance(target, ast.Attribute):
+                    if value_is_module(value):
+                        changed = add_attribute(_call_name(target)) or changed
+                    continue
+                if not isinstance(target, ast.Name):
+                    continue
+                for attr, item in _simple_namespace_keyword_items(value):
+                    if value_is_module(item):
+                        changed = add_attribute(f"{target.id}.{attr}") or changed
+
+        for alias, source in list(object_aliases.items()):
+            prefix = f"{source}."
+            for attr_name in list(attributes):
+                if attr_name.startswith(prefix):
+                    changed = add_attribute(f"{alias}.{attr_name[len(prefix):]}") or changed
+        for instance, class_name in class_instances.items():
+            prefix = f"{class_name}."
+            for attr_name in list(attributes):
+                if attr_name.startswith(prefix):
+                    changed = add_attribute(f"{instance}.{attr_name[len(prefix):]}") or changed
+        if not changed:
+            break
+    return attributes
+
+
+def _codecs_module_function_results(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    module_containers: Dict[str, Dict[ContainerAliasKey, str]],
+) -> Set[str]:
+    functions: Set[str] = set()
+    function_nodes: Set[int] = set()
+    class_aliases = _class_aliases(tree)
+    class_instances = _class_instance_aliases(tree)
+    lambda_returns = _zero_arg_lambda_assignments(tree)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+            continue
+        value = _single_own_return_value(node)
+        if value is None:
+            continue
+        if _static_codecs_module_ref(
+            value,
+            module_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+        ) or _container_subscript_lookup(value, module_containers, constants) is not None:
+            functions.add(node.name)
+            function_nodes.add(id(node))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for child in node.body:
+            if not isinstance(child, ast.FunctionDef):
+                continue
+            value = _single_own_return_value(child)
+            if value is None:
+                continue
+            if not (
+                _static_codecs_module_ref(
+                    value,
+                    module_aliases,
+                    constants,
+                    importlib_module_aliases,
+                    import_module_aliases,
+                    module_dict_aliases,
+                )
+                or _container_subscript_lookup(value, module_containers, constants) is not None
+            ):
+                continue
+            for method_name in _zero_explicit_arg_method_names(node, child, class_aliases, class_instances):
+                functions.add(method_name)
+                function_nodes.add(id(child))
+    for name, value in lambda_returns.items():
+        if _static_codecs_module_ref(
+            value,
+            module_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+        ) or _container_subscript_lookup(value, module_containers, constants) is not None:
+            functions.add(name)
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+                continue
+            value = _single_own_return_value(node)
+            call_name = _zero_arg_function_call_name(value) if value is not None else ""
+            direct_child = _direct_child_functions(node).get(call_name)
+            if direct_child is None or id(direct_child) not in function_nodes:
+                continue
+            if node.name not in functions:
+                functions.add(node.name)
+                function_nodes.add(id(node))
+                changed = True
+        if not changed:
+            break
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if not isinstance(value, ast.Name) or value.id not in functions:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id not in functions:
+                    functions.add(target.id)
+                    changed = True
+        if not changed:
+            break
+    return functions
+
+
+def _is_codecs_module_ref_or_result(
+    node: Optional[ast.AST],
+    module_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    module_containers: Dict[str, Dict[Tuple[str, str], str]],
+    module_attributes: Set[str],
+    module_functions: Set[str],
+    class_aliases: Dict[str, str],
+    factory_aliases: Dict[str, str],
+    known_container_keys: Optional[Dict[str, Set[ContainerAliasKey]]] = None,
+) -> bool:
+    if node is None:
+        return False
+    if _static_codecs_module_ref(
+        node,
+        module_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+    ):
+        return True
+    if _container_subscript_lookup(node, module_containers, constants) is not None:
+        return True
+    if _container_method_return_lookup(
+        node,
+        module_containers,
+        known_container_keys or {},
+        constants,
+        lambda value: "codecs"
+        if _static_codecs_module_ref(
+            value,
+            module_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+        )
+        else None,
+    ) is not None:
+        return True
+    if _attribute_name_alias_lookup(node, module_attributes):
+        return True
+    if _temporary_instance_attribute_name_alias_lookup(node, module_attributes, class_aliases, factory_aliases):
+        return True
+    return _zero_arg_function_call_name(node) in module_functions
+
+
+def _param_getattr_call_has_codecs_module(
+    node: ast.Call,
+    function_info: Dict[str, object],
+    module_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    module_containers: Dict[str, Dict[Tuple[str, str], str]],
+    module_attributes: Set[str],
+    module_functions: Set[str],
+    class_aliases: Dict[str, str],
+    factory_aliases: Dict[str, str],
+    known_container_keys: Optional[Dict[str, Set[ContainerAliasKey]]] = None,
+) -> bool:
+    module_param = function_info.get("module_param")
+    if not isinstance(module_param, str):
+        return False
+    module_node = _wrapper_call_arg_or_default_node(node, function_info, module_param)
+    return _is_codecs_module_ref_or_result(
+        module_node,
+        module_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        module_containers,
+        module_attributes,
+        module_functions,
+        class_aliases,
+        factory_aliases,
+        known_container_keys,
+    )
+
+
+def _add_bound_codecs_module_method_aliases(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    decode_aliases: Set[str],
+    getdecoder_aliases: Set[str],
+    lookup_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    module_containers: Dict[str, Dict[ContainerAliasKey, str]],
+    module_attributes: Set[str],
+    module_functions: Set[str],
+    class_aliases: Dict[str, str],
+    factory_aliases: Dict[str, str],
+    operator_module_aliases: Set[str],
+    attrgetter_aliases: Set[str],
+) -> None:
+    alias_sets = {
+        "decode": decode_aliases,
+        "getdecoder": getdecoder_aliases,
+        "lookup": lookup_aliases,
+    }
+
+    def bound_module_method_attr(value: Optional[ast.AST]) -> str:
+        if isinstance(value, ast.Attribute) and value.attr in alias_sets:
+            if _is_codecs_module_ref_or_result(
+                value.value,
+                module_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+                module_containers,
+                module_attributes,
+                module_functions,
+                class_aliases,
+                factory_aliases,
+            ):
+                return value.attr
+        if _operator_attrgetter_codecs_decode_ref(
+            value,
+            operator_module_aliases,
+            attrgetter_aliases,
+            module_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            module_containers,
+            module_attributes,
+            module_functions,
+            class_aliases,
+            factory_aliases,
+        ):
+            return "decode"
+        if isinstance(value, ast.Name):
+            for candidate, aliases in alias_sets.items():
+                if value.id in aliases:
+                    return candidate
+        return ""
+
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            value, targets = _assignment_value_targets(node)
+            if value is None:
+                continue
+            attr = bound_module_method_attr(value)
+            if not attr:
+                continue
+            aliases = alias_sets[attr]
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id not in aliases:
+                    aliases.add(target.id)
+                    changed = True
+        if not changed:
+            break
+
+
+def _bound_codecs_module_method_function_refs(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    decode_aliases: Set[str],
+    getdecoder_aliases: Set[str],
+    lookup_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    module_containers: Dict[str, Dict[ContainerAliasKey, str]],
+    module_attributes: Set[str],
+    module_functions: Set[str],
+    class_aliases: Dict[str, str],
+    factory_aliases: Dict[str, str],
+    operator_module_aliases: Set[str],
+    attrgetter_aliases: Set[str],
+) -> Tuple[Set[str], Set[str], Set[str]]:
+    alias_sets = {
+        "decode": decode_aliases,
+        "getdecoder": getdecoder_aliases,
+        "lookup": lookup_aliases,
+    }
+    function_sets = {
+        "decode": set(),
+        "getdecoder": set(),
+        "lookup": set(),
+    }
+    function_nodes = {
+        "decode": set(),
+        "getdecoder": set(),
+        "lookup": set(),
+    }
+
+    def bound_module_method_attr(value: Optional[ast.AST]) -> str:
+        if isinstance(value, ast.Attribute) and value.attr in alias_sets:
+            if _is_codecs_module_ref_or_result(
+                value.value,
+                module_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+                module_containers,
+                module_attributes,
+                module_functions,
+                class_aliases,
+                factory_aliases,
+            ):
+                return value.attr
+        if _operator_attrgetter_codecs_decode_ref(
+            value,
+            operator_module_aliases,
+            attrgetter_aliases,
+            module_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            module_containers,
+            module_attributes,
+            module_functions,
+            class_aliases,
+            factory_aliases,
+        ):
+            return "decode"
+        if isinstance(value, ast.Name):
+            for candidate, aliases in alias_sets.items():
+                if value.id in aliases:
+                    return candidate
+        return ""
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+            continue
+        attr = bound_module_method_attr(_single_own_return_value(node))
+        if not attr:
+            continue
+        function_sets[attr].add(node.name)
+        function_nodes[attr].add(id(node))
+
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+                continue
+            value = _single_own_return_value(node)
+            call_name = _zero_arg_function_call_name(value) if value is not None else ""
+            direct_child = _direct_child_functions(node).get(call_name)
+            if direct_child is None:
+                continue
+            child_id = id(direct_child)
+            for attr, nodes in function_nodes.items():
+                if child_id not in nodes or node.name in function_sets[attr]:
+                    continue
+                function_sets[attr].add(node.name)
+                nodes.add(id(node))
+                changed = True
+        if not changed:
+            break
+
+    return (
+        function_sets["decode"],
+        function_sets["getdecoder"],
+        function_sets["lookup"],
+    )
+
+
+def _codecs_decode_function_results(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    decode_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    decode_dict_aliases: Dict[str, Set[str]],
+    decode_containers: Dict[str, Dict[Tuple[str, str], str]],
+    decode_attributes: Set[str],
+) -> Set[str]:
+    functions: Set[str] = set()
+    function_nodes: Set[int] = set()
+    lambda_returns = _zero_arg_lambda_assignments(tree)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+            continue
+        value = _single_own_return_value(node)
+        if value is None:
+            continue
+        if _static_codecs_decode_ref(
+            value,
+            module_aliases,
+            decode_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            decode_dict_aliases,
+        ) or _container_subscript_lookup(
+            value,
+            decode_containers,
+            constants,
+        ) is not None or _attribute_name_alias_lookup(value, decode_attributes):
+            functions.add(node.name)
+            function_nodes.add(id(node))
+    for name, value in lambda_returns.items():
+        if _static_codecs_decode_ref(
+            value,
+            module_aliases,
+            decode_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            decode_dict_aliases,
+        ) or _container_subscript_lookup(
+            value,
+            decode_containers,
+            constants,
+        ) is not None or _attribute_name_alias_lookup(value, decode_attributes):
+            functions.add(name)
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+                continue
+            value = _single_own_return_value(node)
+            call_name = _zero_arg_function_call_name(value) if value is not None else ""
+            direct_child = _direct_child_functions(node).get(call_name)
+            if direct_child is None or id(direct_child) not in function_nodes:
+                continue
+            if node.name not in functions:
+                functions.add(node.name)
+                function_nodes.add(id(node))
+                changed = True
+        if not changed:
+            break
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if not isinstance(value, ast.Name) or value.id not in functions:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and target.id not in functions:
+                    functions.add(target.id)
+                    changed = True
+        if not changed:
+            break
+    return functions
+
+
+def _decoder_factory_function_ref_results(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    getdecoder_aliases: Set[str],
+    lookup_aliases: Set[str],
+    constants: Dict[str, str],
+) -> Tuple[Set[str], Set[str]]:
+    getdecoder_functions: Set[str] = set()
+    lookup_functions: Set[str] = set()
+    getdecoder_function_nodes: Set[int] = set()
+    lookup_function_nodes: Set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+            continue
+        value = _single_own_return_value(node)
+        if value is None:
+            continue
+        kind = _factory_function_ref_kind(value, module_aliases, getdecoder_aliases, lookup_aliases, constants)
+        if kind == "getdecoder":
+            getdecoder_functions.add(node.name)
+            getdecoder_function_nodes.add(id(node))
+        elif kind == "lookup":
+            lookup_functions.add(node.name)
+            lookup_function_nodes.add(id(node))
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+                continue
+            value = _single_own_return_value(node)
+            call_name = _zero_arg_function_call_name(value) if value is not None else ""
+            direct_child = _direct_child_functions(node).get(call_name)
+            if direct_child is None:
+                continue
+            child_id = id(direct_child)
+            if child_id in getdecoder_function_nodes and node.name not in getdecoder_functions:
+                getdecoder_functions.add(node.name)
+                getdecoder_function_nodes.add(id(node))
+                changed = True
+            if child_id in lookup_function_nodes and node.name not in lookup_functions:
+                lookup_functions.add(node.name)
+                lookup_function_nodes.add(id(node))
+                changed = True
+        if not changed:
+            break
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if not isinstance(value, ast.Name):
+                continue
+            if value.id in getdecoder_functions:
+                for target in targets:
+                    if isinstance(target, ast.Name) and target.id not in getdecoder_functions:
+                        getdecoder_functions.add(target.id)
+                        changed = True
+            if value.id in lookup_functions:
+                for target in targets:
+                    if isinstance(target, ast.Name) and target.id not in lookup_functions:
+                        lookup_functions.add(target.id)
+                        changed = True
+        if not changed:
+            break
+    return getdecoder_functions, lookup_functions
+
+
+def _decoder_factory_function_results(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    getdecoder_aliases: Set[str],
+    lookup_aliases: Set[str],
+    constants: Dict[str, str],
+    decoder_results: Dict[str, str],
+    lookup_results: Dict[str, str],
+    decoder_containers: Dict[str, Dict[Tuple[str, str], str]],
+    lookup_containers: Dict[str, Dict[Tuple[str, str], str]],
+    decoder_attributes: Dict[str, str],
+    lookup_attributes: Dict[str, str],
+) -> Tuple[Dict[str, str], Dict[str, str]]:
+    decoder_functions: Dict[str, str] = {}
+    lookup_functions: Dict[str, str] = {}
+    decoder_function_nodes: Dict[int, str] = {}
+    lookup_function_nodes: Dict[int, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+            continue
+        value = _single_own_return_value(node)
+        if value is None:
+            continue
+        if isinstance(value, ast.Name) and value.id in decoder_results:
+            decoder_functions[node.name] = decoder_results[value.id]
+            decoder_function_nodes[id(node)] = decoder_results[value.id]
+            continue
+        if isinstance(value, ast.Name) and value.id in lookup_results:
+            lookup_functions[node.name] = lookup_results[value.id]
+            lookup_function_nodes[id(node)] = lookup_results[value.id]
+            continue
+        container_decoder = _container_subscript_lookup(value, decoder_containers, constants)
+        if container_decoder is not None:
+            decoder_functions[node.name] = container_decoder
+            decoder_function_nodes[id(node)] = container_decoder
+            continue
+        container_lookup = _container_subscript_lookup(value, lookup_containers, constants)
+        if container_lookup is not None:
+            lookup_functions[node.name] = container_lookup
+            lookup_function_nodes[id(node)] = container_lookup
+            continue
+        attribute_decoder = _attribute_alias_lookup(value, decoder_attributes)
+        if attribute_decoder is not None:
+            decoder_functions[node.name] = attribute_decoder
+            decoder_function_nodes[id(node)] = attribute_decoder
+            continue
+        attribute_lookup = _attribute_alias_lookup(value, lookup_attributes)
+        if attribute_lookup is not None:
+            lookup_functions[node.name] = attribute_lookup
+            lookup_function_nodes[id(node)] = attribute_lookup
+            continue
+        kind, encoding = _factory_call_encoding(value, module_aliases, getdecoder_aliases, lookup_aliases, constants)
+        if kind == "getdecoder":
+            decoder_functions[node.name] = encoding
+            decoder_function_nodes[id(node)] = encoding
+        elif kind == "lookup":
+            lookup_functions[node.name] = encoding
+            lookup_function_nodes[id(node)] = encoding
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+                continue
+            value = _single_own_return_value(node)
+            call_name = _zero_arg_function_call_name(value) if value is not None else ""
+            direct_child = _direct_child_functions(node).get(call_name)
+            if direct_child is None:
+                continue
+            child_id = id(direct_child)
+            if child_id in decoder_function_nodes:
+                encoding = decoder_function_nodes[child_id]
+                if decoder_functions.get(node.name) != encoding:
+                    decoder_functions[node.name] = encoding
+                    decoder_function_nodes[id(node)] = encoding
+                    changed = True
+            if child_id in lookup_function_nodes:
+                encoding = lookup_function_nodes[child_id]
+                if lookup_functions.get(node.name) != encoding:
+                    lookup_functions[node.name] = encoding
+                    lookup_function_nodes[id(node)] = encoding
+                    changed = True
+        if not changed:
+            break
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if not isinstance(value, ast.Name):
+                continue
+            if value.id in decoder_functions:
+                encoding = decoder_functions[value.id]
+                for target in targets:
+                    if isinstance(target, ast.Name) and decoder_functions.get(target.id) != encoding:
+                        decoder_functions[target.id] = encoding
+                        changed = True
+            if value.id in lookup_functions:
+                encoding = lookup_functions[value.id]
+                for target in targets:
+                    if isinstance(target, ast.Name) and lookup_functions.get(target.id) != encoding:
+                        lookup_functions[target.id] = encoding
+                        changed = True
+        if not changed:
+            break
+    return decoder_functions, lookup_functions
+
+
+def _is_mismatched_text_redecode(encode_encoding: str, decode_encoding: str) -> bool:
+    if not encode_encoding or not decode_encoding:
+        return True
+    return _normalize_codec_name(encode_encoding) != _normalize_codec_name(decode_encoding)
+
+
+def _str_constructor_decode_encoding(node: ast.Call, constants: Dict[str, str]) -> str:
+    if len(node.args) >= 2:
+        return _string_constant(node.args[1], constants)
+    keyword = _keyword_node(node, "encoding")
+    if keyword is not None:
+        return _string_constant(keyword, constants)
+    return ""
+
+
+def _codecs_decode_encoding(node: ast.Call, constants: Dict[str, str]) -> str:
+    if len(node.args) >= 2:
+        return _string_constant(node.args[1], constants)
+    return _keyword_value(node, constants, "encoding")
+
+
+def _literal_iterable_string_at(node: ast.AST, index: int, constants: Dict[str, str]) -> str:
+    if isinstance(node, (ast.List, ast.Tuple)) and len(node.elts) > index:
+        return _string_constant(node.elts[index], constants)
+    return ""
+
+
+def _starmap_tuple_encoding(node: ast.AST, constants: Dict[str, str]) -> str:
+    if not isinstance(node, (ast.List, ast.Tuple)) or not node.elts:
+        return ""
+    first = node.elts[0]
+    if isinstance(first, (ast.List, ast.Tuple)) and len(first.elts) >= 2:
+        return _string_constant(first.elts[1], constants)
+    return ""
+
+
+def _map_codecs_decode_encoding(
+    node: ast.Call,
+    builtin_shadow_lines: Dict[str, List[int]],
+    module_aliases: Set[str],
+    decode_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    decode_dict_aliases: Dict[str, Set[str]],
+) -> Optional[str]:
+    if _call_name(node.func) != "map" or not node.args:
+        return None
+    if _name_bound_before_call(builtin_shadow_lines, "map", node):
+        return None
+    if not _is_decode_function_ref(
+        node.args[0],
+        module_aliases,
+        decode_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        decode_dict_aliases,
+    ):
+        return None
+    if len(node.args) >= 3:
+        return _literal_iterable_string_at(node.args[2], 0, constants)
+    return ""
+
+
+def _itertools_starmap_codecs_decode_encoding(
+    node: ast.Call,
+    itertools_module_aliases: Set[str],
+    starmap_aliases: Set[str],
+    module_aliases: Set[str],
+    decode_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    decode_dict_aliases: Dict[str, Set[str]],
+) -> Optional[str]:
+    is_starmap = _call_name(node.func) in starmap_aliases or _attribute_on_module_alias(
+        node.func,
+        itertools_module_aliases,
+        "starmap",
+    )
+    if not is_starmap or not node.args:
+        return None
+    if not _is_decode_function_ref(
+        node.args[0],
+        module_aliases,
+        decode_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        decode_dict_aliases,
+    ):
+        return None
+    if len(node.args) >= 2:
+        return _starmap_tuple_encoding(node.args[1], constants)
+    return ""
+
+
+def _operator_call_codecs_decode_encoding(
+    node: ast.Call,
+    operator_module_aliases: Set[str],
+    call_aliases: Set[str],
+    module_aliases: Set[str],
+    decode_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    decode_dict_aliases: Dict[str, Set[str]],
+) -> Optional[str]:
+    is_operator_call = _call_name(node.func) in call_aliases or _attribute_on_module_alias(
+        node.func,
+        operator_module_aliases,
+        "call",
+    )
+    if not is_operator_call or not node.args:
+        return None
+    if not _is_decode_function_ref(
+        node.args[0],
+        module_aliases,
+        decode_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        decode_dict_aliases,
+    ):
+        return None
+    if len(node.args) >= 3:
+        return _string_constant(node.args[2], constants)
+    keyword = _keyword_node(node, "encoding")
+    if keyword is not None:
+        return _string_constant(keyword, constants)
+    if _has_keyword_unpack(node):
+        return ""
+    return "utf-8"
+
+
+def _codec_factory_encoding(node: ast.Call, constants: Dict[str, str]) -> str:
+    if node.args:
+        return _string_constant(node.args[0], constants)
+    return _keyword_value(node, constants, "encoding")
+
+
+def _method_decode_encoding_node(node: ast.Call) -> Optional[ast.AST]:
+    if node.args:
+        return node.args[0]
+    return _keyword_node(node, "encoding")
+
+
+def _codecs_decode_encoding_node(node: ast.Call) -> Optional[ast.AST]:
+    if len(node.args) >= 2:
+        return node.args[1]
+    return _keyword_node(node, "encoding")
+
+
+def _codec_factory_encoding_node(node: ast.Call) -> Optional[ast.AST]:
+    if node.args:
+        return node.args[0]
+    return _keyword_node(node, "encoding")
+
+
+def _current_scope_calls(stmt: ast.stmt) -> List[ast.Call]:
+    calls: List[ast.Call] = []
+
+    class Visitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            return
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            return
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return
+
+        def visit_Call(self, node: ast.Call) -> None:
+            calls.append(node)
+            self.generic_visit(node)
+
+    Visitor().visit(stmt)
+    return calls
+
+
+def _update_top_level_module_aliases_after_stmt(stmt: ast.stmt, active: Set[str]) -> None:
+    module_imports = _codec_module_import_bound_names(stmt)
+    if module_imports:
+        active.update(module_imports)
+        return
+    if isinstance(stmt, (ast.Assign, ast.AnnAssign)):
+        value = stmt.value
+        targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+        target_names: Set[str] = set()
+        for target in targets:
+            target_names.update(_target_names(target))
+        value_name = _call_name(value) if value is not None else ""
+        if value_name and value_name in active:
+            active.update(target_names)
+            return
+        if value is not None and _literal_codecs_module_import_call(value):
+            active.update(target_names)
+            return
+        self_assignment = isinstance(value, ast.Name)
+        for name in target_names:
+            if name in active and not (self_assignment and value.id == name):
+                active.discard(name)
+        return
+    for name in _statement_bound_names(stmt):
+        active.discard(name)
+
+
+def _top_level_direct_codecs_module_hits(tree: ast.AST, constants: Dict[str, str]) -> List[str]:
+    if not isinstance(tree, ast.Module):
+        return []
+    active: Set[str] = set()
+    hits: List[str] = []
+    for stmt in tree.body:
+        for node in _current_scope_calls(stmt):
+            name = _call_name(node.func)
+            if isinstance(node.func, ast.Attribute) and _call_name(node.func.value) in active:
+                if node.func.attr == "decode":
+                    encoding = _codecs_decode_encoding(node, constants)
+                    hits.append(f"{name}({_codec_label(encoding)})")
+                    continue
+                if node.func.attr in {"getdecoder", "lookup"}:
+                    encoding = _codec_factory_encoding(node, constants)
+                    if _is_dangerous_unicode_codec(encoding):
+                        hits.append(f"{name}({encoding})")
+                    continue
+            kind, encoding = _factory_call_encoding(node.func, active, set(), set(), constants)
+            if kind:
+                hits.append(f"{name or kind}({_codec_label(encoding)})")
+                continue
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "decode":
+                kind, encoding = _factory_call_encoding(node.func.value, active, set(), set(), constants)
+                if kind == "lookup":
+                    hits.append(f"{name}({_codec_label(encoding)})")
+                    continue
+        _update_top_level_module_aliases_after_stmt(stmt, active)
+    return hits
+
+
+def _function_signature(node: ast.FunctionDef, constants: Dict[str, str]) -> Dict[str, object]:
+    positional = [arg.arg for arg in [*node.args.posonlyargs, *node.args.args]]
+    kwonly = [arg.arg for arg in node.args.kwonlyargs]
+    defaults: Dict[str, str] = {}
+    default_nodes: Dict[str, ast.AST] = {}
+    if node.args.defaults:
+        default_names = positional[-len(node.args.defaults):]
+        for name, default in zip(default_names, node.args.defaults):
+            default_nodes[name] = default
+            value = _static_string_value(default, constants)
+            if value is not None:
+                defaults[name] = value
+    for name, default in zip(kwonly, node.args.kw_defaults):
+        if default is None:
+            continue
+        default_nodes[name] = default
+        value = _static_string_value(default, constants)
+        if value is not None:
+            defaults[name] = value
+    return {
+        "positions": {name: index for index, name in enumerate(positional)},
+        "params": set(positional + kwonly),
+        "defaults": defaults,
+        "default_nodes": default_nodes,
+        "var_kwarg": node.args.kwarg.arg if node.args.kwarg is not None else "",
+    }
+
+
+def _param_access_root(access: ParamAccess) -> str:
+    if isinstance(access, tuple):
+        return access[0]
+    return access
+
+
+def _param_access_path(access: ParamAccess) -> Tuple[Tuple[str, str], ...]:
+    if isinstance(access, tuple):
+        return access[1]
+    return tuple()
+
+
+def _param_access_with_index_item(access: ParamAccess, index: int) -> ParamAccess:
+    return (_param_access_root(access), _param_access_path(access) + (("index", str(index)),))
+
+
+def _param_access_with_first_item(access: ParamAccess) -> ParamAccess:
+    return _param_access_with_index_item(access, 0)
+
+
+def _param_access_from_node(
+    node: ast.AST,
+    params: Set[str],
+    constants: Dict[str, str],
+    local_index_aliases: Dict[str, IndexAlias] | None = None,
+) -> Optional[ParamAccess]:
+    path: List[Tuple[str, str]] = []
+    current = node
+    while isinstance(current, ast.Subscript):
+        key = _container_key_from_literal(current.slice, constants)
+        if key is None and isinstance(current.slice, ast.Name):
+            key = (local_index_aliases or {}).get(current.slice.id)
+        if key is None:
+            return None
+        path.insert(0, key)
+        current = current.value
+    if not isinstance(current, ast.Name) or current.id not in params:
+        return None
+    if path:
+        return (current.id, tuple(path))
+    return current.id
+
+
+def _enumerate_index_key(node: ast.Call) -> Optional[IndexAlias]:
+    if _call_name(node.func) != "enumerate" or not node.args:
+        return None
+    start_node: Optional[ast.AST] = node.args[1] if len(node.args) >= 2 else None
+    if start_node is None:
+        start_node = _keyword_node(node, "start")
+    if start_node is None:
+        return ("index", "0")
+    if isinstance(start_node, ast.Constant) and type(start_node.value) is int and start_node.value >= 0:
+        return ("index", str(start_node.value))
+    return None
+
+
+def _local_param_and_index_aliases(
+    func: ast.FunctionDef,
+    params: Set[str],
+    constants: Dict[str, str],
+) -> Tuple[Dict[str, ParamAccess], Dict[str, IndexAlias]]:
+    aliases: Dict[str, ParamAccess] = {}
+    index_aliases: Dict[str, IndexAlias] = {}
+
+    def resolve(value: ast.AST) -> Optional[ParamAccess]:
+        direct = _param_access_from_node(value, params, constants, index_aliases)
+        if direct is not None:
+            return direct
+        if isinstance(value, ast.Name):
+            return aliases.get(value.id)
+        return None
+
+    def bind_target(target: ast.AST, access: ParamAccess) -> None:
+        if isinstance(target, ast.Name):
+            aliases[target.id] = access
+            index_aliases.pop(target.id, None)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for index, child in enumerate(target.elts):
+                bind_target(child, _param_access_with_index_item(access, index))
+
+    def bind_index_target(target: ast.AST, index_key: IndexAlias) -> None:
+        if isinstance(target, ast.Name):
+            index_aliases[target.id] = index_key
+            aliases.pop(target.id, None)
+
+    def static_nonnegative_int(value: ast.AST) -> Optional[int]:
+        if isinstance(value, ast.Constant) and type(value.value) is int and value.value >= 0:
+            return value.value
+        return None
+
+    def len_param_access(value: ast.AST) -> Optional[ParamAccess]:
+        if not isinstance(value, ast.Call) or _call_name(value.func) != "len":
+            return None
+        if len(value.args) != 1 or value.keywords:
+            return None
+        return resolve(value.args[0])
+
+    def range_index_key(value: ast.AST) -> Optional[IndexAlias]:
+        if not isinstance(value, ast.Call) or _call_name(value.func) != "range" or value.keywords:
+            return None
+        if len(value.args) == 1:
+            return ("index", "0") if len_param_access(value.args[0]) is not None else None
+        if len(value.args) in {2, 3} and len_param_access(value.args[1]) is not None:
+            start = static_nonnegative_int(value.args[0])
+            if start is not None:
+                return ("index", str(start))
+        return None
+
+    class Visitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            if node is func:
+                self.generic_visit(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            return
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return
+
+        def visit_Assign(self, node: ast.Assign) -> None:
+            access = resolve(node.value)
+            if access is not None:
+                for target in node.targets:
+                    bind_target(target, access)
+            self.generic_visit(node)
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            if node.value is not None:
+                access = resolve(node.value)
+                if access is not None:
+                    bind_target(node.target, access)
+            self.generic_visit(node)
+
+        def visit_For(self, node: ast.For) -> None:
+            if isinstance(node.iter, ast.Call) and _call_name(node.iter.func) == "enumerate":
+                index_key = _enumerate_index_key(node.iter)
+                iter_access = resolve(node.iter.args[0]) if node.iter.args else None
+                if (
+                    index_key is not None
+                    and iter_access is not None
+                    and isinstance(node.target, (ast.Tuple, ast.List))
+                    and len(node.target.elts) >= 2
+                ):
+                    bind_index_target(node.target.elts[0], index_key)
+                    bind_target(node.target.elts[1], _param_access_with_first_item(iter_access))
+            elif (
+                isinstance(node.iter, ast.Call)
+                and _call_name(node.iter.func) == "zip"
+                and isinstance(node.target, (ast.Tuple, ast.List))
+            ):
+                for target, value in zip(node.target.elts, node.iter.args):
+                    access = resolve(value)
+                    if access is not None:
+                        bind_target(target, _param_access_with_first_item(access))
+            else:
+                range_key = range_index_key(node.iter)
+                if range_key is not None:
+                    bind_index_target(node.target, range_key)
+                else:
+                    iter_access = resolve(node.iter)
+                    if iter_access is not None:
+                        bind_target(node.target, _param_access_with_first_item(iter_access))
+            self.generic_visit(node)
+
+    Visitor().visit(func)
+    return aliases, index_aliases
+
+
+def _comprehension_param_and_index_aliases(
+    func: ast.FunctionDef,
+    params: Set[str],
+    constants: Dict[str, str],
+    base_param_aliases: Dict[str, ParamAccess],
+    base_index_aliases: Dict[str, IndexAlias],
+) -> Dict[int, Tuple[Dict[str, ParamAccess], Dict[str, IndexAlias]]]:
+    call_aliases: Dict[int, Tuple[Dict[str, ParamAccess], Dict[str, IndexAlias]]] = {}
+
+    def resolve(
+        value: ast.AST,
+        aliases: Dict[str, ParamAccess],
+        index_aliases: Dict[str, IndexAlias],
+    ) -> Optional[ParamAccess]:
+        direct = _param_access_from_node(value, params, constants, index_aliases)
+        if direct is not None:
+            return direct
+        if isinstance(value, ast.Name):
+            return aliases.get(value.id)
+        return None
+
+    def bind_target(
+        target: ast.AST,
+        access: ParamAccess,
+        aliases: Dict[str, ParamAccess],
+        index_aliases: Dict[str, IndexAlias],
+    ) -> None:
+        if isinstance(target, ast.Name):
+            aliases[target.id] = access
+            index_aliases.pop(target.id, None)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for index, child in enumerate(target.elts):
+                bind_target(child, _param_access_with_index_item(access, index), aliases, index_aliases)
+
+    def bind_index_target(
+        target: ast.AST,
+        index_key: IndexAlias,
+        aliases: Dict[str, ParamAccess],
+        index_aliases: Dict[str, IndexAlias],
+    ) -> None:
+        if isinstance(target, ast.Name):
+            index_aliases[target.id] = index_key
+            aliases.pop(target.id, None)
+
+    def static_nonnegative_int(value: ast.AST) -> Optional[int]:
+        if isinstance(value, ast.Constant) and type(value.value) is int and value.value >= 0:
+            return value.value
+        return None
+
+    def len_param_access(
+        value: ast.AST,
+        aliases: Dict[str, ParamAccess],
+        index_aliases: Dict[str, IndexAlias],
+    ) -> Optional[ParamAccess]:
+        if not isinstance(value, ast.Call) or _call_name(value.func) != "len":
+            return None
+        if len(value.args) != 1 or value.keywords:
+            return None
+        return resolve(value.args[0], aliases, index_aliases)
+
+    def range_index_key(
+        value: ast.AST,
+        aliases: Dict[str, ParamAccess],
+        index_aliases: Dict[str, IndexAlias],
+    ) -> Optional[IndexAlias]:
+        if not isinstance(value, ast.Call) or _call_name(value.func) != "range" or value.keywords:
+            return None
+        if len(value.args) == 1:
+            return ("index", "0") if len_param_access(value.args[0], aliases, index_aliases) is not None else None
+        if len(value.args) in {2, 3} and len_param_access(value.args[1], aliases, index_aliases) is not None:
+            start = static_nonnegative_int(value.args[0])
+            if start is not None:
+                return ("index", str(start))
+        return None
+
+    def bind_comprehension_target(
+        target: ast.AST,
+        iter_node: ast.AST,
+        aliases: Dict[str, ParamAccess],
+        index_aliases: Dict[str, IndexAlias],
+    ) -> None:
+        if isinstance(iter_node, ast.Call) and _call_name(iter_node.func) == "enumerate":
+            index_key = _enumerate_index_key(iter_node)
+            iter_access = resolve(iter_node.args[0], aliases, index_aliases) if iter_node.args else None
+            if (
+                index_key is not None
+                and iter_access is not None
+                and isinstance(target, (ast.Tuple, ast.List))
+                and len(target.elts) >= 2
+            ):
+                bind_index_target(target.elts[0], index_key, aliases, index_aliases)
+                bind_target(target.elts[1], _param_access_with_first_item(iter_access), aliases, index_aliases)
+            return
+        if (
+            isinstance(iter_node, ast.Call)
+            and _call_name(iter_node.func) == "zip"
+            and isinstance(target, (ast.Tuple, ast.List))
+        ):
+            for child_target, value in zip(target.elts, iter_node.args):
+                access = resolve(value, aliases, index_aliases)
+                if access is not None:
+                    bind_target(child_target, _param_access_with_first_item(access), aliases, index_aliases)
+            return
+        range_key = range_index_key(iter_node, aliases, index_aliases)
+        if range_key is not None:
+            bind_index_target(target, range_key, aliases, index_aliases)
+            return
+        iter_access = resolve(iter_node, aliases, index_aliases)
+        if iter_access is not None:
+            bind_target(target, _param_access_with_first_item(iter_access), aliases, index_aliases)
+
+    class CallMarker(ast.NodeVisitor):
+        def __init__(
+            self,
+            aliases: Dict[str, ParamAccess],
+            index_aliases: Dict[str, IndexAlias],
+        ) -> None:
+            self.aliases = dict(aliases)
+            self.index_aliases = dict(index_aliases)
+
+        def visit_Call(self, node: ast.Call) -> None:
+            call_aliases[id(node)] = (dict(self.aliases), dict(self.index_aliases))
+            self.generic_visit(node)
+
+        def visit_ListComp(self, node: ast.ListComp) -> None:
+            return
+
+        def visit_SetComp(self, node: ast.SetComp) -> None:
+            return
+
+        def visit_DictComp(self, node: ast.DictComp) -> None:
+            return
+
+        def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+            return
+
+    def mark_calls(
+        value: ast.AST,
+        aliases: Dict[str, ParamAccess],
+        index_aliases: Dict[str, IndexAlias],
+    ) -> None:
+        CallMarker(aliases, index_aliases).visit(value)
+
+    for node in ast.walk(func):
+        if not isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            continue
+        aliases = dict(base_param_aliases)
+        index_aliases = dict(base_index_aliases)
+        for generator in node.generators:
+            bind_comprehension_target(generator.target, generator.iter, aliases, index_aliases)
+            for condition in generator.ifs:
+                mark_calls(condition, aliases, index_aliases)
+        if isinstance(node, ast.DictComp):
+            mark_calls(node.key, aliases, index_aliases)
+            mark_calls(node.value, aliases, index_aliases)
+        else:
+            mark_calls(node.elt, aliases, index_aliases)
+    return call_aliases
+
+
+def _local_param_access_aliases(
+    func: ast.FunctionDef,
+    params: Set[str],
+    constants: Dict[str, str],
+) -> Dict[str, ParamAccess]:
+    aliases, _index_aliases = _local_param_and_index_aliases(func, params, constants)
+    return aliases
+
+
+def _local_callable_param_aliases(
+    func: ast.FunctionDef,
+    params: Set[str],
+    constants: Dict[str, str],
+) -> Tuple[Dict[str, str], Dict[str, Dict[ContainerAliasKey, str]]]:
+    aliases: Dict[str, str] = {}
+    containers: Dict[str, Dict[ContainerAliasKey, str]] = {}
+
+    def resolve(value: ast.AST) -> str:
+        if isinstance(value, ast.Name):
+            if value.id in params:
+                return value.id
+            return aliases.get(value.id, "")
+        return _container_subscript_lookup(value, containers, constants) or ""
+
+    def container_items_for(value: ast.AST) -> Dict[ContainerAliasKey, str]:
+        items: Dict[ContainerAliasKey, str] = {}
+        for key, child in _literal_container_path_items(value, constants):
+            param = resolve(child)
+            if param:
+                items[key] = param
+        return items
+
+    def bind_target(target: ast.AST, param: str, container_items: Dict[ContainerAliasKey, str]) -> None:
+        if not isinstance(target, ast.Name):
+            return
+        aliases.pop(target.id, None)
+        containers.pop(target.id, None)
+        if param:
+            aliases[target.id] = param
+        if container_items:
+            containers[target.id] = dict(container_items)
+
+    class Visitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            if node is func:
+                self.generic_visit(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            return
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return
+
+        def visit_Assign(self, node: ast.Assign) -> None:
+            param = resolve(node.value)
+            container_items = container_items_for(node.value)
+            if not param and isinstance(node.value, ast.Name):
+                container_items = dict(containers.get(node.value.id, {}))
+            for target in node.targets:
+                bind_target(target, param, container_items)
+            self.generic_visit(node)
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            if node.value is None or not isinstance(node.target, ast.Name):
+                self.generic_visit(node)
+                return
+            param = resolve(node.value)
+            container_items = container_items_for(node.value)
+            if not param and isinstance(node.value, ast.Name):
+                container_items = dict(containers.get(node.value.id, {}))
+            bind_target(node.target, param, container_items)
+            self.generic_visit(node)
+
+    Visitor().visit(func)
+    return aliases, containers
+
+
+def _codec_arg_param_name(
+    codec_node: Optional[ast.AST],
+    params: Set[str],
+    constants: Dict[str, str],
+    local_param_aliases: Dict[str, ParamAccess] | None = None,
+    local_index_aliases: Dict[str, IndexAlias] | None = None,
+) -> Optional[ParamAccess]:
+    if codec_node is None:
+        return None
+    aliases = local_param_aliases or {}
+    if isinstance(codec_node, ast.Name) and codec_node.id in params:
+        return codec_node.id
+    if isinstance(codec_node, ast.Name) and codec_node.id in aliases:
+        return aliases[codec_node.id]
+    if isinstance(codec_node, ast.Subscript):
+        return _param_access_from_node(codec_node, params, constants, local_index_aliases)
+    return None
+
+
+def _call_forwards_var_kwargs(node: ast.Call, var_kwarg: object) -> bool:
+    if not isinstance(var_kwarg, str) or not var_kwarg:
+        return False
+    return any(
+        keyword.arg is None
+        and isinstance(keyword.value, ast.Name)
+        and keyword.value.id == var_kwarg
+        for keyword in node.keywords
+    )
+
+
+def _codec_arg_param_name_or_forwarded_kwargs(
+    codec_node: Optional[ast.AST],
+    params: Set[str],
+    call_node: ast.Call,
+    var_kwarg: object,
+    constants: Dict[str, str],
+    local_param_aliases: Dict[str, ParamAccess] | None = None,
+    local_index_aliases: Dict[str, IndexAlias] | None = None,
+) -> Optional[ParamAccess]:
+    param = _codec_arg_param_name(codec_node, params, constants, local_param_aliases, local_index_aliases)
+    if param:
+        return param
+    if _call_forwards_var_kwargs(call_node, var_kwarg):
+        return "encoding"
+    return None
+
+
+def _getattr_param_name(
+    node: ast.AST,
+    params: Set[str],
+    attr: str,
+    constants: Dict[str, str],
+) -> str:
+    return _getattr_name_arg(node, params, attr, constants)
+
+
+def _getattr_name_arg(
+    node: ast.AST,
+    names: Set[str],
+    attr: str,
+    constants: Dict[str, str],
+) -> str:
+    return (
+        node.args[0].id
+        if (
+            isinstance(node, ast.Call)
+            and _call_name(node.func) == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id in names
+            and _string_constant(node.args[1], constants) == attr
+        )
+        else ""
+    )
+
+
+def _local_getattr_name_aliases(
+    func: ast.FunctionDef,
+    names: Set[str],
+    attr: str,
+    constants: Dict[str, str],
+) -> Dict[str, str]:
+    aliases: Dict[str, str] = {}
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(func):
+            value, targets = _assignment_value_targets(node)
+            if value is None:
+                continue
+            module_name = _getattr_name_arg(value, names, attr, constants)
+            if not module_name and isinstance(value, ast.Name):
+                module_name = aliases.get(value.id, "")
+            if not module_name:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name) and aliases.get(target.id) != module_name:
+                    aliases[target.id] = module_name
+                    changed = True
+        if not changed:
+            break
+    return aliases
+
+
+def _local_getattr_param_aliases(
+    func: ast.FunctionDef,
+    params: Set[str],
+    attr: str,
+    constants: Dict[str, str],
+) -> Dict[str, str]:
+    return _local_getattr_name_aliases(func, params, attr, constants)
+
+
+def _direct_child_getattr_param_result(
+    func: ast.FunctionDef,
+    value: ast.AST,
+    params: Set[str],
+    attr: str,
+    constants: Dict[str, str],
+    depth: int = 0,
+) -> str:
+    if depth >= 4:
+        return ""
+    call_name = _zero_arg_function_call_name(value)
+    if not call_name:
+        return ""
+    direct_child = _direct_child_functions(func).get(call_name)
+    if direct_child is None:
+        return ""
+    child_value = _single_own_return_value(direct_child)
+    if child_value is None:
+        return ""
+    module_param = _getattr_name_arg(child_value, params, attr, constants)
+    if not module_param and isinstance(child_value, ast.Name):
+        module_param = _local_getattr_name_aliases(direct_child, params, attr, constants).get(child_value.id, "")
+    if module_param:
+        return module_param
+    return _direct_child_getattr_param_result(direct_child, child_value, params, attr, constants, depth + 1)
+
+
+def _param_getattr_return_functions(
+    tree: ast.AST,
+    attr: str,
+    constants: Dict[str, str],
+) -> Dict[str, Dict[str, object]]:
+    functions: Dict[str, Dict[str, object]] = {}
+    for func in [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]:
+        signature = _function_signature(func, constants)
+        params = signature["params"]
+        if not isinstance(params, set):
+            continue
+        value = _single_own_return_value(func)
+        if value is None:
+            continue
+        module_param = _getattr_param_name(value, params, attr, constants)
+        if not module_param and isinstance(value, ast.Name):
+            module_param = _local_getattr_param_aliases(func, params, attr, constants).get(value.id, "")
+        if not module_param:
+            module_param = _direct_child_getattr_param_result(func, value, params, attr, constants)
+        if not module_param:
+            continue
+        functions[func.name] = {
+            "module_param": module_param,
+            "positions": signature["positions"],
+            "defaults": signature["defaults"],
+            "default_nodes": signature["default_nodes"],
+        }
+    _add_simple_wrapper_assignment_aliases(tree, functions)
+    return functions
+
+
+def _codec_wrapper_functions(
+    tree: ast.AST,
+    module_aliases: Set[str],
+    decode_aliases: Set[str],
+    getdecoder_aliases: Set[str],
+    lookup_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    decode_dict_aliases: Dict[str, Set[str]],
+) -> Dict[str, Dict[str, object]]:
+    wrappers: Dict[str, Dict[str, object]] = {}
+    for func in [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]:
+        signature = _function_signature(func, constants)
+        params = signature["params"]
+        if not isinstance(params, set):
+            continue
+        local_param_aliases, local_index_aliases = _local_param_and_index_aliases(func, params, constants)
+        comprehension_aliases = _comprehension_param_and_index_aliases(
+            func,
+            params,
+            constants,
+            local_param_aliases,
+            local_index_aliases,
+        )
+        codec_params: Set[ParamAccess] = set()
+        for node in ast.walk(func):
+            if not isinstance(node, ast.Call):
+                continue
+            call_param_aliases, call_index_aliases = comprehension_aliases.get(
+                id(node),
+                (local_param_aliases, local_index_aliases),
+            )
+            name = _call_name(node.func)
+            codec_node: Optional[ast.AST] = None
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "decode":
+                base = _call_name(node.func.value)
+                if _static_codecs_module_ref(
+                    node.func.value,
+                    module_aliases,
+                    constants,
+                    importlib_module_aliases,
+                    import_module_aliases,
+                    module_dict_aliases,
+                ):
+                    codec_node = _codecs_decode_encoding_node(node)
+                else:
+                    codec_node = _method_decode_encoding_node(node)
+            elif _getattr_on_module_alias(node.func, module_aliases, "decode", constants):
+                codec_node = _codecs_decode_encoding_node(node)
+            elif _static_codecs_decode_ref(
+                node.func,
+                module_aliases,
+                decode_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+                decode_dict_aliases,
+            ):
+                codec_node = _codecs_decode_encoding_node(node)
+            elif (
+                name in getdecoder_aliases
+                or name in lookup_aliases
+                or _attribute_on_module_alias(node.func, module_aliases, "getdecoder")
+                or _attribute_on_module_alias(node.func, module_aliases, "lookup")
+            ):
+                codec_node = _codec_factory_encoding_node(node)
+            param = _codec_arg_param_name(codec_node, params, constants, call_param_aliases, call_index_aliases)
+            if param:
+                codec_params.add(param)
+        if codec_params:
+            wrappers[func.name] = {
+                "codec_params": codec_params,
+                "positions": signature["positions"],
+                "defaults": signature["defaults"],
+                "default_nodes": signature["default_nodes"],
+            }
+    return wrappers
+
+
+def _add_simple_wrapper_assignment_aliases(tree: ast.AST, wrappers: Dict[str, Dict[str, object]]) -> None:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            value = node.value
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            value = node.value
+            targets = [node.target]
+        else:
+            continue
+        value_name = _call_name(value)
+        if value_name not in wrappers:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                wrappers[target.id] = wrappers[value_name]
+
+
+def _higher_order_decode_wrapper_info(func: ast.FunctionDef, constants: Dict[str, str]) -> Optional[Dict[str, object]]:
+    signature = _function_signature(func, constants)
+    params = signature["params"]
+    if not isinstance(params, set):
+        return None
+    var_kwarg = signature.get("var_kwarg", "")
+    decode_arg_pairs: Set[Tuple[str, ParamAccess]] = set()
+    decoder_factory_arg_pairs: Set[Tuple[str, ParamAccess]] = set()
+    lookup_factory_arg_pairs: Set[Tuple[str, ParamAccess]] = set()
+    module_decode_arg_pairs: Set[Tuple[str, ParamAccess]] = set()
+    module_getdecoder_arg_pairs: Set[Tuple[str, ParamAccess]] = set()
+    module_lookup_arg_pairs: Set[Tuple[str, ParamAccess]] = set()
+    base_param_aliases, base_index_aliases = _local_param_and_index_aliases(func, params, constants)
+    comprehension_aliases = _comprehension_param_and_index_aliases(
+        func,
+        params,
+        constants,
+        base_param_aliases,
+        base_index_aliases,
+    )
+    local_module_decode_aliases = _local_getattr_param_aliases(func, params, "decode", constants)
+    local_module_getdecoder_aliases = _local_getattr_param_aliases(func, params, "getdecoder", constants)
+    local_module_lookup_aliases = _local_getattr_param_aliases(func, params, "lookup", constants)
+    local_callable_aliases, local_callable_containers = _local_callable_param_aliases(func, params, constants)
+
+    def decoder_param_from_callable(value: ast.AST) -> str:
+        if isinstance(value, ast.Name):
+            if value.id in params:
+                return value.id
+            return local_callable_aliases.get(value.id, "")
+        return _container_subscript_lookup(value, local_callable_containers, constants) or ""
+
+    for node in ast.walk(func):
+        if not isinstance(node, ast.Call):
+            continue
+        local_param_aliases, local_index_aliases = comprehension_aliases.get(
+            id(node),
+            (base_param_aliases, base_index_aliases),
+        )
+        if isinstance(node.func, ast.Name):
+            decoder_param = node.func.id
+            module_param = local_module_decode_aliases.get(decoder_param, "")
+            if module_param:
+                codec_param = _codec_arg_param_name_or_forwarded_kwargs(
+                    _codecs_decode_encoding_node(node),
+                    params,
+                    node,
+                    var_kwarg,
+                    constants,
+                    local_param_aliases,
+                    local_index_aliases,
+                )
+                if codec_param:
+                    module_decode_arg_pairs.add((module_param, codec_param))
+                continue
+            decoder_param = decoder_param_from_callable(node.func)
+            if not decoder_param:
+                continue
+            codec_param = _codec_arg_param_name_or_forwarded_kwargs(
+                _codecs_decode_encoding_node(node),
+                params,
+                node,
+                var_kwarg,
+                constants,
+                local_param_aliases,
+                local_index_aliases,
+            )
+            if codec_param:
+                decode_arg_pairs.add((decoder_param, codec_param))
+            continue
+        decoder_param = decoder_param_from_callable(node.func)
+        if decoder_param:
+            codec_param = _codec_arg_param_name_or_forwarded_kwargs(
+                _codecs_decode_encoding_node(node),
+                params,
+                node,
+                var_kwarg,
+                constants,
+                local_param_aliases,
+                local_index_aliases,
+            )
+            if codec_param:
+                decode_arg_pairs.add((decoder_param, codec_param))
+            continue
+        if isinstance(node.func, ast.Call):
+            module_param = _getattr_param_name(node.func, params, "decode", constants)
+            if module_param:
+                codec_param = _codec_arg_param_name_or_forwarded_kwargs(
+                    _codecs_decode_encoding_node(node),
+                    params,
+                    node,
+                    var_kwarg,
+                    constants,
+                    local_param_aliases,
+                    local_index_aliases,
+                )
+                if codec_param:
+                    module_decode_arg_pairs.add((module_param, codec_param))
+                continue
+        if isinstance(node.func, ast.Call) and isinstance(node.func.func, ast.Name):
+            factory_param = node.func.func.id
+            module_param = local_module_getdecoder_aliases.get(factory_param, "")
+            if module_param:
+                codec_param = _codec_arg_param_name(
+                    _codec_factory_encoding_node(node.func),
+                    params,
+                    constants,
+                    local_param_aliases,
+                    local_index_aliases,
+                )
+                if codec_param:
+                    module_getdecoder_arg_pairs.add((module_param, codec_param))
+                continue
+            if factory_param not in params:
+                continue
+            codec_param = _codec_arg_param_name(
+                _codec_factory_encoding_node(node.func),
+                params,
+                constants,
+                local_param_aliases,
+                local_index_aliases,
+            )
+            if codec_param:
+                decoder_factory_arg_pairs.add((factory_param, codec_param))
+            continue
+        if isinstance(node.func, ast.Call):
+            module_param = _getattr_param_name(node.func.func, params, "getdecoder", constants)
+            if module_param:
+                codec_param = _codec_arg_param_name(
+                    _codec_factory_encoding_node(node.func),
+                    params,
+                    constants,
+                    local_param_aliases,
+                    local_index_aliases,
+                )
+                if codec_param:
+                    module_getdecoder_arg_pairs.add((module_param, codec_param))
+                continue
+        if (
+            isinstance(node.func, ast.Call)
+            and isinstance(node.func.func, ast.Attribute)
+            and node.func.func.attr == "getdecoder"
+            and isinstance(node.func.func.value, ast.Name)
+        ):
+            module_param = node.func.func.value.id
+            if module_param not in params:
+                continue
+            codec_param = _codec_arg_param_name(
+                _codec_factory_encoding_node(node.func),
+                params,
+                constants,
+                local_param_aliases,
+                local_index_aliases,
+            )
+            if codec_param:
+                module_getdecoder_arg_pairs.add((module_param, codec_param))
+            continue
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "decode"
+            and isinstance(node.func.value, ast.Name)
+        ):
+            module_param = node.func.value.id
+            if module_param not in params:
+                continue
+            codec_param = _codec_arg_param_name_or_forwarded_kwargs(
+                _codecs_decode_encoding_node(node),
+                params,
+                node,
+                var_kwarg,
+                constants,
+                local_param_aliases,
+                local_index_aliases,
+            )
+            if codec_param:
+                module_decode_arg_pairs.add((module_param, codec_param))
+            continue
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "decode"
+            and isinstance(node.func.value, ast.Call)
+            and isinstance(node.func.value.func, ast.Name)
+        ):
+            factory_param = node.func.value.func.id
+            module_param = local_module_lookup_aliases.get(factory_param, "")
+            if module_param:
+                codec_param = _codec_arg_param_name(
+                    _codec_factory_encoding_node(node.func.value),
+                    params,
+                    constants,
+                    local_param_aliases,
+                    local_index_aliases,
+                )
+                if codec_param:
+                    module_lookup_arg_pairs.add((module_param, codec_param))
+                continue
+            if factory_param not in params:
+                continue
+            codec_param = _codec_arg_param_name(
+                _codec_factory_encoding_node(node.func.value),
+                params,
+                constants,
+                local_param_aliases,
+                local_index_aliases,
+            )
+            if codec_param:
+                lookup_factory_arg_pairs.add((factory_param, codec_param))
+            continue
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "decode"
+            and isinstance(node.func.value, ast.Call)
+        ):
+            module_param = _getattr_param_name(node.func.value.func, params, "lookup", constants)
+            if module_param:
+                codec_param = _codec_arg_param_name(
+                    _codec_factory_encoding_node(node.func.value),
+                    params,
+                    constants,
+                    local_param_aliases,
+                    local_index_aliases,
+                )
+                if codec_param:
+                    module_lookup_arg_pairs.add((module_param, codec_param))
+                continue
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "decode"
+            and isinstance(node.func.value, ast.Call)
+            and isinstance(node.func.value.func, ast.Attribute)
+            and node.func.value.func.attr == "lookup"
+            and isinstance(node.func.value.func.value, ast.Name)
+        ):
+            module_param = node.func.value.func.value.id
+            if module_param not in params:
+                continue
+            codec_param = _codec_arg_param_name(
+                _codec_factory_encoding_node(node.func.value),
+                params,
+                constants,
+                local_param_aliases,
+                local_index_aliases,
+            )
+            if codec_param:
+                module_lookup_arg_pairs.add((module_param, codec_param))
+    if not decode_arg_pairs and not decoder_factory_arg_pairs and not lookup_factory_arg_pairs:
+        if not module_decode_arg_pairs and not module_getdecoder_arg_pairs and not module_lookup_arg_pairs:
+            return None
+    return {
+        "decode_arg_pairs": decode_arg_pairs,
+        "decoder_factory_arg_pairs": decoder_factory_arg_pairs,
+        "lookup_factory_arg_pairs": lookup_factory_arg_pairs,
+        "module_decode_arg_pairs": module_decode_arg_pairs,
+        "module_getdecoder_arg_pairs": module_getdecoder_arg_pairs,
+        "module_lookup_arg_pairs": module_lookup_arg_pairs,
+        "positions": signature["positions"],
+        "defaults": signature["defaults"],
+        "default_nodes": signature["default_nodes"],
+    }
+
+
+def _higher_order_decode_wrappers(tree: ast.AST, constants: Dict[str, str]) -> Dict[str, Dict[str, object]]:
+    wrappers: Dict[str, Dict[str, object]] = {}
+    for func in [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]:
+        info = _higher_order_decode_wrapper_info(func, constants)
+        if info:
+            wrappers[func.name] = info
+    return wrappers
+
+
+def _returned_higher_order_decode_wrappers(tree: ast.AST, constants: Dict[str, str]) -> Dict[str, Dict[str, object]]:
+    wrappers: Dict[str, Dict[str, object]] = {}
+    for func in [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]:
+        if _function_required_arg_count(func) != 0:
+            continue
+        value = _single_own_return_value(func)
+        if not isinstance(value, ast.Name):
+            continue
+        direct_child = _direct_child_functions(func).get(value.id)
+        if direct_child is None:
+            continue
+        info = _higher_order_decode_wrapper_info(direct_child, constants)
+        if info:
+            wrappers[func.name] = info
+    return wrappers
+
+
+def _function_scope_bound_name_lines(func: ast.FunctionDef, names: Set[str]) -> Dict[str, List[int]]:
+    lines: Dict[str, List[int]] = {name: [] for name in names}
+    for stmt in func.body:
+        lineno = getattr(stmt, "lineno", 0)
+        if not lineno:
+            continue
+        for name in _statement_bound_names(stmt):
+            if name in lines:
+                lines[name].append(lineno)
+    return lines
+
+
+def _subscript_root_name(node: ast.AST) -> str:
+    current = node
+    while isinstance(current, ast.Subscript):
+        current = current.value
+    return current.id if isinstance(current, ast.Name) else ""
+
+
+def _returned_closure_decode_wrapper_info(
+    func: ast.FunctionDef,
+    constants: Dict[str, str],
+) -> Optional[Dict[str, object]]:
+    outer_signature = _function_signature(func, constants)
+    outer_params = outer_signature["params"]
+    if not isinstance(outer_params, set):
+        return None
+    value = _single_own_return_value(func)
+    if not isinstance(value, ast.Name):
+        return None
+    child = _direct_child_functions(func).get(value.id)
+    if child is None:
+        return None
+
+    child_signature = _function_signature(child, constants)
+    child_params = child_signature["params"]
+    if not isinstance(child_params, set):
+        return None
+    child_var_kwarg = child_signature.get("var_kwarg", "")
+    base_param_aliases, base_index_aliases = _local_param_and_index_aliases(child, child_params, constants)
+    comprehension_aliases = _comprehension_param_and_index_aliases(
+        child,
+        child_params,
+        constants,
+        base_param_aliases,
+        base_index_aliases,
+    )
+    outer_callable_aliases, outer_callable_containers = _local_callable_param_aliases(func, outer_params, constants)
+    outer_callable_names = outer_params | set(outer_callable_aliases) | set(outer_callable_containers)
+    child_bound_lines = _function_scope_bound_name_lines(child, outer_callable_names)
+
+    def outer_decoder_param_from_callable(value: ast.AST, call_node: ast.Call) -> str:
+        if isinstance(value, ast.Name):
+            if _name_bound_before_call(child_bound_lines, value.id, call_node):
+                return ""
+            if value.id in outer_params:
+                return value.id
+            return outer_callable_aliases.get(value.id, "")
+        root = _subscript_root_name(value)
+        if root and _name_bound_before_call(child_bound_lines, root, call_node):
+            return ""
+        return _container_subscript_lookup(value, outer_callable_containers, constants) or ""
+
+    decode_arg_pairs: Set[Tuple[str, ParamAccess]] = set()
+    for stmt in child.body:
+        for node in _current_scope_calls(stmt):
+            local_param_aliases, local_index_aliases = comprehension_aliases.get(
+                id(node),
+                (base_param_aliases, base_index_aliases),
+            )
+            decoder_param = outer_decoder_param_from_callable(node.func, node)
+            if not decoder_param:
+                continue
+            codec_param = _codec_arg_param_name_or_forwarded_kwargs(
+                _codecs_decode_encoding_node(node),
+                child_params,
+                node,
+                child_var_kwarg,
+                constants,
+                local_param_aliases,
+                local_index_aliases,
+            )
+            if codec_param:
+                decode_arg_pairs.add((decoder_param, codec_param))
+
+    if not decode_arg_pairs:
+        return None
+    return {
+        "decode_arg_pairs": decode_arg_pairs,
+        "positions": outer_signature["positions"],
+        "defaults": outer_signature["defaults"],
+        "default_nodes": outer_signature["default_nodes"],
+        "child_positions": child_signature["positions"],
+        "child_defaults": child_signature["defaults"],
+        "child_default_nodes": child_signature["default_nodes"],
+    }
+
+
+def _returned_closure_decode_wrappers(tree: ast.AST, constants: Dict[str, str]) -> Dict[str, Dict[str, object]]:
+    wrappers: Dict[str, Dict[str, object]] = {}
+    for func in [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]:
+        info = _returned_closure_decode_wrapper_info(func, constants)
+        if info:
+            wrappers[func.name] = info
+    _add_simple_wrapper_assignment_aliases(tree, wrappers)
+    return wrappers
+
+
+def _local_statement_scopes(tree: ast.AST) -> List[Union[ast.Module, ast.FunctionDef]]:
+    scopes: List[Union[ast.Module, ast.FunctionDef]] = []
+    if isinstance(tree, ast.Module):
+        scopes.append(tree)
+    scopes.extend(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef))
+    return scopes
+
+
+def _assigned_returned_closure_decode_calls(
+    tree: ast.AST,
+    returned_closure_wrappers: Dict[str, Dict[str, object]],
+) -> Dict[int, Dict[str, object]]:
+    calls: Dict[int, Dict[str, object]] = {}
+
+    def nested_statement_blocks(stmt: ast.stmt) -> List[List[ast.stmt]]:
+        if isinstance(stmt, (ast.If, ast.For, ast.AsyncFor, ast.While)):
+            return [stmt.body, stmt.orelse]
+        if isinstance(stmt, (ast.With, ast.AsyncWith)):
+            return [stmt.body]
+        if isinstance(stmt, ast.Try):
+            blocks = [stmt.body, stmt.orelse, stmt.finalbody]
+            blocks.extend(handler.body for handler in stmt.handlers)
+            return blocks
+        return []
+
+    def bind_assignment(stmt: ast.stmt, active: Dict[str, Dict[str, object]]) -> None:
+        value, targets = _assignment_value_targets(stmt)
+        if value is None or not targets:
+            return
+        target_names: Set[str] = set()
+        for target in targets:
+            target_names.update(_target_names(target))
+        for target_name in target_names:
+            active.pop(target_name, None)
+
+        assigned_info: Optional[Dict[str, object]] = None
+        if isinstance(value, ast.Call):
+            wrapper_name = _call_name(value.func)
+            wrapper = returned_closure_wrappers.get(wrapper_name)
+            if wrapper:
+                assigned_info = {"wrapper_name": wrapper_name, "wrapper": wrapper, "factory_call": value}
+        elif isinstance(value, ast.Name):
+            assigned_info = active.get(value.id)
+
+        if not assigned_info:
+            return
+        for target in targets:
+            if isinstance(target, ast.Name):
+                active[target.id] = assigned_info
+
+    def visit_statements(statements: List[ast.stmt], active: Dict[str, Dict[str, object]]) -> None:
+        for stmt in statements:
+            blocks = nested_statement_blocks(stmt)
+            if blocks:
+                for block in blocks:
+                    visit_statements(block, dict(active))
+                bind_assignment(stmt, active)
+                continue
+
+            for call in _current_scope_calls(stmt):
+                name = _call_name(call.func)
+                info = active.get(name)
+                if info:
+                    calls[id(call)] = info
+            bind_assignment(stmt, active)
+
+    for scope in _local_statement_scopes(tree):
+        visit_statements(scope.body, {})
+    return calls
+
+
+def _literal_container_value_at(
+    node: ast.AST,
+    path: Tuple[Tuple[str, str], ...],
+    constants: Dict[str, str],
+) -> Optional[ast.AST]:
+    current = node
+    for wanted in path:
+        found: Optional[ast.AST] = None
+        for key, child in _literal_container_items(current, constants):
+            if key == wanted:
+                found = child
+                break
+        if found is None:
+            return None
+        current = found
+    return current
+
+
+def _string_from_container_access(
+    node: ast.AST,
+    path: Tuple[Tuple[str, str], ...],
+    constants: Dict[str, str],
+    string_containers: Dict[str, Dict[ContainerAliasKey, str]],
+) -> str:
+    if not path:
+        return _string_constant(node, constants)
+    alias_key: ContainerAliasKey = path[0] if len(path) == 1 else path
+    if isinstance(node, ast.Name):
+        return string_containers.get(node.id, {}).get(alias_key, "")
+    value = _literal_container_value_at(node, path, constants)
+    if value is None:
+        return ""
+    return _string_constant(value, constants)
+
+
+def _wrapper_call_arg_node(node: ast.Call, wrapper: Dict[str, object], param_name: ParamAccess) -> Optional[ast.AST]:
+    root_param = _param_access_root(param_name)
+    positions = wrapper.get("positions") or {}
+    if isinstance(positions, dict):
+        position = positions.get(root_param)
+        if isinstance(position, int) and position < len(node.args):
+            return node.args[position]
+    return _keyword_node(node, root_param)
+
+
+def _wrapper_call_arg_or_default_node(
+    node: ast.Call,
+    wrapper: Dict[str, object],
+    param_name: ParamAccess,
+) -> Optional[ast.AST]:
+    value = _wrapper_call_arg_node(node, wrapper, param_name)
+    if value is not None:
+        return value
+    default_nodes = wrapper.get("default_nodes") or {}
+    if isinstance(default_nodes, dict):
+        default = default_nodes.get(_param_access_root(param_name))
+        if isinstance(default, ast.AST):
+            return default
+    return None
+
+
+def _wrapper_call_encoding(
+    node: ast.Call,
+    wrapper: Dict[str, object],
+    param_name: ParamAccess,
+    constants: Dict[str, str],
+    string_containers: Dict[str, Dict[ContainerAliasKey, str]] | None = None,
+) -> str:
+    defaults = wrapper.get("defaults") or {}
+    value = _wrapper_call_arg_node(node, wrapper, param_name)
+    path = _param_access_path(param_name)
+    containers = string_containers or {}
+    if value is not None:
+        return _string_from_container_access(value, path, constants, containers)
+    if isinstance(defaults, dict):
+        default = defaults.get(_param_access_root(param_name))
+        if isinstance(default, str):
+            return default
+    return ""
+
+
+def _is_decode_function_ref(
+    node: Optional[ast.AST],
+    module_aliases: Set[str],
+    decode_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    decode_dict_aliases: Dict[str, Set[str]],
+    decode_containers: Optional[Dict[str, Dict[ContainerAliasKey, str]]] = None,
+    known_container_keys: Optional[Dict[str, Set[ContainerAliasKey]]] = None,
+    decode_default_alias: Optional[Callable[[ast.AST], Optional[str]]] = None,
+) -> bool:
+    if _static_codecs_decode_ref(
+        node,
+        module_aliases,
+        decode_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        decode_dict_aliases,
+    ):
+        return True
+    if (
+        node is not None
+        and decode_containers is not None
+        and known_container_keys is not None
+        and decode_default_alias is not None
+    ):
+        return _container_method_return_lookup(
+            node,
+            decode_containers,
+            known_container_keys,
+            constants,
+            decode_default_alias,
+        ) is not None
+    return False
+
+
+def _is_functools_partial_call(node: ast.AST, module_aliases: Set[str], partial_aliases: Set[str]) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and (
+            _call_name(node.func) in partial_aliases
+            or _attribute_on_module_alias(node.func, module_aliases, "partial")
+        )
+    )
+
+
+def _partial_decode_encoding(
+    node: ast.AST,
+    functools_module_aliases: Set[str],
+    partial_aliases: Set[str],
+    codec_module_aliases: Set[str],
+    decode_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    decode_dict_aliases: Dict[str, Set[str]],
+) -> Optional[str]:
+    if not _is_functools_partial_call(node, functools_module_aliases, partial_aliases):
+        return None
+    if not isinstance(node, ast.Call) or not node.args:
+        return None
+    if not _is_decode_function_ref(
+        node.args[0],
+        codec_module_aliases,
+        decode_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        decode_dict_aliases,
+    ):
+        return None
+    if len(node.args) >= 3:
+        return _string_constant(node.args[2], constants)
+    return _keyword_value(node, constants, "encoding")
+
+
+def _partial_decode_result_aliases(
+    tree: ast.AST,
+    functools_module_aliases: Set[str],
+    partial_aliases: Set[str],
+    codec_module_aliases: Set[str],
+    decode_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    decode_dict_aliases: Dict[str, Set[str]],
+) -> Dict[str, str]:
+    results: Dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            value = node.value
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            value = node.value
+            targets = [node.target]
+        else:
+            continue
+        encoding = _partial_decode_encoding(
+            value,
+            functools_module_aliases,
+            partial_aliases,
+            codec_module_aliases,
+            decode_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            decode_dict_aliases,
+        )
+        if encoding is None:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                results[target.id] = encoding
+    return results
+
+
+def _partial_decode_function_results(
+    tree: ast.AST,
+    functools_module_aliases: Set[str],
+    partial_aliases: Set[str],
+    codec_module_aliases: Set[str],
+    decode_aliases: Set[str],
+    constants: Dict[str, str],
+    importlib_module_aliases: Set[str],
+    import_module_aliases: Set[str],
+    module_dict_aliases: Dict[str, Set[str]],
+    decode_dict_aliases: Dict[str, Set[str]],
+    partial_alias_results: Dict[str, str],
+) -> Dict[str, str]:
+    functions: Dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or _function_required_arg_count(node) != 0:
+            continue
+        value = _single_return_value(node)
+        if value is None:
+            continue
+        if isinstance(value, ast.Name) and value.id in partial_alias_results:
+            encoding = partial_alias_results[value.id]
+        else:
+            encoding = _partial_decode_encoding(
+                value,
+                functools_module_aliases,
+                partial_aliases,
+                codec_module_aliases,
+                decode_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+                decode_dict_aliases,
+            )
+        if encoding is not None:
+            functions[node.name] = encoding
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value = node.value
+                targets = node.targets
+            elif isinstance(node, ast.AnnAssign):
+                value = node.value
+                targets = [node.target]
+            else:
+                continue
+            if not isinstance(value, ast.Name) or value.id not in functions:
+                continue
+            encoding = functions[value.id]
+            for target in targets:
+                if isinstance(target, ast.Name) and functions.get(target.id) != encoding:
+                    functions[target.id] = encoding
+                    changed = True
+        if not changed:
+            break
+    return functions
+
+
+def unsafe_unicode_decode_calls_from_text(text: str, filename: str = "<generated>") -> List[str]:
+    tree = ast.parse(text, filename=filename)
+    constants = _constant_string_aliases(tree)
+    string_containers = _string_literal_container_aliases(tree, constants)
+    module_aliases, decode_aliases, escape_decode_aliases, getdecoder_aliases, lookup_aliases = _codec_import_aliases(tree)
+    functools_module_aliases, partial_aliases = _functools_import_aliases(tree)
+    importlib_module_aliases, import_module_aliases = _importlib_import_aliases(tree, constants)
+    operator_module_aliases, methodcaller_aliases, attrgetter_aliases, operator_call_aliases = _operator_import_aliases(tree)
+    itertools_module_aliases, starmap_aliases = _itertools_import_aliases(tree)
+    builtin_shadow_lines = _top_level_bound_name_lines(tree, {"map"})
+    class_aliases = _class_aliases(tree)
+    factory_aliases = _class_factory_aliases(tree, class_aliases)
+    module_dict_aliases: Dict[str, Set[str]] = {}
+    decode_dict_aliases: Dict[str, Set[str]] = {}
+    _add_simple_module_assignment_aliases(
+        tree,
+        module_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+    )
+    _add_simple_decode_assignment_aliases(
+        tree,
+        module_aliases,
+        decode_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        decode_dict_aliases,
+    )
+    module_dict_aliases, decode_dict_aliases = _literal_dict_codec_aliases(
+        tree,
+        module_aliases,
+        decode_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+    )
+    _add_simple_module_assignment_aliases(
+        tree,
+        module_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+    )
+    _add_simple_decode_assignment_aliases(
+        tree,
+        module_aliases,
+        decode_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        decode_dict_aliases,
+    )
+    codec_module_containers, codec_decode_containers, codec_container_known_keys = _codec_literal_container_aliases(
+        tree,
+        module_aliases,
+        decode_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        decode_dict_aliases,
+    )
+
+    def codec_decode_default_alias(value: ast.AST) -> Optional[str]:
+        return (
+            "codecs.decode"
+            if _static_codecs_decode_ref(
+                value,
+                module_aliases,
+                decode_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+                decode_dict_aliases,
+            )
+            else None
+        )
+
+    def codec_module_default_alias(value: ast.AST) -> Optional[str]:
+        return (
+            "codecs"
+            if _static_codecs_module_ref(
+                value,
+                module_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+            )
+            else None
+        )
+
+    _add_container_method_return_assignment_aliases(
+        tree,
+        module_aliases,
+        decode_aliases,
+        codec_module_containers,
+        codec_decode_containers,
+        codec_container_known_keys,
+        constants,
+        codec_module_default_alias,
+        codec_decode_default_alias,
+    )
+    codec_module_attributes = _codec_module_attribute_aliases(
+        tree,
+        module_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        codec_module_containers,
+        codec_container_known_keys,
+        codec_module_default_alias,
+    )
+    codec_module_functions = _codecs_module_function_results(
+        tree,
+        module_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        codec_module_containers,
+    )
+    _add_bound_codecs_module_method_aliases(
+        tree,
+        module_aliases,
+        decode_aliases,
+        getdecoder_aliases,
+        lookup_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        codec_module_containers,
+        codec_module_attributes,
+        codec_module_functions,
+        class_aliases,
+        factory_aliases,
+        operator_module_aliases,
+        attrgetter_aliases,
+    )
+    bound_decode_functions, bound_getdecoder_factory_functions, bound_lookup_factory_functions = (
+        _bound_codecs_module_method_function_refs(
+            tree,
+            module_aliases,
+            decode_aliases,
+            getdecoder_aliases,
+            lookup_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            codec_module_containers,
+            codec_module_attributes,
+            codec_module_functions,
+            class_aliases,
+            factory_aliases,
+            operator_module_aliases,
+            attrgetter_aliases,
+        )
+    )
+    param_getattr_decode_functions = _param_getattr_return_functions(tree, "decode", constants)
+    param_getattr_getdecoder_functions = _param_getattr_return_functions(tree, "getdecoder", constants)
+    param_getattr_lookup_functions = _param_getattr_return_functions(tree, "lookup", constants)
+    codec_decode_attributes = _codecs_decode_attribute_aliases(
+        tree,
+        module_aliases,
+        decode_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        decode_dict_aliases,
+        codec_decode_containers,
+        codec_container_known_keys,
+        codec_decode_default_alias,
+    )
+    _add_simple_factory_assignment_aliases(tree, module_aliases, getdecoder_aliases, lookup_aliases)
+    getdecoder_factory_functions, lookup_factory_functions = _decoder_factory_function_ref_results(
+        tree,
+        module_aliases,
+        getdecoder_aliases,
+        lookup_aliases,
+        constants,
+    )
+    getdecoder_factory_functions.update(bound_getdecoder_factory_functions)
+    lookup_factory_functions.update(bound_lookup_factory_functions)
+    wrappers = _codec_wrapper_functions(
+        tree,
+        module_aliases,
+        decode_aliases,
+        getdecoder_aliases,
+        lookup_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        decode_dict_aliases,
+    )
+    _add_simple_wrapper_assignment_aliases(tree, wrappers)
+    higher_order_wrappers = _higher_order_decode_wrappers(tree, constants)
+    higher_order_wrappers.update(_returned_higher_order_decode_wrappers(tree, constants))
+    _add_simple_wrapper_assignment_aliases(tree, higher_order_wrappers)
+    returned_closure_wrappers = _returned_closure_decode_wrappers(tree, constants)
+    assigned_returned_closure_calls = _assigned_returned_closure_decode_calls(tree, returned_closure_wrappers)
+    decoder_results, lookup_results = _decoder_factory_result_aliases(
+        tree,
+        module_aliases,
+        getdecoder_aliases,
+        lookup_aliases,
+        constants,
+    )
+    decoder_containers, lookup_containers = _decoder_factory_container_aliases(
+        tree,
+        module_aliases,
+        getdecoder_aliases,
+        lookup_aliases,
+        constants,
+        decoder_results,
+        lookup_results,
+    )
+    decoder_attributes, lookup_attributes = _decoder_factory_attribute_aliases(
+        tree,
+        module_aliases,
+        getdecoder_aliases,
+        lookup_aliases,
+        constants,
+        decoder_results,
+        lookup_results,
+        decoder_containers,
+        lookup_containers,
+    )
+    byte_constructor_aliases = _byte_constructor_aliases(tree, constants)
+    encoded_text_bytes = _encoded_text_byte_aliases(tree, constants, byte_constructor_aliases)
+    decode_method_results = _decode_method_result_aliases(
+        tree,
+        encoded_text_bytes,
+        constants,
+        byte_constructor_aliases,
+        operator_module_aliases,
+        attrgetter_aliases,
+    )
+    methodcaller_results = _operator_methodcaller_result_aliases(
+        tree,
+        operator_module_aliases,
+        methodcaller_aliases,
+        constants,
+    )
+    methodcaller_codecs_results = _operator_methodcaller_codecs_decode_result_aliases(
+        tree,
+        operator_module_aliases,
+        methodcaller_aliases,
+        constants,
+        encoded_text_bytes,
+        byte_constructor_aliases,
+    )
+    decode_method_containers = _decode_method_container_aliases(
+        tree,
+        encoded_text_bytes,
+        constants,
+        byte_constructor_aliases,
+        operator_module_aliases,
+        attrgetter_aliases,
+        decode_method_results,
+    )
+    methodcaller_containers = _operator_methodcaller_container_aliases(
+        tree,
+        operator_module_aliases,
+        methodcaller_aliases,
+        constants,
+        methodcaller_results,
+    )
+    codec_decode_functions = _codecs_decode_function_results(
+        tree,
+        module_aliases,
+        decode_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        decode_dict_aliases,
+        codec_decode_containers,
+        codec_decode_attributes,
+    )
+    codec_decode_functions.update(bound_decode_functions)
+    decoder_functions, lookup_functions = _decoder_factory_function_results(
+        tree,
+        module_aliases,
+        getdecoder_aliases,
+        lookup_aliases,
+        constants,
+        decoder_results,
+        lookup_results,
+        decoder_containers,
+        lookup_containers,
+        decoder_attributes,
+        lookup_attributes,
+    )
+    decode_method_functions = _decode_method_function_results(
+        tree,
+        encoded_text_bytes,
+        constants,
+        byte_constructor_aliases,
+        operator_module_aliases,
+        attrgetter_aliases,
+        decode_method_results,
+    )
+    methodcaller_functions = _operator_methodcaller_function_results(
+        tree,
+        operator_module_aliases,
+        methodcaller_aliases,
+        constants,
+        methodcaller_results,
+    )
+    methodcaller_codecs_functions = _operator_methodcaller_codecs_decode_function_results(
+        tree,
+        operator_module_aliases,
+        methodcaller_aliases,
+        constants,
+        methodcaller_codecs_results,
+        encoded_text_bytes,
+        byte_constructor_aliases,
+    )
+    partial_results = _partial_decode_result_aliases(
+        tree,
+        functools_module_aliases,
+        partial_aliases,
+        module_aliases,
+        decode_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        decode_dict_aliases,
+    )
+    partial_functions = _partial_decode_function_results(
+        tree,
+        functools_module_aliases,
+        partial_aliases,
+        module_aliases,
+        decode_aliases,
+        constants,
+        importlib_module_aliases,
+        import_module_aliases,
+        module_dict_aliases,
+        decode_dict_aliases,
+        partial_results,
+    )
+    hits: List[str] = _top_level_direct_codecs_module_hits(tree, constants)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _call_name(node.func)
+        map_encoding = _map_codecs_decode_encoding(
+            node,
+            builtin_shadow_lines,
+            module_aliases,
+            decode_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            decode_dict_aliases,
+        )
+        if map_encoding is not None:
+            hits.append(f"map(codecs.decode)({_codec_label(map_encoding)})")
+            continue
+        starmap_encoding = _itertools_starmap_codecs_decode_encoding(
+            node,
+            itertools_module_aliases,
+            starmap_aliases,
+            module_aliases,
+            decode_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            decode_dict_aliases,
+        )
+        if starmap_encoding is not None:
+            hits.append(f"itertools.starmap(codecs.decode)({_codec_label(starmap_encoding)})")
+            continue
+        operator_call_encoding = _operator_call_codecs_decode_encoding(
+            node,
+            operator_module_aliases,
+            operator_call_aliases,
+            module_aliases,
+            decode_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            decode_dict_aliases,
+        )
+        if operator_call_encoding is not None:
+            hits.append(f"operator.call(codecs.decode)({_codec_label(operator_call_encoding)})")
+            continue
+        if name == "str" and node.args:
+            encoded_as = _encoded_text_bytes_encoding(node.args[0], encoded_text_bytes, constants, byte_constructor_aliases)
+            if encoded_as is not None:
+                encoding = _str_constructor_decode_encoding(node, constants)
+                if _is_mismatched_text_redecode(encoded_as, encoding):
+                    hits.append(f"str({_codec_label(encoding)} after encode {_codec_label(encoded_as)})")
+                    continue
+        methodcaller_encoding = _operator_methodcaller_decode_encoding(
+            node.func,
+            operator_module_aliases,
+            methodcaller_aliases,
+            constants,
+        )
+        if methodcaller_encoding is not None and node.args:
+            encoded_as = _encoded_text_bytes_encoding(
+                node.args[0],
+                encoded_text_bytes,
+                constants,
+                byte_constructor_aliases,
+            )
+            if encoded_as is not None and _is_mismatched_text_redecode(encoded_as, methodcaller_encoding):
+                hits.append(f"operator.methodcaller(decode {_codec_label(methodcaller_encoding)} after encode {_codec_label(encoded_as)})")
+                continue
+        methodcaller_codecs_info = _operator_methodcaller_codecs_decode_info(
+            node.func,
+            operator_module_aliases,
+            methodcaller_aliases,
+            constants,
+            encoded_text_bytes,
+            byte_constructor_aliases,
+        )
+        if (
+            methodcaller_codecs_info is not None
+            and node.args
+            and _is_codecs_module_ref_or_result(
+                node.args[0],
+                module_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+                codec_module_containers,
+                codec_module_attributes,
+                codec_module_functions,
+                class_aliases,
+                factory_aliases,
+                codec_container_known_keys,
+            )
+        ):
+            encoded_as, encoding = methodcaller_codecs_info
+            if _is_mismatched_text_redecode(encoded_as, encoding):
+                hits.append(f"operator.methodcaller(codecs.decode {_codec_label(encoding)} after encode {_codec_label(encoded_as)})")
+                continue
+        if name in methodcaller_results and node.args:
+            encoded_as = _encoded_text_bytes_encoding(
+                node.args[0],
+                encoded_text_bytes,
+                constants,
+                byte_constructor_aliases,
+            )
+            encoding = methodcaller_results[name]
+            if encoded_as is not None and _is_mismatched_text_redecode(encoded_as, encoding):
+                hits.append(f"{name}(decode {_codec_label(encoding)} after encode {_codec_label(encoded_as)})")
+                continue
+        if (
+            name in methodcaller_codecs_results
+            and node.args
+            and _is_codecs_module_ref_or_result(
+                node.args[0],
+                module_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+                codec_module_containers,
+                codec_module_attributes,
+                codec_module_functions,
+                class_aliases,
+                factory_aliases,
+                codec_container_known_keys,
+            )
+        ):
+            encoded_as, encoding = methodcaller_codecs_results[name]
+            if _is_mismatched_text_redecode(encoded_as, encoding):
+                hits.append(f"{name}(codecs.decode {_codec_label(encoding)} after encode {_codec_label(encoded_as)})")
+                continue
+        container_methodcaller_encoding = _container_subscript_lookup(node.func, methodcaller_containers, constants)
+        if container_methodcaller_encoding is not None and node.args:
+            encoded_as = _encoded_text_bytes_encoding(
+                node.args[0],
+                encoded_text_bytes,
+                constants,
+                byte_constructor_aliases,
+            )
+            if encoded_as is not None and _is_mismatched_text_redecode(encoded_as, container_methodcaller_encoding):
+                label = _subscript_call_label(node.func)
+                hits.append(f"{label}(decode {_codec_label(container_methodcaller_encoding)} after encode {_codec_label(encoded_as)})")
+                continue
+        function_methodcaller_name = _zero_arg_function_call_name(node.func)
+        if function_methodcaller_name in methodcaller_functions and node.args:
+            encoded_as = _encoded_text_bytes_encoding(
+                node.args[0],
+                encoded_text_bytes,
+                constants,
+                byte_constructor_aliases,
+            )
+            encoding = methodcaller_functions[function_methodcaller_name]
+            if encoded_as is not None and _is_mismatched_text_redecode(encoded_as, encoding):
+                hits.append(f"{function_methodcaller_name}()(decode {_codec_label(encoding)} after encode {_codec_label(encoded_as)})")
+                continue
+        if (
+            function_methodcaller_name in methodcaller_codecs_functions
+            and node.args
+            and _is_codecs_module_ref_or_result(
+                node.args[0],
+                module_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+                codec_module_containers,
+                codec_module_attributes,
+                codec_module_functions,
+                class_aliases,
+                factory_aliases,
+                codec_container_known_keys,
+            )
+        ):
+            encoded_as, encoding = methodcaller_codecs_functions[function_methodcaller_name]
+            if _is_mismatched_text_redecode(encoded_as, encoding):
+                hits.append(f"{function_methodcaller_name}()(codecs.decode {_codec_label(encoding)} after encode {_codec_label(encoded_as)})")
+                continue
+        bound_encoded_as = _decode_method_source_encoding(
+            node.func,
+            encoded_text_bytes,
+            constants,
+            byte_constructor_aliases,
+            operator_module_aliases,
+            attrgetter_aliases,
+        )
+        if bound_encoded_as is not None:
+            encoding = _method_decode_encoding_or_default(node, constants)
+            if _is_mismatched_text_redecode(bound_encoded_as, encoding):
+                hits.append(f"bound decode({_codec_label(encoding)} after encode {_codec_label(bound_encoded_as)})")
+                continue
+        container_bound_encoded_as = _container_subscript_lookup(node.func, decode_method_containers, constants)
+        if container_bound_encoded_as is not None:
+            encoding = _method_decode_encoding_or_default(node, constants)
+            if _is_mismatched_text_redecode(container_bound_encoded_as, encoding):
+                label = _subscript_call_label(node.func)
+                hits.append(f"{label}({_codec_label(encoding)} after encode {_codec_label(container_bound_encoded_as)})")
+                continue
+        function_bound_name = _zero_arg_function_call_name(node.func)
+        if function_bound_name in decode_method_functions:
+            encoding = _method_decode_encoding_or_default(node, constants)
+            encoded_as = decode_method_functions[function_bound_name]
+            if _is_mismatched_text_redecode(encoded_as, encoding):
+                hits.append(f"{function_bound_name}()({_codec_label(encoding)} after encode {_codec_label(encoded_as)})")
+                continue
+        if name in decode_method_results:
+            encoding = _method_decode_encoding_or_default(node, constants)
+            encoded_as = decode_method_results[name]
+            if _is_mismatched_text_redecode(encoded_as, encoding):
+                hits.append(f"{name}({_codec_label(encoding)} after encode {_codec_label(encoded_as)})")
+                continue
+        partial_encoding = _partial_decode_encoding(
+            node.func,
+            functools_module_aliases,
+            partial_aliases,
+            module_aliases,
+            decode_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            decode_dict_aliases,
+        )
+        if partial_encoding is not None:
+            hits.append(f"functools.partial(codecs.decode)({_codec_label(partial_encoding)})")
+            continue
+        container_codec_decode = _container_method_return_lookup(
+            node.func,
+            codec_decode_containers,
+            codec_container_known_keys,
+            constants,
+            codec_decode_default_alias,
+        )
+        if container_codec_decode is not None:
+            encoding = _codecs_decode_encoding(node, constants)
+            label = _subscript_call_label(node.func)
+            hits.append(f"{label}({_codec_label(encoding)})")
+            continue
+        if _attribute_name_alias_lookup(
+            node.func,
+            codec_decode_attributes,
+        ) or _temporary_instance_attribute_name_alias_lookup(
+            node.func,
+            codec_decode_attributes,
+            class_aliases,
+            factory_aliases,
+        ):
+            encoding = _codecs_decode_encoding(node, constants)
+            hits.append(f"{_attribute_call_label(node.func)}({_codec_label(encoding)})")
+            continue
+        function_codec_decode_name = _zero_arg_function_call_name(node.func)
+        if function_codec_decode_name in codec_decode_functions:
+            encoding = _codecs_decode_encoding(node, constants)
+            hits.append(f"{function_codec_decode_name}()({_codec_label(encoding)})")
+            continue
+        if isinstance(node.func, ast.Call) and _operator_attrgetter_codecs_decode_ref(
+            node.func,
+            operator_module_aliases,
+            attrgetter_aliases,
+            module_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            codec_module_containers,
+            codec_module_attributes,
+            codec_module_functions,
+            class_aliases,
+            factory_aliases,
+        ):
+            encoding = _codecs_decode_encoding(node, constants)
+            hits.append(f"operator.attrgetter(codecs.decode)({_codec_label(encoding)})")
+            continue
+        if isinstance(node.func, ast.Call):
+            param_getattr_decode_name = _call_name(node.func.func)
+            param_getattr_decode_info = param_getattr_decode_functions.get(param_getattr_decode_name)
+            if param_getattr_decode_info and _param_getattr_call_has_codecs_module(
+                node.func,
+                param_getattr_decode_info,
+                module_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+                codec_module_containers,
+                codec_module_attributes,
+                codec_module_functions,
+                class_aliases,
+                factory_aliases,
+                codec_container_known_keys,
+            ):
+                encoding = _codecs_decode_encoding(node, constants)
+                hits.append(f"{param_getattr_decode_name}()({_codec_label(encoding)})")
+                continue
+        if function_codec_decode_name in partial_functions:
+            hits.append(f"{function_codec_decode_name}()({_codec_label(partial_functions[function_codec_decode_name])})")
+            continue
+        kind, encoding = _factory_call_encoding(node.func, module_aliases, getdecoder_aliases, lookup_aliases, constants)
+        if kind == "getdecoder":
+            hits.append(f"{name or kind}({_codec_label(encoding)})")
+            continue
+        if isinstance(node.func, ast.Call) and isinstance(node.func.func, ast.Call):
+            param_getattr_getdecoder_name = _call_name(node.func.func.func)
+            param_getattr_getdecoder_info = param_getattr_getdecoder_functions.get(param_getattr_getdecoder_name)
+            if param_getattr_getdecoder_info and _param_getattr_call_has_codecs_module(
+                node.func.func,
+                param_getattr_getdecoder_info,
+                module_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+                codec_module_containers,
+                codec_module_attributes,
+                codec_module_functions,
+                class_aliases,
+                factory_aliases,
+                codec_container_known_keys,
+            ):
+                encoding = _codec_factory_encoding(node.func, constants)
+                hits.append(f"{param_getattr_getdecoder_name}()({_codec_label(encoding)})")
+                continue
+        if isinstance(node.func, ast.Call):
+            factory_function_name = _zero_arg_function_call_name(node.func.func)
+            if factory_function_name in getdecoder_factory_functions:
+                encoding = _codec_factory_encoding(node.func, constants)
+                hits.append(f"{factory_function_name}()({_codec_label(encoding)})")
+                continue
+        container_decoder_encoding = _container_subscript_lookup(node.func, decoder_containers, constants)
+        if container_decoder_encoding is not None:
+            hits.append(f"{_subscript_call_label(node.func)}({_codec_label(container_decoder_encoding)})")
+            continue
+        attribute_decoder_encoding = _attribute_alias_lookup(node.func, decoder_attributes)
+        if attribute_decoder_encoding is None:
+            attribute_decoder_encoding = _temporary_instance_attribute_alias_lookup(
+                node.func,
+                decoder_attributes,
+                class_aliases,
+                factory_aliases,
+            )
+        if attribute_decoder_encoding is not None:
+            hits.append(f"{_attribute_call_label(node.func)}({_codec_label(attribute_decoder_encoding)})")
+            continue
+        function_decoder_name = _zero_arg_function_call_name(node.func)
+        if function_decoder_name in decoder_functions:
+            hits.append(f"{function_decoder_name}()({_codec_label(decoder_functions[function_decoder_name])})")
+            continue
+        if _getattr_on_static_codecs_module(
+            node.func,
+            module_aliases,
+            "decode",
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+        ):
+            encoding = _codecs_decode_encoding(node, constants)
+            hits.append(f"getattr(codecs, decode)({_codec_label(encoding)})")
+            continue
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "decode":
+            base = _call_name(node.func.value)
+            if base in lookup_results:
+                hits.append(f"{name}({_codec_label(lookup_results[base])})")
+                continue
+            container_lookup_encoding = _container_subscript_lookup(node.func.value, lookup_containers, constants)
+            if container_lookup_encoding is not None:
+                hits.append(f"{_subscript_call_label(node.func.value)}.decode({_codec_label(container_lookup_encoding)})")
+                continue
+            attribute_lookup_encoding = _attribute_alias_lookup(node.func.value, lookup_attributes)
+            if attribute_lookup_encoding is None:
+                attribute_lookup_encoding = _temporary_instance_attribute_alias_lookup(
+                    node.func.value,
+                    lookup_attributes,
+                    class_aliases,
+                    factory_aliases,
+                )
+            if attribute_lookup_encoding is not None:
+                hits.append(f"{_attribute_call_label(node.func.value)}.decode({_codec_label(attribute_lookup_encoding)})")
+                continue
+            function_lookup_name = _zero_arg_function_call_name(node.func.value)
+            if function_lookup_name in lookup_functions:
+                hits.append(f"{function_lookup_name}().decode({_codec_label(lookup_functions[function_lookup_name])})")
+                continue
+            if isinstance(node.func.value, ast.Call):
+                lookup_factory_function_name = _zero_arg_function_call_name(node.func.value.func)
+                if lookup_factory_function_name in lookup_factory_functions:
+                    encoding = _codec_factory_encoding(node.func.value, constants)
+                    hits.append(f"{lookup_factory_function_name}().decode({_codec_label(encoding)})")
+                    continue
+            kind, encoding = _factory_call_encoding(
+                node.func.value,
+                module_aliases,
+                getdecoder_aliases,
+                lookup_aliases,
+                constants,
+            )
+            if kind == "lookup":
+                hits.append(f"{name}({_codec_label(encoding)})")
+                continue
+            if isinstance(node.func.value, ast.Call) and isinstance(node.func.value.func, ast.Call):
+                param_getattr_lookup_name = _call_name(node.func.value.func.func)
+                param_getattr_lookup_info = param_getattr_lookup_functions.get(param_getattr_lookup_name)
+                if param_getattr_lookup_info and _param_getattr_call_has_codecs_module(
+                    node.func.value.func,
+                    param_getattr_lookup_info,
+                    module_aliases,
+                    constants,
+                    importlib_module_aliases,
+                    import_module_aliases,
+                    module_dict_aliases,
+                    codec_module_containers,
+                    codec_module_attributes,
+                    codec_module_functions,
+                    class_aliases,
+                    factory_aliases,
+                ):
+                    encoding = _codec_factory_encoding(node.func.value, constants)
+                    hits.append(f"{param_getattr_lookup_name}().decode({_codec_label(encoding)})")
+                    continue
+            if _is_codecs_module_ref_or_result(
+                node.func.value,
+                module_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+                codec_module_containers,
+                codec_module_attributes,
+                codec_module_functions,
+                class_aliases,
+                factory_aliases,
+                codec_container_known_keys,
+            ):
+                encoding = _codecs_decode_encoding(node, constants)
+                hits.append(f"{name}({_codec_label(encoding)})")
+                continue
+            if _container_subscript_lookup(node.func.value, codec_module_containers, constants) is not None:
+                encoding = _codecs_decode_encoding(node, constants)
+                hits.append(f"{_subscript_call_label(node.func.value)}.decode({_codec_label(encoding)})")
+                continue
+            if _static_codecs_module_ref(
+                node.func.value,
+                module_aliases,
+                constants,
+                importlib_module_aliases,
+                import_module_aliases,
+                module_dict_aliases,
+            ):
+                encoding = _codecs_decode_encoding(node, constants)
+                hits.append(f"{name}({_codec_label(encoding)})")
+                continue
+            encoded_as = _encoded_text_bytes_encoding(node.func.value, encoded_text_bytes, constants, byte_constructor_aliases)
+            if encoded_as is not None:
+                encoding = _method_decode_encoding_or_default(node, constants)
+                if _is_mismatched_text_redecode(encoded_as, encoding):
+                    hits.append(f"{name}({_codec_label(encoding)} after encode {_codec_label(encoded_as)})")
+                    continue
+            encoding = _method_decode_encoding(node, constants)
+            if _is_dangerous_unicode_codec(encoding):
+                hits.append(f"{name}({encoding})")
+            continue
+        if _static_codecs_decode_ref(
+            node.func,
+            module_aliases,
+            decode_aliases,
+            constants,
+            importlib_module_aliases,
+            import_module_aliases,
+            module_dict_aliases,
+            decode_dict_aliases,
+        ):
+            encoding = _codecs_decode_encoding(node, constants)
+            hits.append(f"{name or 'codecs.decode'}({_codec_label(encoding)})")
+            continue
+        if name in decode_aliases:
+            encoding = _codecs_decode_encoding(node, constants)
+            hits.append(f"{name}({_codec_label(encoding)})")
+            continue
+        if name in decoder_results:
+            hits.append(f"{name}({_codec_label(decoder_results[name])})")
+            continue
+        if name in partial_results:
+            hits.append(f"{name}({_codec_label(partial_results[name])})")
+            continue
+        if name in escape_decode_aliases or name.endswith("escape_decode"):
+            hits.append(name)
+            continue
+        if (
+            name in getdecoder_aliases
+            or name in lookup_aliases
+            or _attribute_on_module_alias(node.func, module_aliases, "getdecoder")
+            or _attribute_on_module_alias(node.func, module_aliases, "lookup")
+        ):
+            encoding = _codec_factory_encoding(node, constants)
+            if _is_dangerous_unicode_codec(encoding):
+                hits.append(f"{name}({encoding})")
+            continue
+        wrapper = wrappers.get(name)
+        if wrapper:
+            codec_params = wrapper.get("codec_params") or set()
+            if isinstance(codec_params, set):
+                for param_name in codec_params:
+                    encoding = _wrapper_call_encoding(node, wrapper, param_name, constants, string_containers)
+                    if _is_dangerous_unicode_codec(encoding):
+                        hits.append(f"{name}({encoding})")
+            if name not in higher_order_wrappers and _zero_arg_function_call_name(node.func) not in higher_order_wrappers:
+                continue
+        assigned_returned_closure = assigned_returned_closure_calls.get(id(node))
+        if assigned_returned_closure:
+            returned_closure_name = str(assigned_returned_closure.get("wrapper_name") or name)
+            returned_closure_wrapper = assigned_returned_closure.get("wrapper")
+            factory_call = assigned_returned_closure.get("factory_call")
+            if isinstance(returned_closure_wrapper, dict) and isinstance(factory_call, ast.Call):
+                child_wrapper = {
+                    "positions": returned_closure_wrapper.get("child_positions") or {},
+                    "defaults": returned_closure_wrapper.get("child_defaults") or {},
+                    "default_nodes": returned_closure_wrapper.get("child_default_nodes") or {},
+                }
+                added = False
+                decode_arg_pairs = returned_closure_wrapper.get("decode_arg_pairs") or set()
+                if isinstance(decode_arg_pairs, set):
+                    for decoder_param, codec_param in decode_arg_pairs:
+                        decoder_node = _wrapper_call_arg_or_default_node(
+                            factory_call,
+                            returned_closure_wrapper,
+                            decoder_param,
+                        )
+                        decoder_function_name = (
+                            _zero_arg_function_call_name(decoder_node) if decoder_node is not None else ""
+                        )
+                        is_decode_arg = _is_decode_function_ref(
+                            decoder_node,
+                            module_aliases,
+                            decode_aliases,
+                            constants,
+                            importlib_module_aliases,
+                            import_module_aliases,
+                            module_dict_aliases,
+                            decode_dict_aliases,
+                            codec_decode_containers,
+                            codec_container_known_keys,
+                            codec_decode_default_alias,
+                        )
+                        if not (is_decode_arg or decoder_function_name in codec_decode_functions):
+                            continue
+                        encoding = _wrapper_call_encoding(node, child_wrapper, codec_param, constants, string_containers)
+                        hits.append(f"{returned_closure_name}->{name}({_codec_label(encoding)})")
+                        added = True
+                if added:
+                    continue
+        if isinstance(node.func, ast.Call):
+            returned_closure_name = _call_name(node.func.func)
+            returned_closure_wrapper = returned_closure_wrappers.get(returned_closure_name)
+            if returned_closure_wrapper:
+                child_wrapper = {
+                    "positions": returned_closure_wrapper.get("child_positions") or {},
+                    "defaults": returned_closure_wrapper.get("child_defaults") or {},
+                    "default_nodes": returned_closure_wrapper.get("child_default_nodes") or {},
+                }
+                added = False
+                decode_arg_pairs = returned_closure_wrapper.get("decode_arg_pairs") or set()
+                if isinstance(decode_arg_pairs, set):
+                    for decoder_param, codec_param in decode_arg_pairs:
+                        decoder_node = _wrapper_call_arg_or_default_node(
+                            node.func,
+                            returned_closure_wrapper,
+                            decoder_param,
+                        )
+                        decoder_function_name = (
+                            _zero_arg_function_call_name(decoder_node) if decoder_node is not None else ""
+                        )
+                        is_decode_arg = _is_decode_function_ref(
+                            decoder_node,
+                            module_aliases,
+                            decode_aliases,
+                            constants,
+                            importlib_module_aliases,
+                            import_module_aliases,
+                            module_dict_aliases,
+                            decode_dict_aliases,
+                            codec_decode_containers,
+                            codec_container_known_keys,
+                            codec_decode_default_alias,
+                        )
+                        if not (is_decode_arg or decoder_function_name in codec_decode_functions):
+                            continue
+                        encoding = _wrapper_call_encoding(node, child_wrapper, codec_param, constants, string_containers)
+                        hits.append(f"{returned_closure_name}()({_codec_label(encoding)})")
+                        added = True
+                if added:
+                    continue
+        higher_order_wrapper_name = name
+        higher_order_wrapper = higher_order_wrappers.get(higher_order_wrapper_name)
+        if higher_order_wrapper is None:
+            higher_order_wrapper_name = _zero_arg_function_call_name(node.func)
+            higher_order_wrapper = higher_order_wrappers.get(higher_order_wrapper_name)
+        if higher_order_wrapper:
+            decode_arg_pairs = higher_order_wrapper.get("decode_arg_pairs") or set()
+            if isinstance(decode_arg_pairs, set):
+                for decoder_param, codec_param in decode_arg_pairs:
+                    decoder_node = _wrapper_call_arg_or_default_node(node, higher_order_wrapper, decoder_param)
+                    decoder_function_name = _zero_arg_function_call_name(decoder_node) if decoder_node is not None else ""
+                    is_decode_arg = _is_decode_function_ref(
+                        decoder_node,
+                        module_aliases,
+                        decode_aliases,
+                        constants,
+                        importlib_module_aliases,
+                        import_module_aliases,
+                        module_dict_aliases,
+                        decode_dict_aliases,
+                        codec_decode_containers,
+                        codec_container_known_keys,
+                        codec_decode_default_alias,
+                    )
+                    if not (is_decode_arg or decoder_function_name in codec_decode_functions):
+                        continue
+                    encoding = _wrapper_call_encoding(node, higher_order_wrapper, codec_param, constants, string_containers)
+                    hits.append(f"{higher_order_wrapper_name}({_codec_label(encoding)})")
+            decoder_factory_arg_pairs = higher_order_wrapper.get("decoder_factory_arg_pairs") or set()
+            if isinstance(decoder_factory_arg_pairs, set):
+                for factory_param, codec_param in decoder_factory_arg_pairs:
+                    factory_node = _wrapper_call_arg_or_default_node(node, higher_order_wrapper, factory_param)
+                    factory_function_name = _zero_arg_function_call_name(factory_node) if factory_node is not None else ""
+                    factory_kind = _factory_function_ref_kind(
+                        factory_node,
+                        module_aliases,
+                        getdecoder_aliases,
+                        lookup_aliases,
+                        constants,
+                    )
+                    if factory_kind != "getdecoder" and factory_function_name not in getdecoder_factory_functions:
+                        continue
+                    encoding = _wrapper_call_encoding(node, higher_order_wrapper, codec_param, constants, string_containers)
+                    hits.append(f"{higher_order_wrapper_name}({_codec_label(encoding)})")
+            lookup_factory_arg_pairs = higher_order_wrapper.get("lookup_factory_arg_pairs") or set()
+            if isinstance(lookup_factory_arg_pairs, set):
+                for factory_param, codec_param in lookup_factory_arg_pairs:
+                    factory_node = _wrapper_call_arg_or_default_node(node, higher_order_wrapper, factory_param)
+                    factory_function_name = _zero_arg_function_call_name(factory_node) if factory_node is not None else ""
+                    factory_kind = _factory_function_ref_kind(
+                        factory_node,
+                        module_aliases,
+                        getdecoder_aliases,
+                        lookup_aliases,
+                        constants,
+                    )
+                    if factory_kind != "lookup" and factory_function_name not in lookup_factory_functions:
+                        continue
+                    encoding = _wrapper_call_encoding(node, higher_order_wrapper, codec_param, constants, string_containers)
+                    hits.append(f"{higher_order_wrapper_name}({_codec_label(encoding)})")
+            module_decode_arg_pairs = higher_order_wrapper.get("module_decode_arg_pairs") or set()
+            if isinstance(module_decode_arg_pairs, set):
+                for module_param, codec_param in module_decode_arg_pairs:
+                    module_node = _wrapper_call_arg_or_default_node(node, higher_order_wrapper, module_param)
+                    if not _is_codecs_module_ref_or_result(
+                        module_node,
+                        module_aliases,
+                        constants,
+                        importlib_module_aliases,
+                        import_module_aliases,
+                        module_dict_aliases,
+                        codec_module_containers,
+                        codec_module_attributes,
+                        codec_module_functions,
+                        class_aliases,
+                        factory_aliases,
+                        codec_container_known_keys,
+                    ):
+                        continue
+                    encoding = _wrapper_call_encoding(node, higher_order_wrapper, codec_param, constants, string_containers)
+                    hits.append(f"{higher_order_wrapper_name}({_codec_label(encoding)})")
+            module_getdecoder_arg_pairs = higher_order_wrapper.get("module_getdecoder_arg_pairs") or set()
+            if isinstance(module_getdecoder_arg_pairs, set):
+                for module_param, codec_param in module_getdecoder_arg_pairs:
+                    module_node = _wrapper_call_arg_or_default_node(node, higher_order_wrapper, module_param)
+                    if not _is_codecs_module_ref_or_result(
+                        module_node,
+                        module_aliases,
+                        constants,
+                        importlib_module_aliases,
+                        import_module_aliases,
+                        module_dict_aliases,
+                        codec_module_containers,
+                        codec_module_attributes,
+                        codec_module_functions,
+                        class_aliases,
+                        factory_aliases,
+                        codec_container_known_keys,
+                    ):
+                        continue
+                    encoding = _wrapper_call_encoding(node, higher_order_wrapper, codec_param, constants, string_containers)
+                    hits.append(f"{higher_order_wrapper_name}({_codec_label(encoding)})")
+            module_lookup_arg_pairs = higher_order_wrapper.get("module_lookup_arg_pairs") or set()
+            if isinstance(module_lookup_arg_pairs, set):
+                for module_param, codec_param in module_lookup_arg_pairs:
+                    module_node = _wrapper_call_arg_or_default_node(node, higher_order_wrapper, module_param)
+                    if not _is_codecs_module_ref_or_result(
+                        module_node,
+                        module_aliases,
+                        constants,
+                        importlib_module_aliases,
+                        import_module_aliases,
+                        module_dict_aliases,
+                        codec_module_containers,
+                        codec_module_attributes,
+                        codec_module_functions,
+                        class_aliases,
+                        factory_aliases,
+                        codec_container_known_keys,
+                    ):
+                        continue
+                    encoding = _wrapper_call_encoding(node, higher_order_wrapper, codec_param, constants, string_containers)
+                    hits.append(f"{higher_order_wrapper_name}({_codec_label(encoding)})")
+    return sorted(set(hits))
+
+
+def unsafe_unicode_decode_calls(path: str) -> List[str]:
+    try:
+        text = open(path, "r", encoding="utf-8", errors="ignore").read()
+        return unsafe_unicode_decode_calls_from_text(text, filename=path)
+    except Exception:
+        return []

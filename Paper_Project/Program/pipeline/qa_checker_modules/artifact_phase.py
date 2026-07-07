@@ -7,11 +7,15 @@ from typing import Any, Callable, Dict
 try:
     from qa_checker_modules.metrics import _load_json, _load_manifest_counts
     from qa_checker_modules.registry import VALID_MODES
+    from qa_checker_modules.unicode_decode_guard import unsafe_unicode_decode_calls
 except ImportError:  # pragma: no cover - package-style imports
     from .metrics import _load_json, _load_manifest_counts
     from .registry import VALID_MODES
+    from .unicode_decode_guard import unsafe_unicode_decode_calls
 
 AddIssue = Callable[..., None]
+
+
 def build_output_paths(out_dir: str, output_docx_name: str) -> Dict[str, str]:
     return {
         "docx": os.path.join(out_dir, output_docx_name),
@@ -42,6 +46,17 @@ def run_artifact_checks(out_dir: str, paths: Dict[str, str], counts: Dict[str, A
     ]:
         if not os.path.exists(paths[key]):
             add(code, "error", message, paths[key])
+
+    if os.path.exists(paths["build"]):
+        unsafe_decode_calls = unsafe_unicode_decode_calls(paths["build"])
+        if unsafe_decode_calls:
+            counts["unsafe_unicode_decode_calls"] = len(unsafe_decode_calls)
+            add(
+                "GENERATED_SCRIPT_UNSAFE_UNICODE_DECODE",
+                "error",
+                "生成脚本包含可能破坏中文字符的二次/错误解码调用。",
+                ", ".join(unsafe_decode_calls),
+            )
 
     manifest_counts: Dict[str, Any] = {}
     if os.path.exists(paths["manifest"]):

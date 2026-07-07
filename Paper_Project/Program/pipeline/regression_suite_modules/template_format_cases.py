@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 from docx import Document
 from format_extractor import extract as extract_docx_format
@@ -151,4 +152,57 @@ def pdf_scanned_template_surfaces_qa_error() -> None:
     run_format_checks({"format": str(format_path)}, {}, add)
     codes = {issue["code"] for issue in issues}
     assert_true("PDF_TEMPLATE_UNSUPPORTED" in codes, f"scanned PDF did not surface QA error: {issues}")
+
+
+@case
+def pdf_template_extractor_skips_broken_pdfinfo_path_shim() -> None:
+    if os.name != "nt":
+        return
+    work = new_workdir("pdf_template_broken_pdfinfo_path")
+    pdf = work / "blank_scan.pdf"
+    write_blank_pdf(pdf)
+
+    bad = work / "bad"
+    good = work / "good"
+    bad.mkdir()
+    good.mkdir()
+    (bad / "pdfinfo.cmd").write_text(
+        "@echo off\r\necho The system cannot find the path specified. 1>&2\r\nexit /b 3\r\n",
+        encoding="utf-8",
+    )
+    (good / "pdfinfo.cmd").write_text(
+        "@echo off\r\necho Pages:          1\r\necho Page size:      595 x 842 pts\r\nexit /b 0\r\n",
+        encoding="utf-8",
+    )
+    (good / "pdftotext.cmd").write_text(
+        "@echo off\r\n"
+        "echo %* | findstr /C:\"-bbox-layout\" >nul\r\n"
+        "if %errorlevel%==0 (\r\n"
+        "  set last=\r\n"
+        "  for %%A in (%*) do set last=%%~A\r\n"
+        "  > \"%last%\" echo ^<html^>^<body^>^<page width=\"595\" height=\"842\"^>^</page^>^</body^>^</html^>\r\n"
+        ")\r\n"
+        "exit /b 0\r\n",
+        encoding="utf-8",
+    )
+
+    old_path = os.environ.get("PATH", "")
+    os.environ["PATH"] = str(bad) + os.pathsep + str(good) + os.pathsep + old_path
+    try:
+        fmt, _ = extract_docx_format(str(pdf), output_dir=str(work))
+    finally:
+        os.environ["PATH"] = old_path
+
+    format_path = work / "format.json"
+    format_path.write_text(json.dumps(fmt, ensure_ascii=False), encoding="utf-8")
+
+    issues = []
+
+    def add(code, level, message, detail=""):
+        issues.append({"code": code, "level": level, "message": message, "detail": detail})
+
+    run_format_checks({"format": str(format_path)}, {}, add)
+    codes = {issue["code"] for issue in issues}
+    assert_true("PDF_TEMPLATE_UNSUPPORTED" in codes, f"blank PDF should remain unsupported after pdfinfo fallback: {issues}")
+    assert_true("PDF_TEMPLATE_READ_FAILED" not in codes, f"broken first pdfinfo shim should not force read-failed: {issues}")
 
