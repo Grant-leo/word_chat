@@ -4104,6 +4104,49 @@ def run_pipeline_agent_auto_writes_preflight_report_for_missing_file() -> None:
 
 
 @case
+def run_pipeline_agent_auto_invalid_auto_repair_mode_stops_cleanly() -> None:
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    import run_pipeline as runner
+
+    work = new_workdir("run_pipeline_agent_invalid_repair_mode")
+    template_dir = work / "Templates"
+    inputs_dir = work / "Inputs"
+    outputs_dir = work / "Outputs"
+    template_dir.mkdir()
+    inputs_dir.mkdir()
+    outputs_dir.mkdir()
+
+    original = {
+        "TEMPLATE_DIR": runner.TEMPLATE_DIR,
+        "INPUTS_DIR": runner.INPUTS_DIR,
+        "OUTPUTS_DIR": runner.OUTPUTS_DIR,
+    }
+    try:
+        runner.TEMPLATE_DIR = str(template_dir)
+        runner.INPUTS_DIR = str(inputs_dir)
+        runner.OUTPUTS_DIR = str(outputs_dir)
+        result = runner.run(
+            "template.docx",
+            "content.docx",
+            mode="developer",
+            auto_repair=True,
+            agent_auto=True,
+        )
+    finally:
+        runner.TEMPLATE_DIR = original["TEMPLATE_DIR"]
+        runner.INPUTS_DIR = original["INPUTS_DIR"]
+        runner.OUTPUTS_DIR = original["OUTPUTS_DIR"]
+
+    assert_true(result is None, "invalid auto-repair mode should stop before pipeline phases")
+    report_path = outputs_dir / "_agent_preflight_latest" / "agent_preflight_report.json"
+    assert_true(report_path.exists(), "invalid auto-repair mode should write a preflight report")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert_true(report["status"] == "blocked_invalid_mode", f"wrong preflight status: {report}")
+    assert_true("user 模式" in "\n".join(report.get("next_steps") or []), f"invalid-mode next step should guide user mode: {report}")
+
+
+@case
 def run_pipeline_completion_step_is_named() -> None:
     root = PIPELINE_DIR.parents[2]
     text = (root / "run_pipeline.py").read_text(encoding="utf-8")

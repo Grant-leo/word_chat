@@ -118,7 +118,7 @@ def run(
     auto_repair = bool(auto_repair)
     if auto_repair and mode != 'user':
         print('[ERROR] --auto-repair only supports --mode user because it may edit only Outputs/<run>/build_generated.py.')
-        if resolution.error:
+        if agent_auto:
             _write_agent_preflight(
                 "blocked_invalid_mode",
                 "--auto-repair 只能在 user 模式下运行。",
